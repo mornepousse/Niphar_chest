@@ -1,16 +1,24 @@
 set(srcs
     "main.c"
     "storage/sd_card.c"
+    "usb/usb_device.c"
+    "usb/msc_disk.c"
     "console/console.c"
 )
 
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "."
-    # Volontairement réduit à ce que le code utilise vraiment. La phase
-    # suivante ajoutera esp_tinyusb quand le MSC arrivera.
+    # Volontairement réduit à ce que le code utilise vraiment.
     REQUIRES esp_driver_gpio spi_flash sdmmc esp_driver_sdmmc console
+             espressif__tinyusb
+    PRIV_REQUIRES usb
 )
+
+# TinyUSB cherche « tusb_config.h » sur son chemin d'inclusion, et c'est nous
+# qui le fournissons (main/tusb_config.h) — voir main/idf_component.yml.
+idf_component_get_property(tusb_lib espressif__tinyusb COMPONENT_LIB)
+target_include_directories(${tusb_lib} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # Version appliquée au seul composant qui l'utilise : elle change à chaque
 # commit, la garder locale évite d'invalider tout le projet à chaque fois.

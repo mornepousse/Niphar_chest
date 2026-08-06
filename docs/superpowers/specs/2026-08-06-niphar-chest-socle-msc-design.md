@@ -169,4 +169,28 @@ de récupération sans bouton, et liaison P4↔C6.
 |---|---|---|
 | Cible de build unique | deux boards `boards/<name>/` | zéro delta de pinout entre kit et coffre ; deux `board.h` jumeaux à garder synchro ne protègent de rien |
 | Callbacks `tud_msc_*` maison | composant `tinyusb_msc_storage` | le composant est pensé « une SD = un volume » ; le multi-ISO à média commutable et le composite CCID+HID exigent le contrôle des callbacks. Écrire la bonne couche tout de suite évite de la jeter |
+| Dépendance sur `espressif/tinyusb` brut | wrapper `espressif/esp_tinyusb` | découvert à l'implémentation, voir §9 |
+
+## 9. Correction — pourquoi TinyUSB brut
+
+La décision « callbacks maison » avait été chiffrée en supposant qu'on garderait
+`espressif/esp_tinyusb` pour le PHY, la tâche et les descripteurs. C'est faux :
+le wrapper ne sépare pas la classe MSC de sa propre couche de stockage.
+
+- `CFG_TUD_MSC` dérive de `CONFIG_TINYUSB_MSC_ENABLED`, et ce même Kconfig
+  décide de compiler `tinyusb_msc.c`, qui définit `tud_msc_read10_cb` et
+  consorts en **symboles forts** — collision directe avec les nôtres.
+- Contourner par injection de macros à la compilation fonctionne jusqu'à
+  l'édition de liens : `tinyusb.c` appelle `msc_storage_mount_to_usb()` en dur
+  depuis `tud_mount_cb()`. Aller plus loin voudrait dire forger les symboles
+  internes du composant — un prix que le projet ne doit pas payer.
+
+Le projet dépend donc directement de `espressif/tinyusb`, avec son propre
+`main/tusb_config.h` et, dans `main/usb/usb_device.c`, l'initialisation du PHY
+UTMI (`usb_new_phy`), une tâche `tud_task()` et les callbacks de descripteurs.
+Le coffre étant alimenté par le bus, tout le monitoring VBUS du wrapper est sans
+objet — ce qui réduit nettement ce qu'il fallait reprendre.
+
+Coût réel : environ 120 lignes de plomberie, en échange du contrôle total des
+callbacks et d'une dépendance de moins.
 | MSC propriétaire exclusif de la SD | montage FATFS simultané côté firmware | double accès concurrent au même média = corruption |

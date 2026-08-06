@@ -15,6 +15,7 @@
 #include "board.h"
 #include "console/console.h"
 #include "storage/sd_card.h"
+#include "usb/usb_device.h"
 
 static const char *TAG = "niphar";
 
@@ -44,6 +45,17 @@ void app_main(void)
      * flashable et interrogeable sans elle. On journalise et on continue.
      */
     (void)sd_probe();
+
+    /*
+     * Le MSC ensuite. Il énumère même sans carte : l'hôte apprendra l'absence
+     * de média par TEST UNIT READY, ce qui vaut mieux qu'un périphérique
+     * fantôme. Un échec ici ne doit pas empêcher la console de démarrer.
+     */
+    esp_err_t usb_err = usb_device_start();
+    if (usb_err != ESP_OK) {
+        ESP_LOGE(TAG, "USB indisponible : %s — la console reste le recours",
+                 esp_err_to_name(usb_err));
+    }
 
     /*
      * La console en dernier, et elle ne rend pas la main. Si son démarrage

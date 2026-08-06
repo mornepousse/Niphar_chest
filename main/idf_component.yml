@@ -1,6 +1,15 @@
 ## IDF Component Manager Manifest File
 dependencies:
   idf: ">=5.5"
-  # esp_tinyusb 2.x : c'est la branche qui gère le port haute vitesse du P4.
-  # Même version que KeSp_firmware, pour ne pas diverger entre les deux projets.
-  espressif/esp_tinyusb: "^2.0.1"
+  # TinyUSB brut, pas le wrapper espressif/esp_tinyusb.
+  #
+  # Le wrapper impose sa propre couche MSC : le Kconfig qui active la classe
+  # compile aussi tinyusb_msc.c (callbacks tud_msc_* en symboles forts) et son
+  # tinyusb.c appelle msc_storage_mount_to_usb() en dur au montage. Impossible
+  # d'y garder nos callbacks sans forger ses symboles internes.
+  #
+  # Or c'est bien nos callbacks qu'il faut : le multi-ISO à média commutable
+  # exige de contrôler capacité, INQUIRY et lectures — main/usb/msc_disk.c.
+  # Le prix payé ici est le PHY, la tâche et les descripteurs, écrits dans
+  # main/usb/usb_device.c et main/tusb_config.h.
+  espressif/tinyusb: ">=0.17.0~2"

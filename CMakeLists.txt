@@ -25,4 +25,5 @@ set(NIPHAR_VERSION "${NIPHAR_VERSION}" CACHE INTERNAL "")
 set(COMPONENTS main)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
 project(niphar_chest)
