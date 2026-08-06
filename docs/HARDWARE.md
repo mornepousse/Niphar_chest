@@ -38,6 +38,44 @@ sous-système est mort — c'est voulu.
   (~20-25 Mo/s réels), pas de SDR104. Pas de résistances série (à garder en tête
   si problèmes d'intégrité au bring-up).
 
+### ⚠ Point ouvert : VDDPST_5 (SD_VREF)
+
+Le contrat ci-dessus ne dit rien de l'alimentation des IO de la carte. Or sur
+ESP32-P4 c'est elle qui décide si la microSD fonctionne :
+
+> « ESP32-P4 SDMMC Host requires the IO voltage to be supplied externally via
+> the **VDDPST_5 (SD_VREF)** pin. If the design doesn't require the higher speed
+> SD modes, this pin can be simply connected to the 3.3V supply. »
+> — ESP-IDF Programming Guide, *SDMMC Host Driver* (ESP32-P4),
+> § Configuring Voltage Level.
+
+Le coffre étant en IO fixe 3,3 V sans SDR104, `LDO_VO4 non câblé` est cohérent —
+**à condition que VDDPST_5 soit bien relié au rail 3,3 V**. À vérifier sur la
+netlist avant de déclarer le contrat complet. Si le pin est laissé flottant,
+aucune carte ne répondra, et aucun firmware n'y pourra rien.
+
+Le firmware sonde les deux chemins au démarrage (alimentation externe, puis LDO
+interne canal 4) et journalise celui qui a fonctionné : le premier bring-up avec
+carte tranchera la question.
+
+## Ce qui ne se teste pas sur le kit de dev
+
+Le JC-ESP32P4-M3-DEV câble la microSD à l'identique (vérifié pin par pin sur le
+BSP du fabricant), donc tout le code de stockage se valide dessus. Trois choses
+n'y seront jamais éprouvées, parce que **le kit pardonne et le coffre non** :
+
+| | Kit de dev | Coffre |
+|---|---|---|
+| Récupération | CH340C + bouton BOOTMODE | rien — fer à souder |
+| C6 | `U0RXD`/`U0TXD`/`IO9` câblés | NC |
+| Alimentation | 5 V USB **ou** Li-ion (TLV62560) | USB seul |
+
+Conséquence directe : les règles « jamais de GPIO24/25 réaffectés » et « jamais
+de deep-sleep permanent » ne peuvent pas être vérifiées à l'exécution. Elles
+tiennent par construction — `_Static_assert` dans `main/board.h` et greps dans
+`scripts/fast.sh` — et ces garde-fous ne doivent pas être contournés « juste
+pour un test ».
+
 ## Divers
 
 - **C6 embarqué du module : vierge et non câblé** (U0RXD/U0TXD/IO9 NC) — flashable
