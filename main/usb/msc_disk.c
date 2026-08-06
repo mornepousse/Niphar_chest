@@ -36,6 +36,15 @@ static const char *TAG = "msc";
 static uint8_t *s_bounce;
 static uint32_t s_bounce_size;
 
+static msc_disk_stats_t s_stats;
+
+void msc_disk_get_stats(msc_disk_stats_t *out)
+{
+    if (out != NULL) {
+        *out = s_stats;
+    }
+}
+
 esp_err_t msc_disk_init(void)
 {
     /*
@@ -132,6 +141,10 @@ static int32_t transfer(bool writing, uint32_t lba, uint32_t offset,
         return -1;
     }
 
+    if (bufsize > s_stats.max_bufsize) {
+        s_stats.max_bufsize = bufsize;
+    }
+
     uint64_t addr = (uint64_t)lba * (uint64_t)ss + (uint64_t)offset;
     const uint64_t capacity = (uint64_t)sd_sector_count() * (uint64_t)ss;
     if (addr + (uint64_t)bufsize > capacity) {
@@ -154,7 +167,7 @@ static int32_t transfer(bool writing, uint32_t lba, uint32_t offset,
          */
         if (in_sector == 0 && chunk == ss) {
             uint32_t whole = (bufsize - done) / ss;
-            if (whole > 1 && esp_ptr_dma_capable(buffer + done)) {
+            if (whole >= 1 && esp_ptr_dma_capable(buffer + done)) {
                 esp_err_t err = writing
                     ? sd_write_sectors(buffer + done, sector, whole)
                     : sd_read_sectors(buffer + done, sector, whole);
@@ -162,13 +175,18 @@ static int32_t transfer(bool writing, uint32_t lba, uint32_t offset,
                     return -1;
                 }
                 const uint32_t moved = whole * ss;
+                s_stats.fast_sectors += whole;
                 done += moved;
                 addr += moved;
                 continue;
             }
+            if (whole >= 1) {
+                s_stats.not_dma_hits++;
+            }
         }
 
         /* Chemin lent : un secteur via le rebond. */
+        s_stats.bounce_sectors++;
         if (writing) {
             if (chunk != ss) {
                 /* Écriture partielle : lire-modifier-écrire, sinon on efface le reste. */

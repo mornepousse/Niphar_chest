@@ -63,7 +63,21 @@ extern "C" {
  * exclusives.
  */
 #define CFG_TUD_MSC                 1
-#define CFG_TUD_MSC_EP_BUFSIZE      4096
+
+/*
+ * Taille du tampon que TinyUSB remplit par appel à tud_msc_read10_cb().
+ *
+ * C'est le paramètre de débit du MSC : chaque appel est une transaction SDMMC
+ * synchrone, sans recouvrement avec l'USB, donc plus les blocs sont gros moins
+ * la latence pèse. Mesuré sur le kit avec la SE04G : 4 Kio donnaient 5,8 Mio/s
+ * en lecture là où le SDMMC brut fait 18,3 Mio/s par blocs de 64 Kio
+ * (« sd bench » sur la console).
+ *
+ * 32 Kio = 64 secteurs par transfert. Le coût est un tampon statique de 32 Kio
+ * en RAM interne accessible au DMA — supportable, et la RAM interne est
+ * justement ce qui reste abondant ici puisque le gros vit en PSRAM.
+ */
+#define CFG_TUD_MSC_EP_BUFSIZE      32768
 
 #define CFG_TUD_CDC                 0
 #define CFG_TUD_HID                 0

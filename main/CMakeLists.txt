@@ -11,7 +11,7 @@ idf_component_register(
     INCLUDE_DIRS "."
     # Volontairement réduit à ce que le code utilise vraiment.
     REQUIRES esp_driver_gpio spi_flash sdmmc esp_driver_sdmmc console
-             espressif__tinyusb
+             espressif__tinyusb esp_timer
     PRIV_REQUIRES usb
 )
 

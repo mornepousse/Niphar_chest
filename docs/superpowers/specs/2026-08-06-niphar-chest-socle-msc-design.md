@@ -163,6 +163,40 @@ Sur l'hôte, câble branché sur le port HS :
 Dette de vérification assumée, à lever quand le coffre arrivera : comportement
 de récupération sans bouton, et liaison P4↔C6.
 
+### Résultats du bring-up (2026-08-06, kit JC-ESP32P4-M3-DEV, carte SE04G 4 Go)
+
+Tout est vert côté fonctionnel : `INQUIRY` et `READ CAPACITY` corrects vus du
+noyau (`Direct-Access Niphar Coffre microSD`, 3,64 Gio), partitionnement et
+formatage depuis l'hôte, 64 Mio écrits puis relus **après démontage** avec des
+empreintes SHA-256 identiques. Le chemin USB → MSC → SDMMC est prouvé dans les
+deux sens.
+
+La question **VDDPST_5** est tranchée sur le kit : la carte est détectée par le
+chemin *alimentation externe*, sans le LDO interne — conforme à l'hypothèse du
+coffre. Reste à confirmer sur la netlist que le coffre relie bien ce pin au
+3,3 V ; le kit ne prouve que le kit.
+
+Débits :
+
+| | avant | après | SDMMC brut |
+|---|---|---|---|
+| lecture | 5,8 Mio/s | **9,4 Mio/s** | 18,3 Mio/s |
+| écriture | 2,4 Mio/s | **5,3 Mio/s** | non mesuré |
+
+Le facteur était `CFG_TUD_MSC_EP_BUFSIZE` : TinyUSB réclamait la carte par blocs
+de 4 Kio, porté à 32 Kio. L'hypothèse initiale — un tampon de rebond qui
+dominerait — était fausse, et les compteurs de `msc_disk` l'ont montré :
+0 secteur rebondi sur 4650, chemin DMA direct à 100 %.
+
+Il reste un facteur deux en lecture (9,4 contre 18,3 Mio/s). La cause est
+structurelle : chaque bloc est traité **synchroniquement**, l'USB attend le
+SDMMC sans recouvrement. Le combler demande un double tampon — une vraie
+refonte de `msc_disk`, à décider comme un incrément à part.
+
+Pour l'écriture, 5,3 Mio/s est plausible pour une SE04G d'entrée de gamme ; ce
+n'est pas démontré, faute d'une mesure d'écriture SDMMC brute (elle détruirait
+le contenu de la carte). À reprendre sur une carte sacrifiable.
+
 ## 8. Décisions et alternatives écartées
 
 | Décision | Alternative écartée | Raison |
