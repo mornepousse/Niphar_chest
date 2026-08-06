@@ -38,10 +38,10 @@ sous-système est mort — c'est voulu.
   (~20-25 Mo/s réels), pas de SDR104. Pas de résistances série (à garder en tête
   si problèmes d'intégrité au bring-up).
 
-### ⚠ Point ouvert : VDDPST_5 (SD_VREF)
+### Alimentation des IO SD — réglé, rien à câbler
 
-Le contrat ci-dessus ne dit rien de l'alimentation des IO de la carte. Or sur
-ESP32-P4 c'est elle qui décide si la microSD fonctionne :
+Sur ESP32-P4, les IO de la carte ne sont pas alimentées par le rail de la carte
+SD mais par un rail dédié du SoC :
 
 > « ESP32-P4 SDMMC Host requires the IO voltage to be supplied externally via
 > the **VDDPST_5 (SD_VREF)** pin. If the design doesn't require the higher speed
@@ -49,14 +49,56 @@ ESP32-P4 c'est elle qui décide si la microSD fonctionne :
 > — ESP-IDF Programming Guide, *SDMMC Host Driver* (ESP32-P4),
 > § Configuring Voltage Level.
 
-Le coffre étant en IO fixe 3,3 V sans SDR104, `LDO_VO4 non câblé` est cohérent —
-**à condition que VDDPST_5 soit bien relié au rail 3,3 V**. À vérifier sur la
-netlist avant de déclarer le contrat complet. Si le pin est laissé flottant,
-aucune carte ne répondra, et aucun firmware n'y pourra rien.
+Attention au nom : le datasheet appelle ce rail **`VDD_IO_5`** (pin 85 du
+boîtier), et c'est bien lui qui alimente GPIO39-48 — table 2-1 « Pin Overview »,
+*ESP32-P4 Series Datasheet v0.7* p. 16. Chercher « VDDPST » dans un symbole ne
+donne rien.
 
-Le firmware sonde les deux chemins au démarrage (alimentation externe, puis LDO
-interne canal 4) et journalise celui qui a fonctionné : le premier bring-up avec
-carte tranchera la question.
+**Ce rail est interne au module JC-ESP32P4-M3** : il n'apparaît pas sur le
+schéma du coffre et il n'y a rien à y relier. Le VDD du connecteur microSD, lui,
+vient du régulateur de la carte — deux choses distinctes.
+
+Vérifié empiriquement le 2026-08-06 sur le kit de dev, qui embarque le même
+module : la carte est détectée par le chemin « alimentation externe », sans le
+LDO interne canal 4. C'est cohérent avec `LDO_VO4 non câblé` et avec des IO
+fixes 3,3 V sans SDR104. Le firmware sonde quand même les deux chemins au
+démarrage et journalise celui qui a servi (`sd info`) — si un jour un module
+différent était monté, l'écart se verrait au premier boot.
+
+## Lien S3↔coffre — SPI, le coffre en esclave
+
+Décidé le 2026-08-06. Le PCB était encore éditable ; le brochage ci-dessous est
+celui retenu côté coffre.
+
+| signal | coffre (P4) | S3 (clavier) |
+|---|---|---|
+| CS | GPIO7 | le seul pin libre restant |
+| MOSI | GPIO8 | MOSI de SPI2, déjà routé |
+| SCK | GPIO9 | SCK de SPI2, déjà routé |
+| MISO | GPIO10 | MISO de SPI2, déjà routé |
+
+C'est le **quatuor IOMUX natif de SPI2** sur P4 (`spi_slave.rst:157-162`, valeurs
+`esp32p4`), donc chemin direct sans matrice GPIO. Ça compte : le driver bascule
+tout le bus sur la matrice dès qu'un seul signal est hors IOMUX, et la matrice
+allonge le retard d'entrée de MISO — sur un faisceau entre deux cartes, cette
+marge n'est pas de trop.
+
+Côté S3, le coffre est un troisième client du bus SPI2 déjà partagé entre le
+NRF24 et l'e-ink (`KeSp_firmware`, `boards/kase_half_left/board.h:52-58,78-79`),
+d'où un coût d'un seul pin : le CS.
+
+- **Mode 0 obligatoire** (CPOL=0, CPHA=0), pas par préférence : c'est ce qui
+  garde SCK au repos à l'état bas, condition qui rend déjà sûr le `GPIO_NUM_45`
+  de strapping côté S3.
+- **GPIO35 interdit** — c'est le seul strap qui décide entre boot applicatif et
+  mode download (TRM table 11.2-2). GPIO34/36/37/38 restent libres et sans effet
+  sur le boot tant que GPIO35 est haut.
+- **Aucune ligne d'interruption** : les deux côtés sont pleins. Le coffre ne
+  peut jamais prendre la parole, seul le S3 initie.
+
+Sur le kit de dev, ces quatre pins sont pris (I2C du codec sur 7/8, I2S sur
+9/10) : le prototype devra câbler ailleurs, via la matrice GPIO. C'est la
+première divergence réelle de brochage entre les deux cartes.
 
 ## Ce qui ne se teste pas sur le kit de dev
 
