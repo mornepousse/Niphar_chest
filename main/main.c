@@ -13,6 +13,8 @@
 #include "esp_system.h"
 
 #include "board.h"
+#include "console/console.h"
+#include "storage/sd_card.h"
 
 static const char *TAG = "niphar";
 
@@ -36,4 +38,20 @@ void app_main(void)
              BOARD_SD_CLK, BOARD_SD_CMD,
              BOARD_SD_D0, BOARD_SD_D1, BOARD_SD_D2, BOARD_SD_D3,
              BOARD_SD_BUS_WIDTH);
+
+    /*
+     * Une carte absente n'est pas une erreur fatale : le coffre doit rester
+     * flashable et interrogeable sans elle. On journalise et on continue.
+     */
+    (void)sd_probe();
+
+    /*
+     * La console en dernier, et elle ne rend pas la main. Si son démarrage
+     * échoue, on le dit — c'est le seul moyen de diagnostic du coffre, perdre
+     * silencieusement serait pire que tout.
+     */
+    esp_err_t err = console_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "console indisponible : %s", esp_err_to_name(err));
+    }
 }
