@@ -91,6 +91,18 @@ n'est pas protégé de façon fiable. **Limite** : un écart non déclaré n'est
 protégé par rien et le prochain re-scaffold l'effacera — toute divergence
 délibérée se déclare au moment où on l'introduit.
 
+### Quand invoquer les agents du projet
+
+`.claude/agents/` contient cinq agents spécialisés au coffre :
+
+| Agent | Quand |
+|---|---|
+| `niphar-test-author` | écrire ou restructurer des tests ; monter le harnais hôte quand la première logique pure arrive |
+| `niphar-code-reviewer` | avant un merge vers `main` ou une release, et après tout code non trivial |
+| `niphar-debugger` | build cassé, test rouge, panic, disque absent côté hôte, carte SD muette |
+| `niphar-maintainer` | bump de dépendance, montée d'ESP-IDF, changement de partitions ou de sdkconfig |
+| `niphar-security-auditor` | ajout d'un handler d'input externe (MSC, descripteurs, parsing SD, futur CCID/FIDO), et avant release |
+
 ### Norme TDD — nouvelle logique pure
 Toute nouvelle fonction de logique pure (calcul d'adressage LBA, découpe de
 transferts, parsing d'en-têtes, machines à états) : test écrit **d'abord**,
