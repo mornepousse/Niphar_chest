@@ -1,0 +1,6 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf: ">=5.5"
+  # esp_tinyusb 2.x : c'est la branche qui gère le port haute vitesse du P4.
+  # Même version que KeSp_firmware, pour ne pas diverger entre les deux projets.
+  espressif/esp_tinyusb: "^2.0.1"

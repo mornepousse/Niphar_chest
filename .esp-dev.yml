@@ -1,0 +1,20 @@
+# Config esp-dev — coffre Niphar. Cible unique : le kit JC-ESP32P4-M3-DEV et le
+# coffre partagent le même pinout (docs/HARDWARE.md), donc un seul build.
+boards: [default]
+
+build:      "idf.py build"
+flash_app:  "idf.py -p {port} app-flash"
+flash_full: "idf.py -p {port} flash"
+
+# ATTENTION — ne PAS élargir ce glob à /dev/ttyACM*.
+# Sur cette machine, /dev/ttyACM0 est le clavier KaSe V2 Debug (cafe:4001) ; un
+# glob large finirait par le flasher. Ce chemin ne peut désigner qu'un
+# USB-Serial-JTAG Espressif, et vaudra aussi pour le coffre (le suffixe est la
+# MAC de la puce, d'où le joker).
+port_glob: "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00"
+
+# serial-mcp n'est pas installé sur ce poste : monitor bloquant via idf.py.
+monitor: idf
+baud: 115200
+
+idf_export: ~/esp/esp-idf/export.sh

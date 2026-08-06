@@ -1,0 +1,9 @@
+build/
+build_*/
+sdkconfig
+sdkconfig.old
+managed_components/
+.cache/
+compile_commands.json
+.vscode/
+*.swp

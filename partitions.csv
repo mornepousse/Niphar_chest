@@ -1,0 +1,16 @@
+# Coffre Niphar — table de partitions. Flash 16 Mo (module JC-ESP32P4-M3).
+#
+# Deux slots applicatifs dès maintenant : le coffre n'a pas de bouton reset ni
+# d'accès matériel au mode download, donc l'OTA est la seule voie de secours
+# logicielle envisageable. Redimensionner les partitions plus tard efface la
+# flash — autant réserver la place tout de suite.
+#
+# Pas de partition phy_init : l'ESP32-P4 n'a pas de radio.
+# Le reste de la flash (au-delà de 0x620000) est libre : y ajouter une
+# partition de données plus tard ne déplace aucun offset existant.
+#
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,     0x9000,   0x10000,
+otadata,  data, ota,     0x19000,  0x2000,
+factory,  app,  factory, 0x20000,  0x300000,
+ota_0,    app,  ota_0,   0x320000, 0x300000,

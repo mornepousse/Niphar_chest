@@ -1,0 +1,29 @@
+# Coffre Niphar — defaults, source de vérité pour sdkconfig.
+# Le sdkconfig généré n'est pas versionné : tout réglage durable vit ici.
+
+CONFIG_IDF_TARGET="esp32p4"
+
+# --- Console ---------------------------------------------------------------
+# Figée sur l'USB-Serial-JTAG. Le coffre n'a pas d'UART accessible : le CH340C
+# du kit de dev n'existe pas sur la carte finale. Ne pas basculer sur UART,
+# même « juste pour un test » — le code partirait avec.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# --- Flash et partitions ---------------------------------------------------
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# La flash intégrée au module est une Boya : sans ce pilote, ESP-IDF retombe sur
+# le driver générique et le signale à chaque boot.
+CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y
+
+# --- PSRAM -----------------------------------------------------------------
+# 32 Mo empilés dans le boîtier du module. Réglages repris tels quels de la
+# config validée par JCZN pour ce module (1-Demo/IDF-DEMO/NoDisplay/mp3_player/
+# sdkconfig.defaults) : mode hex, 200 MHz, cache L2 256 Ko en lignes de 128 o.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
