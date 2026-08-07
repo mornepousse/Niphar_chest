@@ -9,6 +9,7 @@ extern void test_msc_lba(void);
 extern void test_cr_crc16(void);
 extern void test_sec_confirm(void);
 extern void test_sec_store(void);
+extern void test_apdu(void);
 
 int main(void)
 {
@@ -18,6 +19,7 @@ int main(void)
     test_cr_crc16();
     test_sec_confirm();
     test_sec_store();
+    test_apdu();
     test_msc_lba();
 
     printf("\n=================================\n");
