@@ -88,6 +88,54 @@ static void test_malformed_truncated(void)
     TEST_ASSERT(!apdu_parse(b3, sizeof(b3), NULL), "NULL out rejected");
 }
 
+/*
+ * ---- lacune de couverture amont : troncature en format ÉTENDU ----
+ *
+ * test_malformed_truncated (ci-dessus, hérité de KeSp) ne teste la troncature
+ * qu'en format COURT (Lc sur 1 octet). Le format étendu (buf[4]==0x00,
+ * len>=7, Lc sur les octets 5-6) a son propre contrôle de troncature en
+ * apdu.c:37 — `if ((uint32_t)len < data_end) return false;` — et rien dans
+ * la suite portée ne l'exerce. Vérifié par mutation testing (tâche 4) :
+ * neutraliser cette ligne laisse les 377 assertions d'origine vertes.
+ *
+ * Pourquoi ça compte : `apdu_parse` décode des octets envoyés par un hôte
+ * USB non fiable. Sans ce contrôle, une APDU étendue qui annonce un Lc plus
+ * grand que ce que le tampon contient réellement voit quand même out->lc et
+ * out->data écrits (avec la valeur de Lc annoncée par l'attaquant, et un
+ * pointeur dans le tampon) avant que la fonction ne retombe sur le rejet
+ * générique de fin de fonction. Un appelant qui lirait out->lc octets depuis
+ * out->data sur la seule foi de ces champs — au lieu du booléen de retour —
+ * lirait au-delà du tampon fourni par l'hôte. Ces deux assertions vérifient
+ * que sur troncature étendue, out->lc et out->data restent à leur valeur
+ * memset(0) initiale et ne portent jamais la valeur annoncée par l'attaquant.
+ */
+static void test_extended_truncated_gap(void)
+{
+    apdu_t a;
+
+    /* Lc annoncé = 1000 (0x03E8), mais seulement 2 octets de données
+     * fournis après l'en-tête étendu de 7 octets : data_end = 7+1000 = 1007,
+     * len = 9. Largement tronqué. */
+    uint8_t big[] = {0x00, 0xA4, 0x04, 0x00, 0x00, 0x03, 0xE8, 0xFF, 0xFF};
+    TEST_ASSERT(!apdu_parse(big, sizeof(big), &a),
+                "extended Lc=1000, 2 bytes fournis : rejeté");
+    TEST_ASSERT_EQ(a.lc, 0,
+                "extended tronqué (large) : lc reste 0, ne fuit pas le Lc annoncé");
+    TEST_ASSERT(a.data == NULL,
+                "extended tronqué (large) : data reste NULL, pas de pointeur exposé");
+
+    /* Même chemin, à la limite : Lc=2 (data_end=9) mais len=8, tronqué d'un
+     * seul octet. Le contrôle doit mordre même à la marge, pas seulement sur
+     * une troncature grossière. */
+    uint8_t off_by_one[] = {0x00, 0xA4, 0x04, 0x00, 0x00, 0x00, 0x02, 0xFF};
+    TEST_ASSERT(!apdu_parse(off_by_one, sizeof(off_by_one), &a),
+                "extended Lc=2, 1 byte fourni sur 2 : rejeté (tronqué d'1 octet)");
+    TEST_ASSERT_EQ(a.lc, 0,
+                "extended tronqué (1 octet) : lc reste 0");
+    TEST_ASSERT(a.data == NULL,
+                "extended tronqué (1 octet) : data reste NULL");
+}
+
 void test_apdu(void)
 {
     TEST_SUITE("apdu parser");
@@ -97,4 +145,5 @@ void test_apdu(void)
     TEST_RUN(test_case2_le_only);
     TEST_RUN(test_case4_lc_le);
     TEST_RUN(test_malformed_truncated);
+    TEST_RUN(test_extended_truncated_gap);
 }
