@@ -57,12 +57,16 @@ extern "C" {
 /* ------------------------------------------------------------------------ */
 
 /*
- * MSC seul ici. Le CCID (OpenPGP, tâche 10) n'a rien à y activer : ce n'est
- * pas une classe standard de TinyUSB mais un pilote applicatif (security/
- * ccid.c, enregistré via usbd_app_driver_get_cb) — HID (FIDO, tâche 11)
- * suivra le même chemin. usb_mode.h garde MSC et CCID mutuellement
- * exclusifs, ce qui évite le budget d'endpoints IN qui a forcé
- * KeSp_firmware à faire pareil sur ses interfaces de sécurité.
+ * MSC ici. Le CCID (OpenPGP, tâche 10) n'a rien à y activer : ce n'est pas
+ * une classe standard de TinyUSB mais un pilote applicatif (security/ccid.c,
+ * enregistré via usbd_app_driver_get_cb). HID (OTP, tâche 11), en revanche,
+ * *est* une classe standard de TinyUSB — contrairement au commentaire qui
+ * était ici avant cette tâche, il ne suit pas le chemin du CCID : pas de
+ * pilote applicatif à force-linker, TinyUSB appelle directement les
+ * callbacks tud_hid_* (usb/mode_otp.c) une fois CFG_TUD_HID à 1. usb_mode.h
+ * garde MSC, CCID et HID mutuellement exclusifs, ce qui évite le budget
+ * d'endpoints IN qui a forcé KeSp_firmware à faire pareil sur ses
+ * interfaces de sécurité.
  */
 #define CFG_TUD_MSC                 1
 
@@ -82,7 +86,17 @@ extern "C" {
 #define CFG_TUD_MSC_EP_BUFSIZE      32768
 
 #define CFG_TUD_CDC                 0
-#define CFG_TUD_HID                 0
+
+/*
+ * HID porte le mode OTP (tâche 11) : la clé CR-HMAC, protocole Yubikey OTP
+ * (feature reports de 8 octets). CFG_TUD_HID_EP_BUFSIZE dimensionne le
+ * tampon de l'endpoint interrupt IN de la classe — jamais utilisée en
+ * pratique ici (voir usb/mode_otp.c), 64 octets est la valeur plancher
+ * confortable de TinyUSB, pas un budget mesuré comme pour le MSC ci-dessus.
+ */
+#define CFG_TUD_HID                 1
+#define CFG_TUD_HID_EP_BUFSIZE      64
+
 #define CFG_TUD_MIDI                0
 #define CFG_TUD_VENDOR              0
 #define CFG_TUD_AUDIO               0

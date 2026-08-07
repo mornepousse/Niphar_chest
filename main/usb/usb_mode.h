@@ -35,9 +35,8 @@ esp_err_t usb_mode_init(void);
 
 /*
  * Bascule vers `mode`, avec ré-énumération côté hôte. Si `mode` est déjà le
- * mode courant, ne fait rien et renvoie ESP_OK. USB_MODE_PGP et USB_MODE_OTP
- * renvoient ESP_ERR_NOT_SUPPORTED tant que leurs descripteurs n'existent pas
- * (tâches 10 et 11).
+ * mode courant, ne fait rien et renvoie ESP_OK. Les quatre modes (NONE,
+ * STORAGE, PGP, OTP) sont tous branchés depuis la tâche 11.
  */
 esp_err_t usb_mode_set(usb_mode_t mode);
 

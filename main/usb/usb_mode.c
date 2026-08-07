@@ -2,6 +2,7 @@
 
 #include "esp_log.h"
 
+#include "usb/mode_otp.h"
 #include "usb/mode_pgp.h"
 #include "usb/mode_storage.h"
 #include "usb/msc_disk.h"
@@ -32,10 +33,6 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         return ESP_OK;
     }
 
-    if (mode == USB_MODE_OTP) {
-        /* Descripteurs pas encore écrits — tâche 11. */
-        return ESP_ERR_NOT_SUPPORTED;
-    }
     if (mode >= USB_MODE_COUNT) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -73,13 +70,20 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         strings = mode_storage_strings(&string_count);
         fs_cfg = mode_storage_fs_config();
         hs_cfg = mode_storage_hs_config();
-    } else {
+    } else if (mode == USB_MODE_PGP) {
         /* USB_MODE_PGP : la carte OpenPGP sur CCID (tâche 10). Rien à
          * initialiser ici — mode_pgp_fs_config()/hs_config() force le
          * démarrage du worker CCID au passage, voir mode_pgp.c. */
         strings = mode_pgp_strings(&string_count);
         fs_cfg = mode_pgp_fs_config();
         hs_cfg = mode_pgp_hs_config();
+    } else {
+        /* USB_MODE_OTP : la clé CR-HMAC sur HID (tâche 11). Rien à
+         * initialiser ici non plus — mode_otp_fs_config()/hs_config() câble
+         * les hooks otp_proto au passage, voir mode_otp.c. */
+        strings = mode_otp_strings(&string_count);
+        fs_cfg = mode_otp_fs_config();
+        hs_cfg = mode_otp_hs_config();
     }
 
     err = usb_device_install(fs_cfg, hs_cfg, strings, string_count);
