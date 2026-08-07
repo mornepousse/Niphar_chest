@@ -133,6 +133,21 @@ const char **mode_pgp_strings(int *out_count)
 }
 
 /*
+ * Symétrique de mode_pgp_data_load() côté sortie de mode. Le fichier reste
+ * mince : toute la mécanique est dans ccid_shutdown() (security/ccid.c), ce
+ * module ne fait que la relier à usb_mode.c, qui ne connaît que les modes.
+ *
+ * Ce n'est pas un détail d'ordonnancement : appelée après
+ * usb_device_uninstall(), elle arriverait trop tard — la file de tud_task
+ * serait déjà détruite, et c'est précisément le créneau que la revue finale a
+ * relevé (BLOQUANT 1).
+ */
+void mode_pgp_stop(void)
+{
+    ccid_shutdown();
+}
+
+/*
  * openpgp_do_init()/openpgp_card_load() ne sont déclarées dans aucun en-tête
  * (même chose en amont KeSp — voir KeSp_firmware/main/main.c) : elles
  * s'appellent par prototype local, comme là-bas.

@@ -47,12 +47,56 @@
  * message à 0x00 au lieu de la vraie réponse). Trouvé en validant `gpg
  * --card-status` (tâche 12) — le mode PGP énumérait correctement mais aucun
  * échange APDU n'aboutissait jamais avant ce correctif.
+ *
+ * DIVERGENCE (Niphar_chest, revue finale — BLOQUANT 1) : ccid_drv_deinit()
+ * n'est plus un no-op, et ccid_shutdown() est ajouté. C'est un BUG DE L'AMONT
+ * révélé par notre usage, pas un choix de portage : chez KeSp, TinyUSB est
+ * installé une fois et jamais démonté, donc un .deinit vide est inoffensif.
+ * Le coffre, lui, désinstalle et réinstalle TinyUSB à chaque bascule de mode
+ * (usb_mode.c). Or tud_deinit() détruit la file de tud_task
+ * (usbd.c: osal_queue_delete(_usbd_q); _usbd_q = NULL), pendant que la tâche
+ * ccid_worker — créée une seule fois et jamais détruite — peut être bloquée
+ * jusqu'à 15 s dans dongle_confirm(), à poster un WTX toutes les 1,5 s via
+ * usbd_defer_func(). osal_queue_send() sur une file NULL fait échouer un
+ * configASSERT() de FreeRTOS, et un callback qui passerait quand même
+ * écrirait sur un endpoint périmé, réattribué au MSC ou au HID après
+ * réinstallation. Trois pièces au correctif :
+ *   1. ccid_shutdown(), appelé par mode_pgp_stop() AVANT usb_device_uninstall(),
+ *      pose s_shutdown puis attend que le worker redevienne inactif ;
+ *   2. ccid_defer(), seule porte vers usbd_defer_func(), sérialise le test de
+ *      s_shutdown et l'envoi sous s_defer_lock — sans ce verrou le test et
+ *      l'appel seraient séparés par une fenêtre où la file peut disparaître.
+ *      Zéroer s_ep_in ne suffit PAS : l'appel de dongle_confirm() n'est
+ *      conditionné par rien, et le crash est dans osal_queue_send(), en amont
+ *      de tout usage d'endpoint ;
+ *   3. ccid_drv_deinit() fait désormais ce que fait ccid_drv_reset() (endpoints
+ *      et état à zéro), pour que le garde `s_ep_in == 0` des deux callbacks
+ *      cesse d'être un faux filet après un démontage.
+ * À REMONTER À L'AMONT KeSp : le .deinit no-op est un piège dormant tant que
+ * personne ne démonte la pile.
+ *
+ * DIVERGENCE (Niphar_chest, revue finale — BLOQUANT 2) : le seuil de ZLP de
+ * ccid_drv_xfer() ne compare plus à 64 en dur mais à s_ep_in_mps, le
+ * wMaxPacketSize réellement négocié, relevé dans le descripteur d'endpoint à
+ * l'ouverture. Bug de l'amont lui aussi : chez KeSp le dongle n'énumère qu'en
+ * pleine vitesse, où 64 EST le MPS, donc la constante était juste par
+ * accident. Le coffre négocie la haute vitesse et mode_pgp.c déclare 512 —
+ * une réponse de 64, 128, 192 ou 256 octets est alors un paquet COURT que le
+ * code prenait pour un multiple exact du MPS : il mettait une ZLP en file et
+ * sortait sans réarmer OUT ni remettre s_busy/s_final_queued, figeant le pipe
+ * CCID jusqu'à la bascule de mode suivante. L'hôte choisit ces longueurs
+ * (total = 10 + réponse APDU, donc 54/118/182/246 octets), et les DO OpenPGP
+ * inscriptibles — URL, login data, DO privés — lui permettent de les écrire
+ * puis de les relire : déni de service déclenchable depuis l'hôte.
+ * À REMONTER À L'AMONT KeSp, avec le wMaxPacketSize haute vitesse (tâche 12).
  */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_timer.h"
 #include "device/usbd_pvt.h"   /* usbd_class_driver_t, usbd_*, tu_desc_* */
+#include "ccid.h"
+#include "ccid_zlp.h"
 #include "openpgp_card.h"
 #include "openpgp_crypto.h"
 #include "sec_confirm.h"
@@ -122,6 +166,14 @@ static const uint8_t s_atr[] = {
 static uint8_t s_ep_out;   /* bulk OUT endpoint addr (host -> device) */
 static uint8_t s_ep_in;    /* bulk IN  endpoint addr (device -> host) */
 
+/* wMaxPacketSize du point IN, relevé dans le descripteur que TinyUSB vient de
+ * parser — donc celui de la vitesse RÉELLEMENT négociée (64 en pleine vitesse,
+ * 512 en haute vitesse ; voir mode_pgp.c). 0 tant qu'aucune interface n'est
+ * ouverte. C'est la seule référence honnête pour décider d'une ZLP : une
+ * constante en dur est fausse à l'une des deux vitesses. Voir la divergence
+ * BLOQUANT 2 en tête de fichier. */
+static uint16_t s_ep_in_mps;
+
 /* ------------------------------------------------------------------ */
 /* APDU buffers (static, no malloc)                                    */
 /* ------------------------------------------------------------------ */
@@ -142,6 +194,20 @@ CFG_TUSB_MEM_ALIGN static uint8_t s_wtx_buf[CCID_HDR_LEN];
 static TaskHandle_t      s_worker;
 static SemaphoreHandle_t s_msg_ready;     /* binary: one XfrBlock pending    */
 static volatile bool     s_busy;          /* true while XfrBlock is in flight */
+
+/* Démontage de la pile USB en cours : plus aucun callback ne doit être posté
+ * sur la file de tud_task, et dongle_confirm() doit rendre la main tout de
+ * suite au lieu d'attendre ses 15 s. Voir la divergence BLOQUANT 1. */
+static volatile bool     s_shutdown;
+
+/* Sérialise « tester s_shutdown » et « poster le callback » vis-à-vis de
+ * ccid_shutdown(), qui pose le drapeau sous ce même verrou. Créé en même temps
+ * que le worker ; NULL avant ccid_init(). */
+static SemaphoreHandle_t s_defer_lock;
+
+/* true tant que le worker est DANS ccid_process_xfrblock() (applet + attente de
+ * confirmation incluses). Lu par ccid_shutdown() pour attendre qu'il ressorte. */
+static volatile bool     s_worker_active;
 
 /* XfrBlock context saved by ccid_dispatch for the worker to echo back. */
 static uint8_t           s_cur_slot;
@@ -198,6 +264,29 @@ static uint16_t ccid_build_slotstatus(uint8_t slot, uint8_t seq)
 /* These run on the tud_task; only they may call usbd_edpt_xfer.       */
 /* ------------------------------------------------------------------ */
 
+/* Unique porte vers usbd_defer_func() (divergence BLOQUANT 1).
+ *
+ * Le verrou n'est pas décoratif : ccid_shutdown() pose s_shutdown en le
+ * tenant, et il tourne AVANT tusb_deinit(). Donc de deux choses l'une — soit
+ * le callback est posté avant, et _usbd_q existe encore (il sera exécuté, ou
+ * détruit avec la file, les deux sont sûrs) ; soit s_shutdown est déjà vrai et
+ * rien n'est posté. Un simple `if (!s_shutdown) usbd_defer_func(...)` laisserait
+ * entre les deux une fenêtre où osal_queue_send() écrit dans _usbd_q == NULL,
+ * ce qui fait tomber un configASSERT() de FreeRTOS.
+ *
+ * Appelé aussi bien depuis ccid_worker que depuis tud_task (le ré-armement de
+ * ccid_send_final_cb) : ccid_shutdown() ne fait qu'écrire un booléen sous ce
+ * verrou, sans jamais attendre quoi que ce soit en le tenant, donc pas
+ * d'interblocage possible. */
+static void ccid_defer(osal_task_func_t func, void *param)
+{
+    if (s_defer_lock == NULL) return;
+    xSemaphoreTake(s_defer_lock, portMAX_DELAY);
+    if (!s_shutdown)
+        usbd_defer_func(func, param, false);
+    xSemaphoreGive(s_defer_lock);
+}
+
 /* Send a WTX (time extension) frame to keep scdaemon waiting.
  * Silently skipped if the IN endpoint is already busy (e.g. a previous
  * WTX or the final response is still in flight). */
@@ -243,7 +332,7 @@ static void ccid_send_final_cb(void *param)
     }
     if (usbd_edpt_busy(s_rhport, s_ep_in)) {
         if (retries < 200)
-            usbd_defer_func(ccid_send_final_cb, (void *)(retries + 1), false);
+            ccid_defer(ccid_send_final_cb, (void *)(retries + 1));
         else
             ESP_LOGE(TAG, "final send abandoned after 200 retries");
         return;
@@ -293,8 +382,17 @@ static void ccid_process_xfrblock(void)
 
     /* s_in_buf and s_resp_len are written by the worker BEFORE usbd_defer_func().
      * The FreeRTOS queue inside usbd_defer_func provides a full memory barrier
-     * (SMP spinlock), guaranteeing visibility from tud_task. Do not bypass it. */
-    usbd_defer_func(ccid_send_final_cb, NULL, false);
+     * (SMP spinlock), guaranteeing visibility from tud_task. Do not bypass it.
+     *
+     * ccid_defer() plutôt que usbd_defer_func() : si le démontage a commencé, la
+     * réponse n'a plus de destinataire et la file n'a peut-être plus d'existence
+     * (divergence BLOQUANT 1). On libère alors s_busy nous-mêmes, sinon le
+     * prochain passage en mode PGP repartirait avec un slot occupé. */
+    if (s_shutdown) {
+        s_busy = false;
+        return;
+    }
+    ccid_defer(ccid_send_final_cb, NULL);
 }
 
 /* Runs indefinitely; woken by a binary semaphore each time a
@@ -304,7 +402,11 @@ static void ccid_worker(void *arg)
     (void)arg;
     for (;;) {
         xSemaphoreTake(s_msg_ready, portMAX_DELAY);
+        /* Encadre TOUT le traitement : c'est ce que ccid_shutdown() attend
+         * avant de laisser démonter TinyUSB. */
+        s_worker_active = true;
         ccid_process_xfrblock();
+        s_worker_active = false;
     }
 }
 
@@ -335,6 +437,18 @@ static int dongle_confirm(void)
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(20));
+
+        /* Démontage de la pile USB pendant l'attente de confirmation : refuser
+         * tout de suite. Attendre les 15 s restantes ferait patienter d'autant
+         * la bascule de mode, et surtout laisserait tourner une boucle qui
+         * poste des WTX sur une file que tud_deinit() est en train de détruire
+         * (divergence BLOQUANT 1). Refuser est le comportement honnête : la
+         * confirmation physique n'a pas eu lieu. */
+        if (s_shutdown) {
+            sec_confirm_reset();
+            return 2;
+        }
+
         now = (uint32_t)(esp_timer_get_time() / 1000);
         if ((int32_t)(now - deadline) >= 0) {
             /* Discard any button press that raced the outer deadline so a stale
@@ -350,7 +464,7 @@ static int dongle_confirm(void)
             return 2;
 
         if (now - last_wtx >= CCID_WTX_PERIOD_MS) {
-            usbd_defer_func(ccid_send_wtx_cb, NULL, false);
+            ccid_defer(ccid_send_wtx_cb, NULL);
             last_wtx = now;
         }
     }
@@ -469,14 +583,28 @@ static void ccid_dispatch(uint8_t rhport, uint32_t xferred)
 /* ------------------------------------------------------------------ */
 static void ccid_drv_init(void)
 {
-    s_ep_out = 0;
-    s_ep_in  = 0;
+    s_ep_out    = 0;
+    s_ep_in     = 0;
+    s_ep_in_mps = 0;
+    /* Nouvelle pile USB installée : la fenêtre de démontage est refermée, les
+     * callbacks peuvent de nouveau être postés (divergence BLOQUANT 1). */
+    s_shutdown  = false;
     /* Wire the real Phase-1 hooks (P-256 sign + sec_confirm UIF gate). */
     openpgp_card_init(&s_dongle_hooks);
 }
 
+/* Appelé par tud_deinit() juste avant la destruction de la file de tud_task.
+ * L'amont KeSp renvoie true sans rien faire — inoffensif chez eux, qui ne
+ * démontent jamais ; ici ça laissait s_ep_in pointer un endpoint périmé, que
+ * la réinstallation réattribue au MSC ou au HID. Même remise à zéro que
+ * ccid_drv_reset(). Voir la divergence BLOQUANT 1 en tête de fichier. */
 static bool ccid_drv_deinit(void)
 {
+    s_ep_out       = 0;
+    s_ep_in        = 0;
+    s_ep_in_mps    = 0;
+    s_busy         = false;
+    s_final_queued = false;
     return true;
 }
 
@@ -485,6 +613,7 @@ static void ccid_drv_reset(uint8_t rhport)
     (void)rhport;
     s_ep_out       = 0;
     s_ep_in        = 0;
+    s_ep_in_mps    = 0;
     s_busy         = false;
     s_final_queued = false;
 }
@@ -503,11 +632,27 @@ static uint16_t ccid_drv_open(uint8_t rhport,
     while (tu_desc_type(p_desc) != TUSB_DESC_ENDPOINT)
         p_desc = tu_desc_next(p_desc);
 
+    uint8_t const *p_ep = p_desc;   /* premier des deux descripteurs d'endpoint */
     uint8_t ep_out = 0, ep_in = 0;
     TU_ASSERT(usbd_open_edpt_pair(rhport, p_desc, 2, TUSB_XFER_BULK,
                                   &ep_out, &ep_in), 0);
     s_ep_out = ep_out;
     s_ep_in  = ep_in;
+
+    /* Relève le wMaxPacketSize du point IN dans le descripteur que TinyUSB
+     * vient de nous passer : c'est celui de la configuration rendue par
+     * tud_descriptor_configuration_cb(), donc celui de la vitesse réellement
+     * négociée. Seule référence valable pour décider d'une ZLP — voir la
+     * divergence BLOQUANT 2 en tête de fichier. */
+    s_ep_in_mps = 0;
+    for (int i = 0; i < 2; i++) {
+        tusb_desc_endpoint_t const *ep = (tusb_desc_endpoint_t const *)p_ep;
+        if (ep->bEndpointAddress == s_ep_in)
+            s_ep_in_mps = tu_edpt_packet_size(ep);
+        p_ep = tu_desc_next(p_ep);
+    }
+    TU_ASSERT(s_ep_in_mps != 0, 0);
+    ESP_LOGI(TAG, "interface ouverte, MPS IN = %u o", (unsigned)s_ep_in_mps);
 
     /* Prime the first bulk-OUT read. */
     TU_ASSERT(usbd_edpt_xfer(rhport, s_ep_out, s_out_buf, sizeof(s_out_buf), false), 0);
@@ -545,10 +690,17 @@ static bool ccid_drv_xfer(uint8_t rhport, uint8_t ep_addr,
              * multiple of MPS does not carry an implicit "end-of-transfer"
              * marker.  The host's libusb bulk read (length = dwMaxCCIDMessageLength
              * = 271) only terminates on a short packet OR a ZLP.  If we just
-             * delivered N×64 bytes with no short last packet, send a ZLP now
+             * delivered N×MPS bytes with no short last packet, send a ZLP now
              * before clearing state and re-priming OUT.  xferred_bytes == 0
-             * means the ZLP itself just completed — fall through to re-prime. */
-            if (xferred_bytes > 0u && (xferred_bytes % 64u) == 0u) {
+             * means the ZLP itself just completed — fall through to re-prime.
+             *
+             * La décision est dans ccid_zlp.h — seul morceau de logique pure du
+             * fichier, donc le seul testable sur l'hôte (test/test_ccid_zlp.c).
+             * Elle compare au MPS RÉELLEMENT négocié, PAS à une constante : à
+             * 512 (haute vitesse), 64/128/192/256 sont des paquets COURTS, et
+             * les traiter comme des multiples du MPS figeait le pipe. Voir la
+             * divergence BLOQUANT 2 en tête de fichier. */
+            if (ccid_needs_zlp(xferred_bytes, s_ep_in_mps)) {
                 if (!usbd_edpt_xfer(rhport, s_ep_in, NULL, 0, false)) {
                     ESP_LOGE(TAG, "ZLP send failed — aborting, re-priming OUT");
                     /* ZLP failed: clear state and recover so OUT is not wedged. */
@@ -621,10 +773,61 @@ void ccid_init(void)
     s_msg_ready = xSemaphoreCreateBinary();
     configASSERT(s_msg_ready);
 
+    /* Créé AVANT le worker : ccid_defer() le déréférence dès le premier
+     * message, et un ccid_shutdown() très précoce doit déjà pouvoir le
+     * prendre. */
+    s_defer_lock = xSemaphoreCreateMutex();
+    configASSERT(s_defer_lock);
+
     BaseType_t rc = xTaskCreate(ccid_worker, "ccid", 6144, NULL, 5, &s_worker);
     configASSERT(rc == pdPASS);
 
     ESP_LOGI(TAG, "CCID class driver registered (worker task running)");
+}
+
+/* Combien de temps ccid_shutdown() laisse au worker pour ressortir. Large :
+ * dongle_confirm() rend la main en moins de 20 ms une fois s_shutdown posé,
+ * et le pire cas réel est une signature ECDSA en cours (quelques dizaines de
+ * ms). Au-delà, on journalise et on continue — refuser la bascule laisserait
+ * le coffre coincé dans un mode dont le worker ne sort pas. */
+#define CCID_SHUTDOWN_WAIT_MS   2000u
+#define CCID_SHUTDOWN_POLL_MS     10u
+
+void ccid_shutdown(void)
+{
+    if (s_defer_lock == NULL) return;   /* ccid_init() jamais appelé */
+
+    /* 1. Fermer la porte. Sous le verrou : un ccid_defer() concurrent est soit
+     *    déjà passé (et la file existe encore, on est avant tusb_deinit()),
+     *    soit il verra le drapeau. */
+    xSemaphoreTake(s_defer_lock, portMAX_DELAY);
+    s_shutdown = true;
+    xSemaphoreGive(s_defer_lock);
+
+    /* 2. Attendre que le worker ressorte de ccid_process_xfrblock(), et que
+     *    plus aucun message ne soit en attente de traitement. On regarde aussi
+     *    le compte du sémaphore : un XfrBlock donné par tud_task juste avant
+     *    n'a pas encore mis s_worker_active à true.
+     *
+     *    Reste une fenêtre de quelques instructions entre le take du sémaphore
+     *    et la pose de s_worker_active. Elle est SANS conséquence : le verrou
+     *    de ccid_defer() garantit déjà qu'aucun callback ne part après ce
+     *    point, et le worker ne toucherait alors qu'à de la RAM applicative. */
+    uint32_t waited = 0;
+    while ((s_worker_active || uxSemaphoreGetCount(s_msg_ready) != 0)
+           && waited < CCID_SHUTDOWN_WAIT_MS) {
+        vTaskDelay(pdMS_TO_TICKS(CCID_SHUTDOWN_POLL_MS));
+        waited += CCID_SHUTDOWN_POLL_MS;
+    }
+    if (s_worker_active)
+        ESP_LOGE(TAG, "worker toujours actif après %u ms — démontage quand même",
+                 (unsigned)CCID_SHUTDOWN_WAIT_MS);
+
+    /* 3. L'état de transfert ne survit pas au mode. ccid_drv_deinit() le
+     *    refera, mais il ne tourne que si TinyUSB était bien initialisé. */
+    s_busy         = false;
+    s_final_queued = false;
+    ESP_LOGI(TAG, "worker CCID au repos (attente %u ms)", (unsigned)waited);
 }
 
 /* ------------------------------------------------------------------ */

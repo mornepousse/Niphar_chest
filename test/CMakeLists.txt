@@ -22,6 +22,7 @@ add_executable(test_runner
     test_openpgp_card.c
     test_sec_gate.c
     test_usb_mode.c
+    test_ccid_zlp.c
     ../main/link/link_proto.c
     ../main/sys/cr_crc16.c
     ../main/security/sec_confirm.c

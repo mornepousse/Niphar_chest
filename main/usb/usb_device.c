@@ -162,6 +162,18 @@ uint8_t const *tud_descriptor_other_speed_configuration_cb(uint8_t index)
     }
     memcpy(buf, src, len);
     buf[1] = TUSB_DESC_OTHER_SPEED_CONFIG;
+    /*
+     * wTotalLength doit décrire le tampon RENDU, pas la source. Borner le
+     * memcpy ne suffit pas : TinyUSB relit ce champ dans le tampon qu'on lui
+     * rend et transfère cette longueur-là (usbd.c, process_get_descriptor).
+     * Avec la valeur source laissée en place, une troncature ferait lire
+     * au-delà des OTHER_SPEED_CFG_MAX octets de buf et enverrait le
+     * débordement de .bss à l'hôte. Inatteignable avec les modes actuels
+     * (86 octets au plus) — c'est justement pourquoi ça doit être écrit ici et
+     * pas le jour où un mode grossira.
+     */
+    buf[2] = (uint8_t)(len & 0xFF);
+    buf[3] = (uint8_t)((len >> 8) & 0xFF);
     return buf;
 }
 
@@ -342,19 +354,51 @@ esp_err_t usb_device_uninstall(void)
         return ESP_OK;   /* déjà désinstallé — idempotent, voir usb_device.h */
     }
 
-    /* Détache explicitement du bus avant de toucher au reste : l'hôte doit
-     * voir une vraie déconnexion, pas un silence qu'il pourrait attribuer à
-     * un périphérique figé. */
-    if (tusb_inited()) {
-        tud_disconnect();
-    }
-
+    /*
+     * La tâche USB s'arrête AVANT tout le reste.
+     *
+     * usbd n'est pas réentrant, et tud_disconnect() comme tusb_deinit()
+     * touchent les mêmes registres DWC2 que tud_task_ext(). Les appeler depuis
+     * la tâche appelante pendant que usb_task tourne encore, c'est deux
+     * contextes dans la même machine à états. L'ordre est donc : sortir la
+     * boucle, attendre qu'elle ait vraiment rendu la main, puis détacher.
+     */
     if (s_task != NULL) {
-        s_task_run = false;
+        /*
+         * Purge du sémaphore avant d'attendre : il est binaire et n'est jamais
+         * consommé quand un `give` arrive après l'expiration du take. Ce jeton
+         * resté en réserve pré-armerait la désinstallation SUIVANTE, qui
+         * rendrait la main immédiatement alors que sa tâche n'est pas sortie.
+         */
         if (s_task_done != NULL) {
-            xSemaphoreTake(s_task_done, pdMS_TO_TICKS(1000));
+            (void)xSemaphoreTake(s_task_done, 0);
+        }
+
+        s_task_run = false;
+
+        /* Marge large devant le tud_task_ext(100) de la boucle. */
+        BaseType_t done = pdFALSE;
+        if (s_task_done != NULL) {
+            done = xSemaphoreTake(s_task_done, pdMS_TO_TICKS(1000));
+        }
+        if (done != pdTRUE) {
+            /*
+             * Ne PAS enchaîner : tusb_deinit() et usb_del_phy() sous une tâche
+             * encore vivante, c'est une utilisation après libération. On rend
+             * l'échec, s_task reste posé — une nouvelle tentative réattendra le
+             * sémaphore, que la tâche finira par donner en sortant.
+             */
+            ESP_LOGE(TAG, "la tâche USB n'est pas sortie en 1 s — désinstallation refusée");
+            return ESP_ERR_TIMEOUT;
         }
         s_task = NULL;
+    }
+
+    /* Détache du bus : l'hôte doit voir une vraie déconnexion, pas un silence
+     * qu'il pourrait attribuer à un périphérique figé. Plus personne ne tourne
+     * dans tud_task à ce point. */
+    if (tusb_inited()) {
+        tud_disconnect();
     }
 
     tusb_deinit(TUD_OPT_RHPORT);

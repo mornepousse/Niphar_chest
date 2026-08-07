@@ -14,11 +14,25 @@ static const char *TAG = "usb_mode";
  * l'écrire — voir usb_mode.h sur pourquoi c'est délibéré. */
 static usb_mode_t s_mode;
 
+/*
+ * s_mode décrit-il vraiment ce qui est installé ?
+ *
+ * Faux dès qu'une bascule échoue en cours de route : la pile a été démontée,
+ * et ce qui devait la remplacer n'est pas en place. Sans ce drapeau, le
+ * court-circuit « mode déjà courant » plus bas renverrait ESP_OK sans rien
+ * installer, et le coffre resterait sans fonction USB en prétendant l'avoir.
+ * Une bascule vers le même mode doit donc rester possible tant que l'état
+ * n'est pas certain. Vrai après usb_mode_init() : rien n'est installé, et
+ * c'est exactement ce que dit USB_MODE_NONE.
+ */
+static bool s_mode_known;
+
 esp_err_t usb_mode_init(void)
 {
     /* Rien à installer : au démarrage rien n'est encore branché côté
      * matériel, donc il n'y a rien à désinstaller non plus. */
     s_mode = USB_MODE_NONE;
+    s_mode_known = true;
     return ESP_OK;
 }
 
@@ -29,7 +43,7 @@ usb_mode_t usb_mode_get(void)
 
 esp_err_t usb_mode_set(usb_mode_t mode)
 {
-    if (mode == s_mode) {
+    if (mode == s_mode && s_mode_known) {
         return ESP_OK;
     }
 
@@ -40,6 +54,22 @@ esp_err_t usb_mode_set(usb_mode_t mode)
     ESP_LOGI(TAG, "mode USB : %s -> %s", usb_mode_name(s_mode), usb_mode_name(mode));
 
     /*
+     * Le worker CCID d'abord, la pile USB ensuite. Il survit à tous les
+     * démontages (créé une fois, jamais détruit) et poste des callbacks sur la
+     * file de tud_task pendant qu'il attend une confirmation physique —
+     * jusqu'à 15 s. tud_deinit() détruit cette file : le laisser tourner
+     * pendant la désinstallation, c'est écrire dans une file libérée. Voir la
+     * divergence BLOQUANT 1 en tête de main/security/ccid.c.
+     */
+    if (s_mode == USB_MODE_PGP) {
+        mode_pgp_stop();
+    }
+
+    /* À partir d'ici la pile est démontée ou en train de l'être : plus rien
+     * n'est garanti tant qu'une installation n'a pas réussi. */
+    s_mode_known = false;
+
+    /*
      * Toujours désinstaller avant de réinstaller, même vers USB_MODE_NONE :
      * c'est le seul moyen honnête de faire voir à l'hôte une vraie
      * déconnexion avant la nouvelle énumération (ou l'absence de). C'est
@@ -48,12 +78,17 @@ esp_err_t usb_mode_set(usb_mode_t mode)
      */
     esp_err_t err = usb_device_uninstall();
     if (err != ESP_OK) {
+        /* Le mode précédent n'est plus servi de façon fiable — le dire.
+         * s_mode_known reste faux, donc une nouvelle demande du même mode
+         * n'est pas court-circuitée et retentera la désinstallation. */
         ESP_LOGE(TAG, "désinstallation avant bascule : %s", esp_err_to_name(err));
+        s_mode = USB_MODE_NONE;
         return err;
     }
 
     if (mode == USB_MODE_NONE) {
         s_mode = USB_MODE_NONE;
+        s_mode_known = true;
         return ESP_OK;
     }
 
@@ -65,6 +100,12 @@ esp_err_t usb_mode_set(usb_mode_t mode)
     if (mode == USB_MODE_STORAGE) {
         err = msc_disk_init();
         if (err != ESP_OK) {
+            /* La désinstallation, elle, a réussi : plus aucune fonction n'est
+             * exposée. Laisser s_mode sur l'ancienne valeur ferait mentir
+             * usb_mode_get() ET court-circuiter la prochaine demande de ce
+             * même mode, qui renverrait ESP_OK sans rien installer. */
+            ESP_LOGE(TAG, "init du disque : %s", esp_err_to_name(err));
+            s_mode = USB_MODE_NONE;
             return err;
         }
         strings = mode_storage_strings(&string_count);
@@ -88,6 +129,10 @@ esp_err_t usb_mode_set(usb_mode_t mode)
 
     err = usb_device_install(fs_cfg, hs_cfg, strings, string_count);
     if (err != ESP_OK) {
+        /* Même raison qu'au-dessus : rien n'est installé, il faut le dire. */
+        ESP_LOGE(TAG, "installation du mode %s : %s",
+                 usb_mode_name(mode), esp_err_to_name(err));
+        s_mode = USB_MODE_NONE;
         return err;
     }
 
@@ -103,5 +148,6 @@ esp_err_t usb_mode_set(usb_mode_t mode)
     }
 
     s_mode = mode;
+    s_mode_known = true;
     return ESP_OK;
 }

@@ -37,3 +37,12 @@ const char **mode_pgp_strings(int *out_count);
  * mode_pgp.c pour le choix et l'exigence d'ordre vis-à-vis de ccid_drv_init().
  */
 void mode_pgp_data_load(void);
+
+/*
+ * Met le worker CCID au repos. À appeler par usb_mode.c juste AVANT
+ * usb_device_uninstall() quand on quitte USB_MODE_PGP — jamais après : le
+ * worker poste des callbacks sur la file de tud_task, que tud_deinit()
+ * détruit. Voir ccid_shutdown() dans security/ccid.h et la divergence
+ * BLOQUANT 1 en tête de security/ccid.c.
+ */
+void mode_pgp_stop(void);

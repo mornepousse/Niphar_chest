@@ -22,3 +22,20 @@
  * object into the link. See the comment on ccid_init() in ccid.c. Do not
  * remove the call. */
 void ccid_init(void);
+
+/*
+ * ccid_shutdown() — à appeler AVANT tout démontage de TinyUSB, jamais après.
+ *
+ * Divergence propre au coffre (voir la divergence BLOQUANT 1 en tête de
+ * ccid.c) : chez KeSp la pile USB est installée une fois pour toutes, ici elle
+ * est démontée à chaque bascule de mode. La tâche ccid_worker, elle, est créée
+ * une seule fois et survit à tout ; pendant l'attente de confirmation physique
+ * elle poste un WTX toutes les 1,5 s sur la file de tud_task, que tud_deinit()
+ * détruit. Cette fonction ferme cette porte, puis attend que le worker soit au
+ * repos.
+ *
+ * Idempotente, et sans effet si ccid_init() n'a jamais tourné. Bloque au plus
+ * ~2 s ; en pratique quelques dizaines de millisecondes. Une confirmation en
+ * cours est REFUSÉE — aucun geste physique n'a eu lieu.
+ */
+void ccid_shutdown(void);
