@@ -108,7 +108,7 @@ Sur le kit de dev, GPIO7-11 sont pris (I2C du codec sur 7/8, I2S sur 9/10,
 ampli sur 11) : le lien n'y est pas câblable. C'est la première divergence
 réelle de brochage entre les deux cartes, d'où le découpage `boards/`.
 
-## ⚠ Point ouvert : l'hôte peut forcer le mode download
+## L’hôte peut forcer le mode download — tranché
 
 Le contrat dit « pas d'accès au mode download **matériel** », ce qui est exact —
 et masque une voie logicielle qui, elle, est ouverte à l'hôte :
@@ -130,15 +130,35 @@ le MSC, et n'importe quel logiciel de l'hôte peut de toute façon reflasher.
 **Demain, ça invalide une hypothèse.** Le modèle hérité de KeSp accepte des clés
 en clair en NVS *parce que* leur extraction demanderait un accès physique. Ici,
 du logiciel hôte entre en download boot et dump la flash entière, NVS comprise.
-Il faut trancher **avant** que la première clé PGP/FIDO n'y atterrisse :
 
-- ouvrir JP1/JP2 en production — coupe l'USB-Serial-JTAG de l'hôte, donc aussi
-  la seule voie de reflash du coffre ;
-- brûler `EFUSE_DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE` + Secure Boot v2 + Flash
-  Encryption — même renoncement, et irréversible ;
-- accepter le risque explicitement, et l'écrire ici.
+### Tranché le 2026-08-07 : les jumpers JP1/JP2, retirés en production
 
-Ne pas décider revient à choisir la troisième option sans le dire.
+**Décision de Mae.** Le coffre part sans ses jumpers JP1/JP2. L'USB-Serial-JTAG
+est alors physiquement hors de portée de l'hôte, donc le déclencheur du mode
+download aussi.
+
+Ce qui rend cette solution meilleure que les deux autres envisagées (brûler
+`EFUSE_DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE` + Secure Boot, ou accepter le risque) :
+**le jumper est à la fois la frontière de sécurité et la voie de récupération.**
+Un attaquant logiciel n'a aucun chemin ; toi, avec la carte en main, tu
+repositionnes le jumper et tu reflashes. La récupération redevient possible,
+simplement délibérée — là où les eFuses l'auraient supprimée pour toujours.
+
+Deux précisions utiles.
+
+**Le dump, lui, passe par les deux ports.** Une fois la puce en mode download,
+la ROM sert le téléchargement aussi bien par l'USB-Serial-JTAG que par l'OTG
+haute vitesse — *ESP32-P4 Series Datasheet v0.7*, p. 37 : « USB Download Boot:
+USB-Serial-JTAG Download Boot, USB 2.0 OTG Download Boot ». Ce qui est fermé,
+c'est le **déclenchement** : les lignes RTS/DTR de la CDC-ACM de
+l'USB-Serial-JTAG (TRM chap. 53, table 53.3-2, p. 2715). Le firmware n'expose
+aucune CDC sur le port haute vitesse — que du MSC, du CCID ou du HID — donc rien
+à y manipuler.
+
+**La console disparaît avec les jumpers.** `usb mode` et `sec confirm` ne seront
+plus atteignables depuis l'hôte sur un coffre de production. C'est cohérent :
+sur le coffre ces deux commandes viennent du S3 par le lien SPI, pas de la
+console. Le kit de dev, lui, garde ses jumpers et sa console.
 
 ## Ce qui ne se teste pas sur le kit de dev
 
