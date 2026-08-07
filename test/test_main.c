@@ -8,6 +8,7 @@ extern void test_link_proto(void);
 extern void test_msc_lba(void);
 extern void test_cr_crc16(void);
 extern void test_sec_confirm(void);
+extern void test_sec_store(void);
 
 int main(void)
 {
@@ -16,6 +17,7 @@ int main(void)
     test_link_proto();
     test_cr_crc16();
     test_sec_confirm();
+    test_sec_store();
     test_msc_lba();
 
     printf("\n=================================\n");
