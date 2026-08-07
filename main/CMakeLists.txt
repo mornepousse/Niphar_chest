@@ -11,6 +11,8 @@ set(srcs
     "security/otp_proto.c"
     "security/cr_hmac.c"
     "security/openpgp_do.c"
+    "security/openpgp_card.c"
+    "security/openpgp_crypto.c"
 )
 
 idf_component_register(

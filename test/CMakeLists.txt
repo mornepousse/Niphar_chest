@@ -19,6 +19,7 @@ add_executable(test_runner
     test_apdu.c
     test_otp_proto.c
     test_openpgp_do.c
+    test_openpgp_card.c
     ../main/link/link_proto.c
     ../main/sys/cr_crc16.c
     ../main/security/sec_confirm.c
@@ -26,6 +27,7 @@ add_executable(test_runner
     ../main/security/apdu.c
     ../main/security/otp_proto.c
     ../main/security/openpgp_do.c
+    ../main/security/openpgp_card.c
     ../main/usb/msc_lba.c
     nvs_fake.c
 )
