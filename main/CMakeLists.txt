@@ -7,6 +7,7 @@ set(srcs
     "console/console.c"
     "security/sec_confirm.c"
     "security/sec_store.c"
+    "security/apdu.c"
 )
 
 idf_component_register(
