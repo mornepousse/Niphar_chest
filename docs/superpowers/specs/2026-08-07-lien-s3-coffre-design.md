@@ -36,7 +36,7 @@ OpenPGP CCID, FIDO/CTAP, et le côté S3 dans `KeSp_firmware`.
 | MOSI | GPIO8 | MOSI SPI2 existant |
 | SCK | GPIO9 | SCK SPI2 existant |
 | MISO | GPIO10 | MISO SPI2 existant |
-| IRQ (coffre→S3) | GPIO11 | GPIO45 |
+| IRQ (coffre→S3) | GPIO11 | GPIO46 |
 
 Côté coffre, c'est le quatuor IOMUX natif de SPI2 (`spi_slave.rst:157-162`,
 valeurs `esp32p4`), donc chemin direct. Ça n'est pas cosmétique : le driver
@@ -63,22 +63,25 @@ d'où un coût d'un seul pin : le CS.
    protection du P4. Avec un pull-down, coffre absent = ligne au repos, rien ne
    circule.
 
-### Le piège : GPIO45 est le strap VDD_SPI du S3
+### L'IRQ arrive sur un pin de strapping du S3, sans conséquence
 
 `GPIO0, GPIO3, GPIO45 et GPIO46` sont les pins de strapping de l'ESP32-S3
-(`esp-idf/docs/en/api-reference/peripherals/gpio/esp32s3.inc:252`). GPIO45 choisit
-la tension du rail flash à l'instant du reset : bas → 3,3 V, haut → 1,8 V.
+(`esp-idf/docs/en/api-reference/peripherals/gpio/esp32s3.inc:252`), et l'IRQ
+arrive sur GPIO46. Ça mérite un examen, pas une inquiétude :
 
-Un coffre qui asserterait l'IRQ pendant que le S3 démarre straperait donc la
-flash du clavier en 1,8 V, et le clavier pourrait ne pas booter. La polarité
-retenue met déjà le repos du bon côté ; reste la fenêtre où le coffre asserte
-pendant un reset du S3.
+- **GPIO46** ne contrôle que l'impression des messages ROM sur UART0. Avec
+  l'eFuse `EFUSE_UART_PRINT_CONTROL` à sa valeur par défaut, son niveau au reset
+  est explicitement marqué « Ignored » — ESP32-S3 TRM v1.8, table 8.3-1, p. 536.
+- **GPIO45**, en revanche, choisit la tension du rail flash (bas → 3,3 V,
+  haut → 1,8 V). Y faire arriver une IRQ active à l'état haut aurait pu empêcher
+  le clavier de démarrer. Ce pin est de toute façon déjà `BOARD_NRF_SPI_SCK` sur
+  `kase_half_left`.
 
-**Invariant firmware, qui referme la fenêtre sans matériel :** le coffre
-n'asserte jamais IO11 tant que le S3 ne lui a pas parlé au moins une fois. Le S3
-ne parle qu'après avoir booté ; la fenêtre de strapping est donc franchie par
-construction. Cet invariant est une règle de sécurité au même titre que
-l'interdiction de GPIO35 — il protège le clavier, pas le coffre.
+**Invariant firmware conservé malgré tout :** le coffre n'asserte jamais IO11
+tant que le S3 ne lui a pas parlé au moins une fois. Ça ne coûte rien, ça garde
+la ligne calme pendant le boot du clavier, et ça protège d'un changement futur
+de cet eFuse. Ce n'est en revanche plus une règle de sécurité au sens de
+l'interdiction de GPIO35 : la dégrader ne casserait plus rien.
 
 ## 4. Architecture
 

@@ -38,11 +38,17 @@
  * pull-up injecterait du courant dans un rail éteint à travers les diodes de
  * protection du P4.
  *
- * DANGER — côté clavier ce signal arrive sur GPIO45, qui est le strap VDD_SPI
- * de l'ESP32-S3 : à l'instant du reset il choisit la tension du rail flash
- * (bas → 3,3 V, haut → 1,8 V). Un coffre qui asserte pendant que le clavier
- * démarre straperait sa flash en 1,8 V. D'où l'invariant tenu par link_spi :
- * ne jamais asserter avant que le S3 ait parlé au moins une fois.
+ * Côté clavier ce signal arrive sur GPIO46, qui est bien un pin de strapping de
+ * l'ESP32-S3 — mais le seul rôle de celui-ci est de contrôler l'impression des
+ * messages ROM sur UART0, et avec l'eFuse EFUSE_UART_PRINT_CONTROL à sa valeur
+ * par défaut son niveau au reset est explicitement « Ignored » (ESP32-S3 TRM
+ * v1.8, table 8.3-1, p. 536). Rien à voir avec GPIO45, qui lui choisit la
+ * tension du rail flash.
+ *
+ * link_spi tient quand même l'invariant « ne jamais asserter avant que le S3
+ * ait parlé au moins une fois » : ça ne coûte rien, ça garde la ligne calme
+ * pendant le boot du clavier, et si cet eFuse était un jour changé, GPIO46
+ * reprendrait un rôle au reset.
  */
 #define BOARD_LINK_IRQ      GPIO_NUM_11
 #define BOARD_LINK_IRQ_ACTIVE_HIGH 1

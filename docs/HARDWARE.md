@@ -72,10 +72,11 @@ celui retenu côté coffre.
 
 | signal | coffre (P4) | S3 (clavier) |
 |---|---|---|
-| CS | GPIO7 | le seul pin libre restant |
+| CS | GPIO7 | GPIO3 |
 | MOSI | GPIO8 | MOSI de SPI2, déjà routé |
 | SCK | GPIO9 | SCK de SPI2, déjà routé |
 | MISO | GPIO10 | MISO de SPI2, déjà routé |
+| IRQ (coffre→S3) | GPIO11 | GPIO46 |
 
 C'est le **quatuor IOMUX natif de SPI2** sur P4 (`spi_slave.rst:157-162`, valeurs
 `esp32p4`), donc chemin direct sans matrice GPIO. Ça compte : le driver bascule
@@ -89,7 +90,13 @@ d'où un coût d'un seul pin : le CS.
 
 - **Mode 0 obligatoire** (CPOL=0, CPHA=0), pas par préférence : c'est ce qui
   garde SCK au repos à l'état bas, condition qui rend déjà sûr le `GPIO_NUM_45`
-  de strapping côté S3.
+  de strapping côté S3 (`VDD_SPI` : haut au reset ferait passer le rail flash du
+  clavier en 1,8 V).
+- **IRQ active à l'état haut, pull-down côté S3.** Le coffre est non alimenté la
+  plupart du temps ; un pull-up injecterait du courant dans un rail éteint par
+  les diodes de protection du P4. GPIO46 est bien un strap du S3, mais il ne
+  contrôle que l'impression des messages ROM et son niveau est « Ignored » avec
+  l'eFuse par défaut (ESP32-S3 TRM v1.8, table 8.3-1, p. 536).
 - **GPIO35 interdit** — c'est le seul strap qui décide entre boot applicatif et
   mode download (TRM table 11.2-2). GPIO34/36/37/38 restent libres et sans effet
   sur le boot tant que GPIO35 est haut.
