@@ -57,10 +57,12 @@ extern "C" {
 /* ------------------------------------------------------------------------ */
 
 /*
- * MSC seul pour l'instant. CCID (OpenPGP) et HID (FIDO) viendront s'ajouter
- * ici : penser alors au budget d'endpoints IN du contrôleur, qui est ce qui a
- * forcé KeSp_firmware à rendre ses interfaces de sécurité mutuellement
- * exclusives.
+ * MSC seul ici. Le CCID (OpenPGP, tâche 10) n'a rien à y activer : ce n'est
+ * pas une classe standard de TinyUSB mais un pilote applicatif (security/
+ * ccid.c, enregistré via usbd_app_driver_get_cb) — HID (FIDO, tâche 11)
+ * suivra le même chemin. usb_mode.h garde MSC et CCID mutuellement
+ * exclusifs, ce qui évite le budget d'endpoints IN qui a forcé
+ * KeSp_firmware à faire pareil sur ses interfaces de sécurité.
  */
 #define CFG_TUD_MSC                 1
 

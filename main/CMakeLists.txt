@@ -1,10 +1,12 @@
 set(srcs
     "main.c"
     "storage/sd_card.c"
+    "sys/nvs_utils.c"
     "usb/usb_device.c"
     "usb/usb_mode.c"
     "usb/usb_mode_name.c"
     "usb/mode_storage.c"
+    "usb/mode_pgp.c"
     "usb/msc_disk.c"
     "usb/msc_lba.c"
     "console/console.c"
@@ -17,6 +19,7 @@ set(srcs
     "security/openpgp_card.c"
     "security/openpgp_crypto.c"
     "security/sec_gate.c"
+    "security/ccid.c"
 )
 
 idf_component_register(

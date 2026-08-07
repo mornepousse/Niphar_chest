@@ -2,6 +2,7 @@
 
 #include "esp_log.h"
 
+#include "usb/mode_pgp.h"
 #include "usb/mode_storage.h"
 #include "usb/msc_disk.h"
 #include "usb/usb_device.h"
@@ -31,8 +32,8 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         return ESP_OK;
     }
 
-    if (mode == USB_MODE_PGP || mode == USB_MODE_OTP) {
-        /* Descripteurs pas encore écrits — tâches 10 et 11. */
+    if (mode == USB_MODE_OTP) {
+        /* Descripteurs pas encore écrits — tâche 11. */
         return ESP_ERR_NOT_SUPPORTED;
     }
     if (mode >= USB_MODE_COUNT) {
@@ -44,7 +45,9 @@ esp_err_t usb_mode_set(usb_mode_t mode)
     /*
      * Toujours désinstaller avant de réinstaller, même vers USB_MODE_NONE :
      * c'est le seul moyen honnête de faire voir à l'hôte une vraie
-     * déconnexion avant la nouvelle énumération (ou l'absence de).
+     * déconnexion avant la nouvelle énumération (ou l'absence de). C'est
+     * aussi ce qui garantit que le stockage et le CCID ne coexistent
+     * jamais : à tout instant, au plus un jeu de descripteurs est installé.
      */
     esp_err_t err = usb_device_uninstall();
     if (err != ESP_OK) {
@@ -57,20 +60,33 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         return ESP_OK;
     }
 
-    /* USB_MODE_STORAGE : le seul mode installable pour l'instant. */
-    err = msc_disk_init();
-    if (err != ESP_OK) {
-        return err;
-    }
-
     int string_count = 0;
-    const char **strings = mode_storage_strings(&string_count);
-    err = usb_device_install(mode_storage_fs_config(), mode_storage_hs_config(),
-                              strings, string_count);
+    const char **strings;
+    const uint8_t *fs_cfg;
+    const uint8_t *hs_cfg;
+
+    if (mode == USB_MODE_STORAGE) {
+        err = msc_disk_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+        strings = mode_storage_strings(&string_count);
+        fs_cfg = mode_storage_fs_config();
+        hs_cfg = mode_storage_hs_config();
+    } else {
+        /* USB_MODE_PGP : la carte OpenPGP sur CCID (tâche 10). Rien à
+         * initialiser ici — mode_pgp_fs_config()/hs_config() force le
+         * démarrage du worker CCID au passage, voir mode_pgp.c. */
+        strings = mode_pgp_strings(&string_count);
+        fs_cfg = mode_pgp_fs_config();
+        hs_cfg = mode_pgp_hs_config();
+    }
+
+    err = usb_device_install(fs_cfg, hs_cfg, strings, string_count);
     if (err != ESP_OK) {
         return err;
     }
 
-    s_mode = USB_MODE_STORAGE;
+    s_mode = mode;
     return ESP_OK;
 }
