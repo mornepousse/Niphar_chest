@@ -5,6 +5,7 @@ set(srcs
     "usb/msc_disk.c"
     "usb/msc_lba.c"
     "console/console.c"
+    "security/sec_confirm.c"
 )
 
 idf_component_register(

@@ -14,8 +14,10 @@ add_executable(test_runner
     test_link_proto.c
     test_msc_lba.c
     test_cr_crc16.c
+    test_sec_confirm.c
     ../main/link/link_proto.c
     ../main/sys/cr_crc16.c
+    ../main/security/sec_confirm.c
     ../main/usb/msc_lba.c
 )
 
