@@ -6,9 +6,12 @@
  * Pas de bouton reset, pas d'accès matériel au mode download : un firmware qui
  * casse l'USB-Serial-JTAG se répare au fer à souder. C'est cette carte que les
  * garde-fous protègent.
+ *
+ * Ce fichier déclare son bloc de lien PUIS inclut board_common.h, qui vérifie
+ * l'ensemble. L'ordre compte — les gardes du commun s'exécutent en dernier.
  */
 
-#include "board_common.h"
+#include "driver/gpio.h"
 
 #define BOARD_NAME "niphar_chest"
 
@@ -45,7 +48,7 @@
  * v1.8, table 8.3-1, p. 536). Rien à voir avec GPIO45, qui lui choisit la
  * tension du rail flash.
  *
- * link_spi tient quand même l'invariant « ne jamais asserter avant que le S3
+ * link_spi tiendra quand même l'invariant « ne jamais asserter avant que le S3
  * ait parlé au moins une fois » : ça ne coûte rien, ça garde la ligne calme
  * pendant le boot du clavier, et si cet eFuse était un jour changé, GPIO46
  * reprendrait un rôle au reset.
@@ -53,13 +56,5 @@
 #define BOARD_LINK_IRQ      GPIO_NUM_11
 #define BOARD_LINK_IRQ_ACTIVE_HIGH 1
 
-_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_CS),
-               "BOARD_LINK_CS empiete sur un pin reserve");
-_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_MOSI),
-               "BOARD_LINK_MOSI empiete sur un pin reserve");
-_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_SCK),
-               "BOARD_LINK_SCK empiete sur un pin reserve");
-_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_MISO),
-               "BOARD_LINK_MISO empiete sur un pin reserve");
-_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_IRQ),
-               "BOARD_LINK_IRQ empiete sur un pin reserve");
+/* En dernier : il valide tout ce qui précède. */
+#include "board_common.h"

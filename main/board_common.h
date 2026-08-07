@@ -9,8 +9,12 @@
  * contre le silicium : « card one (SDMMC_HOST_SLOT_0) signals are multiplexed
  * with GPIO39-GPIO48 … via IO MUX » — ESP32-P4 Series Datasheet v0.7, p. 81.
  *
- * Les deux cartes divergent sur le lien S3↔coffre, et sur lui seul : chaque
- * boards/<nom>/board.h inclut ce fichier puis déclare son propre bloc.
+ * Les deux cartes divergent sur le lien S3↔coffre, et sur lui seul.
+ *
+ * ORDRE D'INCLUSION : chaque boards/<nom>/board.h déclare d'abord son bloc de
+ * lien, PUIS inclut ce fichier — qui vérifie l'ensemble en dernier. L'inverse
+ * ne marche pas : les gardes ci-dessous s'exécuteraient avant que la carte ait
+ * eu l'occasion de se prononcer.
  */
 
 #include "driver/gpio.h"
@@ -69,6 +73,16 @@
 #define BOARD_PIN_IS_RESERVED(p) \
     ((p) == BOARD_USJ_DM || (p) == BOARD_USJ_DP || (p) == BOARD_BOOT_STRAP)
 
+/*
+ * Chaque carte DOIT se prononcer sur le lien. Sans ce garde, une carte qui
+ * oublierait la macro compilerait en silence avec le lien désactivé — le
+ * préprocesseur traite une macro inconnue comme 0 dans un #if. Un oubli doit
+ * casser le build, pas produire un firmware amputé sans le dire.
+ */
+#ifndef BOARD_LINK_AVAILABLE
+#error "boards/<nom>/board.h doit definir BOARD_LINK_AVAILABLE (0 ou 1)"
+#endif
+
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_CLK),
                "BOARD_SD_CLK empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_CMD),
@@ -81,3 +95,16 @@ _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_D2),
                "BOARD_SD_D2 empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_D3),
                "BOARD_SD_D3 empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");
+
+#if BOARD_LINK_AVAILABLE
+_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_CS),
+               "BOARD_LINK_CS empiete sur un pin reserve");
+_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_MOSI),
+               "BOARD_LINK_MOSI empiete sur un pin reserve");
+_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_SCK),
+               "BOARD_LINK_SCK empiete sur un pin reserve");
+_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_MISO),
+               "BOARD_LINK_MISO empiete sur un pin reserve");
+_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_IRQ),
+               "BOARD_LINK_IRQ empiete sur un pin reserve");
+#endif

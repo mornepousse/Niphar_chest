@@ -169,7 +169,11 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
             len = max;   /* tronqué plutôt que débordé */
         }
         for (size_t i = 0; i < len; i++) {
-            desc[i + 1] = (uint16_t)str[i];   /* ASCII vers UTF-16LE */
+            /* Le double cast n'est pas décoratif : `char` est signé sur RISC-V,
+             * et un octet ≥ 0x80 deviendrait 0xFFxx en UTF-16 par extension de
+             * signe. Inoffensif tant que les chaînes sont ASCII, silencieux le
+             * jour où l'une sera accentuée. */
+            desc[i + 1] = (uint16_t)(uint8_t)str[i];   /* vers UTF-16LE */
         }
         count = (uint8_t)len;
     }

@@ -57,9 +57,9 @@ void link_proto_pack_status(uint8_t *regs, const link_status_t *st)
     put_u16(&regs[LINK_REG_CRC], cr_crc16(regs, LINK_REG_CRC_SPAN));
 }
 
-bool link_proto_parse_status(const uint8_t *regs, link_status_t *out)
+bool link_proto_parse_status(const uint8_t *regs, size_t len, link_status_t *out)
 {
-    if (regs == NULL || out == NULL) {
+    if (regs == NULL || out == NULL || len < LINK_REG_SIZE) {
         return false;
     }
 

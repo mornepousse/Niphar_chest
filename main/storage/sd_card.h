@@ -23,11 +23,20 @@ typedef enum {
 } sd_pwr_path_t;
 
 /*
+ * Crée le verrou d'accès. À appeler une fois, avant tout le reste, et avant que
+ * l'USB ne démarre : deux tâches se partagent la carte (les callbacks MSC et la
+ * console), et un sondage concurrent d'un transfert libérerait la carte sous
+ * les pieds de l'autre.
+ */
+esp_err_t sd_card_init(void);
+
+/*
  * (Re)détecte la carte. Appelé au démarrage et re-déclenchable depuis la
  * console — le coffre n'a pas de card-detect matériel, la présence se constate
  * en interrogeant la carte.
  *
  * Idempotent : un sondage relâche l'état du précédent avant de recommencer.
+ * Renvoie ESP_ERR_INVALID_STATE si sd_card_init() n'a pas été appelé.
  */
 esp_err_t sd_probe(void);
 

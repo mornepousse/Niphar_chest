@@ -26,7 +26,7 @@ static void test_pack_parse_roundtrip(void)
 
     link_status_t out;
     memset(&out, 0, sizeof(out));
-    TEST_ASSERT(link_proto_parse_status(regs, &out), "bloc valide accepté");
+    TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "bloc valide accepté");
     TEST_ASSERT_EQ(out.version, LINK_PROTO_VERSION, "version renvoyée");
     TEST_ASSERT_EQ(out.state, in.state, "état conservé");
     TEST_ASSERT_EQ(out.pending_op, in.pending_op, "opération en attente conservée");
@@ -42,12 +42,12 @@ static void test_confirm_count_full_range(void)
     link_status_t out;
 
     link_proto_pack_status(regs, &in);
-    TEST_ASSERT(link_proto_parse_status(regs, &out), "compteur au maximum accepté");
+    TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "compteur au maximum accepté");
     TEST_ASSERT_EQ(out.confirm_count, 0xFFFFFFFFu, "compteur au maximum conservé");
 
     in.confirm_count = 1;
     link_proto_pack_status(regs, &in);
-    TEST_ASSERT(link_proto_parse_status(regs, &out), "compteur à 1 accepté");
+    TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "compteur à 1 accepté");
     TEST_ASSERT_EQ(out.confirm_count, 1, "compteur à 1 conservé");
 }
 
@@ -60,7 +60,7 @@ static void test_state_bits_independent(void)
     for (size_t i = 0; i < sizeof(bits) / sizeof(bits[0]); i++) {
         link_status_t in = { .state = bits[i], .pending_op = 0, .confirm_count = 0 };
         link_proto_pack_status(regs, &in);
-        TEST_ASSERT(link_proto_parse_status(regs, &out), "bloc à un seul bit accepté");
+        TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "bloc à un seul bit accepté");
         TEST_ASSERT_EQ(out.state, bits[i], "bit d'état isolé conservé");
     }
 }
@@ -77,7 +77,7 @@ static void test_reject_bad_magic(void)
 
     link_proto_pack_status(regs, &in);
     regs[0] ^= 0xFF;   /* un seul octet du mot magique */
-    TEST_ASSERT(!link_proto_parse_status(regs, &out), "mot magique faux rejeté");
+    TEST_ASSERT(!link_proto_parse_status(regs, sizeof(regs), &out), "mot magique faux rejeté");
 }
 
 static void test_reject_bad_version(void)
@@ -88,7 +88,7 @@ static void test_reject_bad_version(void)
 
     link_proto_pack_status(regs, &in);
     regs[LINK_REG_VERSION] = LINK_PROTO_VERSION + 1;
-    TEST_ASSERT(!link_proto_parse_status(regs, &out),
+    TEST_ASSERT(!link_proto_parse_status(regs, sizeof(regs), &out),
                 "version inconnue rejetée plutôt qu'interprétée");
 }
 
@@ -106,7 +106,7 @@ static void test_reject_corrupted_payload(void)
 
     link_proto_pack_status(regs, &in);
     regs[LINK_REG_CONFIRM_COUNT] ^= 0x01;   /* un bit, ailleurs que dans le magique */
-    TEST_ASSERT(!link_proto_parse_status(regs, &out), "bit retourné détecté par le CRC");
+    TEST_ASSERT(!link_proto_parse_status(regs, sizeof(regs), &out), "bit retourné détecté par le CRC");
 }
 
 /* La confirmation vient du S3 : elle est hors de la zone couverte par le CRC du
@@ -119,7 +119,7 @@ static void test_user_confirm_outside_crc(void)
 
     link_proto_pack_status(regs, &in);
     regs[LINK_REG_USER_CONFIRM] = LINK_USER_CONFIRM_MAGIC;
-    TEST_ASSERT(link_proto_parse_status(regs, &out),
+    TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out),
                 "écriture du maître n'invalide pas le CRC du coffre");
 }
 
@@ -134,7 +134,7 @@ static void test_absent_all_zero(void)
     TEST_ASSERT(link_proto_is_absent(regs, sizeof(regs)), "tout à 0x00 = absent");
 
     link_status_t out;
-    TEST_ASSERT(!link_proto_parse_status(regs, &out), "bloc absent non interprété");
+    TEST_ASSERT(!link_proto_parse_status(regs, sizeof(regs), &out), "bloc absent non interprété");
 }
 
 static void test_absent_all_ones(void)
@@ -144,7 +144,7 @@ static void test_absent_all_ones(void)
     TEST_ASSERT(link_proto_is_absent(regs, sizeof(regs)), "tout à 0xFF = absent");
 
     link_status_t out;
-    TEST_ASSERT(!link_proto_parse_status(regs, &out), "bloc absent non interprété");
+    TEST_ASSERT(!link_proto_parse_status(regs, sizeof(regs), &out), "bloc absent non interprété");
 }
 
 static void test_present_not_absent(void)
@@ -155,6 +155,22 @@ static void test_present_not_absent(void)
     link_proto_pack_status(regs, &in);
     TEST_ASSERT(!link_proto_is_absent(regs, sizeof(regs)),
                 "un coffre à l'état nul n'est pas un coffre absent");
+}
+
+/* Le paramètre de longueur existe avant son premier appelant : une transaction
+ * SPI courte ne doit pas faire lire au-delà du tampon. */
+static void test_reject_short_buffer(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    const link_status_t in = { .state = 0, .pending_op = 0, .confirm_count = 0 };
+    link_status_t out;
+
+    link_proto_pack_status(regs, &in);
+    TEST_ASSERT(!link_proto_parse_status(regs, LINK_REG_SIZE - 1, &out),
+                "bloc tronqué d'un octet rejeté");
+    TEST_ASSERT(!link_proto_parse_status(regs, 0, &out), "bloc vide rejeté");
+    TEST_ASSERT(link_proto_parse_status(regs, LINK_REG_SIZE, &out),
+                "bloc complet toujours accepté");
 }
 
 /* Un bloc presque uniforme ne doit pas être confondu avec une ligne flottante. */
@@ -183,4 +199,5 @@ void test_link_proto(void)
     TEST_RUN(test_absent_all_ones);
     TEST_RUN(test_present_not_absent);
     TEST_RUN(test_almost_uniform_is_present);
+    TEST_RUN(test_reject_short_buffer);
 }

@@ -1,5 +1,6 @@
 #include "usb/msc_disk.h"
 
+#include <inttypes.h>
 #include <string.h>
 
 #include "esp_heap_caps.h"
@@ -17,10 +18,19 @@ static const char *TAG = "msc";
 #define SCSI_SENSE_MEDIUM_ERROR   0x03
 #define SCSI_SENSE_ILLEGAL_REQUEST 0x05
 
-#define ASC_MEDIUM_NOT_PRESENT    0x3A
-#define ASC_LBA_OUT_OF_RANGE      0x21
+#define ASC_MEDIUM_NOT_PRESENT     0x3A
+#define ASC_LBA_OUT_OF_RANGE       0x21
+#define ASC_INVALID_CDB_FIELD      0x24
 #define ASC_UNRECOVERED_READ_ERROR 0x11
-#define ASC_WRITE_FAULT           0x03
+#define ASC_WRITE_FAULT            0x03
+
+/* Codes de retour internes de transfer(). Distinguer les deux causes n'est pas
+ * du zèle : un hôte qui reçoit MEDIUM ERROR conclut que la carte est abîmée, et
+ * certains pilotes de système de fichiers remontent ou marquent le volume
+ * défectueux. Quelques CDB hors bornes suffiraient alors à faire passer une
+ * carte saine pour morte. */
+#define TRANSFER_IO_ERROR      (-1)
+#define TRANSFER_BAD_REQUEST   (-2)
 
 /*
  * Tampon de rebond, d'un secteur.
@@ -132,14 +142,15 @@ bool tud_msc_is_writable_cb(uint8_t lun)
  * bits, sinon lba * secteur déborde dès 4 Gio et un test de bornes naïf
  * passerait.
  *
- * Renvoie le nombre d'octets traités, ou -1 (l'appelant pose le sense).
+ * Renvoie le nombre d'octets traités, TRANSFER_IO_ERROR ou
+ * TRANSFER_BAD_REQUEST ; c'est l'appelant qui traduit en sense SCSI.
  */
 static int32_t transfer(bool writing, uint32_t lba, uint32_t offset,
                         uint8_t *buffer, uint32_t bufsize)
 {
     const uint32_t ss = sd_sector_size();
     if (ss == 0 || s_bounce == NULL || ss > s_bounce_size) {
-        return -1;
+        return TRANSFER_IO_ERROR;
     }
 
     if (bufsize > s_stats.max_bufsize) {
@@ -157,7 +168,10 @@ static int32_t transfer(bool writing, uint32_t lba, uint32_t offset,
      * c'est la seule arithmétique du projet qu'un hôte non fiable pilote. */
     msc_lba_iter_t it;
     if (!msc_lba_begin(&it, lba, offset, bufsize, ss, sd_sector_count(), dma_ok)) {
-        return -1;
+        /* Requête invalide, pas média défaillant : la distinction compte pour
+         * l'hôte, qui conclurait sinon que la carte est abîmée et pourrait
+         * marquer le volume mauvais sur quelques CDB hors bornes. */
+        return TRANSFER_BAD_REQUEST;
     }
 
     uint32_t done = 0;
@@ -169,7 +183,7 @@ static int32_t transfer(bool writing, uint32_t lba, uint32_t offset,
                 ? sd_write_sectors(buffer + done, sp.sector, sp.sectors)
                 : sd_read_sectors(buffer + done, sp.sector, sp.sectors);
             if (err != ESP_OK) {
-                return -1;
+                return TRANSFER_IO_ERROR;
             }
             s_stats.fast_sectors += sp.sectors;
         } else {
@@ -185,16 +199,16 @@ static int32_t transfer(bool writing, uint32_t lba, uint32_t offset,
                     /* Écriture partielle : lire-modifier-écrire, sinon on
                      * effacerait le reste du secteur. */
                     if (sd_read_sectors(s_bounce, sp.sector, 1) != ESP_OK) {
-                        return -1;
+                        return TRANSFER_IO_ERROR;
                     }
                 }
                 memcpy(s_bounce + sp.in_sector, buffer + done, sp.bytes);
                 if (sd_write_sectors(s_bounce, sp.sector, 1) != ESP_OK) {
-                    return -1;
+                    return TRANSFER_IO_ERROR;
                 }
             } else {
                 if (sd_read_sectors(s_bounce, sp.sector, 1) != ESP_OK) {
-                    return -1;
+                    return TRANSFER_IO_ERROR;
                 }
                 memcpy(buffer + done, s_bounce + sp.in_sector, sp.bytes);
             }
@@ -214,8 +228,13 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buff
         return -1;
     }
     int32_t n = transfer(false, lba, offset, (uint8_t *)buffer, bufsize);
+    if (n == TRANSFER_BAD_REQUEST) {
+        tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+        return -1;
+    }
     if (n < 0) {
         tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, ASC_UNRECOVERED_READ_ERROR, 0x00);
+        return -1;
     }
     return n;
 }
@@ -228,8 +247,13 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *
         return -1;
     }
     int32_t n = transfer(true, lba, offset, buffer, bufsize);
+    if (n == TRANSFER_BAD_REQUEST) {
+        tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+        return -1;
+    }
     if (n < 0) {
         tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, ASC_WRITE_FAULT, 0x00);
+        return -1;
     }
     return n;
 }
@@ -244,6 +268,6 @@ int32_t tud_msc_scsi_cb(uint8_t lun, uint8_t const scsi_cmd[16], void *buffer, u
     (void)buffer;
     (void)bufsize;
     ESP_LOGD(TAG, "commande SCSI non gérée : 0x%02x", scsi_cmd[0]);
-    tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x20, 0x00);
+    tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, ASC_INVALID_CDB_FIELD, 0x00);
     return -1;
 }

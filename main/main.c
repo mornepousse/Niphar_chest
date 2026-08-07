@@ -53,6 +53,10 @@ void app_main(void)
      * Une carte absente n'est pas une erreur fatale : le coffre doit rester
      * flashable et interrogeable sans elle. On journalise et on continue.
      */
+    esp_err_t sd_err = sd_card_init();
+    if (sd_err != ESP_OK) {
+        ESP_LOGE(TAG, "verrou carte SD : %s", esp_err_to_name(sd_err));
+    }
     (void)sd_probe();
 
     /*

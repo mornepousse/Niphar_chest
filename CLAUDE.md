@@ -24,7 +24,7 @@ Deux règles priment sur tout le reste :
    souder.
 2. **Ne jamais entrer en deep-sleep permanent**, pour la même raison.
 
-`main/board.h` porte des `_Static_assert`, et `scripts/fast.sh` des greps, qui
+`main/board_common.h` porte des `_Static_assert`, et `scripts/fast.sh` des greps, qui
 font échouer le build sur ces deux points. Ne pas les contourner.
 
 **Le kit de dev pardonne, le coffre non.** Le JC-ESP32P4-M3-DEV a un CH340C et

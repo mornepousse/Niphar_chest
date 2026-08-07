@@ -100,12 +100,45 @@ d'où un coût d'un seul pin : le CS.
 - **GPIO35 interdit** — c'est le seul strap qui décide entre boot applicatif et
   mode download (TRM table 11.2-2). GPIO34/36/37/38 restent libres et sans effet
   sur le boot tant que GPIO35 est haut.
-- **Aucune ligne d'interruption** : les deux côtés sont pleins. Le coffre ne
-  peut jamais prendre la parole, seul le S3 initie.
+- **Ligne d'interruption présente** (GPIO11 → GPIO46), ajoutée après coup. Le
+  coffre peut donc réclamer l'attention du clavier, ce qui rendra possible une
+  invite à l'écran plutôt qu'un simple relais de confirmation.
 
-Sur le kit de dev, ces quatre pins sont pris (I2C du codec sur 7/8, I2S sur
-9/10) : le prototype devra câbler ailleurs, via la matrice GPIO. C'est la
-première divergence réelle de brochage entre les deux cartes.
+Sur le kit de dev, GPIO7-11 sont pris (I2C du codec sur 7/8, I2S sur 9/10,
+ampli sur 11) : le lien n'y est pas câblable. C'est la première divergence
+réelle de brochage entre les deux cartes, d'où le découpage `boards/`.
+
+## ⚠ Point ouvert : l'hôte peut forcer le mode download
+
+Le contrat dit « pas d'accès au mode download **matériel** », ce qui est exact —
+et masque une voie logicielle qui, elle, est ouverte à l'hôte :
+
+> « if the download mode flag is set when ESP32-P4 is reset, ESP32-P4 will
+> reboot into download mode »
+> — ESP32-P4 TRM, chap. 53, table 53.3-2, p. 2715 : sur la CDC-ACM de
+> l'USB-Serial-JTAG, `RTS=0 / DTR=1` pose le drapeau, `RTS=1 / DTR=0` reset.
+
+Confirmé au chap. 11 (p. 798) : « USB Serial/JTAG Controller can also force
+switch the chip to Joint Download Boot mode from SPI Boot mode », désactivable
+seulement par `EFUSE_DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE`. Vérifié aussi
+empiriquement le 2026-08-06 : une séquence de reset qui tirait DTR bas a fait
+démarrer le kit en `boot:0x16 DOWNLOAD` au lieu de lancer l'application.
+
+**Aujourd'hui, sans conséquence** : l'hôte peut déjà tout lire et tout écrire par
+le MSC, et n'importe quel logiciel de l'hôte peut de toute façon reflasher.
+
+**Demain, ça invalide une hypothèse.** Le modèle hérité de KeSp accepte des clés
+en clair en NVS *parce que* leur extraction demanderait un accès physique. Ici,
+du logiciel hôte entre en download boot et dump la flash entière, NVS comprise.
+Il faut trancher **avant** que la première clé PGP/FIDO n'y atterrisse :
+
+- ouvrir JP1/JP2 en production — coupe l'USB-Serial-JTAG de l'hôte, donc aussi
+  la seule voie de reflash du coffre ;
+- brûler `EFUSE_DIS_USB_SERIAL_JTAG_DOWNLOAD_MODE` + Secure Boot v2 + Flash
+  Encryption — même renoncement, et irréversible ;
+- accepter le risque explicitement, et l'écrire ici.
+
+Ne pas décider revient à choisir la troisième option sans le dire.
 
 ## Ce qui ne se teste pas sur le kit de dev
 
@@ -121,7 +154,7 @@ n'y seront jamais éprouvées, parce que **le kit pardonne et le coffre non** :
 
 Conséquence directe : les règles « jamais de GPIO24/25 réaffectés » et « jamais
 de deep-sleep permanent » ne peuvent pas être vérifiées à l'exécution. Elles
-tiennent par construction — `_Static_assert` dans `main/board.h` et greps dans
+tiennent par construction — `_Static_assert` dans `main/board_common.h` et greps dans
 `scripts/fast.sh` — et ces garde-fous ne doivent pas être contournés « juste
 pour un test ».
 

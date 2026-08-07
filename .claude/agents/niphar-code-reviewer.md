@@ -22,7 +22,7 @@ partagent le même pinout). Sources dans `main/` : `board.h` (brochage +
 ## Checklist de review
 
 **Irréversible — bloquant sans discussion**
-- GPIO24/25 (USB-Serial-JTAG) jamais nommés hors de `main/board.h`. Le coffre
+- GPIO24/25 (USB-Serial-JTAG) jamais nommés hors de `main/board_common.h`. Le coffre
   n'a ni bouton reset ni mode download matériel : une erreur ici se répare au
   fer à souder.
 - Aucun `esp_deep_sleep_start`, pour la même raison.
@@ -30,7 +30,7 @@ partagent le même pinout). Sources dans `main/` : `board.h` (brochage +
   recours de diagnostic. Un échec d'init USB se journalise, il ne panique pas.
 
 **Frontières**
-- Pinout uniquement dans `main/board.h` ; aucun numéro de GPIO en dur ailleurs.
+- Pinout uniquement dans `main/board_common.h` ; aucun numéro de GPIO en dur ailleurs.
 - Le firmware ne monte pas FATFS sur la carte SD tant que le MSC expose les
   blocs bruts à l'hôte — double accès concurrent = corruption certaine.
 - `msc_disk` ne connaît que l'interface de `sd_card` ; `sd_card` ne connaît ni

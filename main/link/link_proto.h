@@ -72,10 +72,14 @@ void link_proto_pack_status(uint8_t *regs, const link_status_t *st);
 
 /*
  * Décode un bloc de registres. Renvoie false — et ne touche pas `out` — si le
- * mot magique, la version ou le CRC ne conviennent pas, ou si le bloc est celui
- * d'un coffre absent.
+ * bloc est plus court que LINK_REG_SIZE, si le mot magique, la version ou le
+ * CRC ne conviennent pas, ou si le bloc est celui d'un coffre absent.
+ *
+ * `len` n'est pas décoratif : le jour où `regs` sera rempli par une transaction
+ * SPI, un transfert court ferait lire au-delà du tampon. Le paramètre existe
+ * avant le premier appelant, pas après.
  */
-bool link_proto_parse_status(const uint8_t *regs, link_status_t *out);
+bool link_proto_parse_status(const uint8_t *regs, size_t len, link_status_t *out);
 
 /*
  * Vrai si le bloc est celui d'une ligne flottante : uniformément 0x00 ou

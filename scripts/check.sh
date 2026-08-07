@@ -38,8 +38,8 @@ MODULE_FAST=()
 TEST_COUNT_CMD="grep -rho TEST_ASSERT test/ --include=test_*.c | wc -l"
 
 # Avis TDD (optionnel) : formes grep -E des chemins source et test. Vides -> inerte.
-SRC_GREP=""
-TEST_GREP=""
+SRC_GREP="^main/"
+TEST_GREP="^test/"
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YEL=$'\033[1;33m'; NC=$'\033[0m'
 fail() { echo "${RED}✗ $*${NC}" >&2; }

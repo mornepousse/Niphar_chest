@@ -3,8 +3,11 @@
 # Phase rapide du coffre Niphar : garde-fous matériels, puis build.
 #
 # Appelé par scripts/check.sh — ne pas l'invoquer depuis un hook directement.
-# Le build tient lieu de test tant qu'il n'y a pas de logique pure à couvrir :
-# les _Static_assert de main/board.h sont vérifiés par le compilateur.
+#
+# Trois étages, du plus rapide au plus lent : les garde-fous grep, les tests
+# hôte (test/), puis le build ESP-IDF. Le build reste un oracle à part entière —
+# les _Static_assert de main/board_common.h et des en-têtes de carte ne se
+# vérifient qu'à la compilation.
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."

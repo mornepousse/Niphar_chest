@@ -8,7 +8,7 @@
  * câblable.
  */
 
-#include "board_common.h"
+#include "driver/gpio.h"
 
 #define BOARD_NAME "jc_devkit"
 
@@ -32,3 +32,6 @@
  * d'aucun matériel.
  */
 #define BOARD_LINK_AVAILABLE 0
+
+/* En dernier : il valide tout ce qui précède. */
+#include "board_common.h"

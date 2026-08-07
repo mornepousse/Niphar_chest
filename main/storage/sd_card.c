@@ -4,6 +4,8 @@
 
 #include "driver/sdmmc_host.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "sdmmc_cmd.h"
 
@@ -35,16 +37,51 @@ static const char *TAG = "sd";
 static sdmmc_card_t *s_card;
 static sd_pwr_ctrl_handle_t s_pwr;
 static sd_pwr_path_t s_path = SD_PWR_UNKNOWN;
+static bool s_host_ready;
 
+/*
+ * Verrou d'accès à la carte.
+ *
+ * Deux tâches touchent cet état : la tâche USB, qui lit et écrit des secteurs
+ * depuis les callbacks MSC, et la console, d'où l'utilisateur peut relancer un
+ * sondage. Sans verrou, un « sd probe » pendant un transfert libère `s_card` et
+ * détruit le mutex interne du pilote SDMMC sous les pieds de l'autre tâche —
+ * usage après libération sur le tas, et prise d'un sémaphore déjà détruit.
+ *
+ * Le P4 est bicœur et la tâche USB n'est pas épinglée : ce n'est pas une course
+ * théorique. Et la console est accessible à l'hôte, donc le déclencheur l'est
+ * aussi.
+ *
+ * Le verrou doit couvrir l'appel SDMMC entier, pas seulement le contrôle de
+ * bornes : la fenêtre s'ouvre pendant que le pilote rend la main.
+ *
+ * Alloué statiquement — une création qui échoue laisserait un verrou nul, donc
+ * exactement le bug qu'on ferme.
+ */
+static StaticSemaphore_t s_lock_buf;
+static SemaphoreHandle_t s_lock;
+
+/* À n'appeler qu'en tenant s_lock. */
 static void release(void)
 {
     if (s_card != NULL) {
         free(s_card);
         s_card = NULL;
     }
-    sdmmc_host_deinit();
+    if (s_host_ready) {
+        /* Conditionné : au premier sondage l'hôte n'a jamais été initialisé, et
+         * un deinit inconditionnel échouerait légitimement à chaque démarrage. */
+        esp_err_t err = sdmmc_host_deinit();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "deinit hôte SDMMC : %s", esp_err_to_name(err));
+        }
+        s_host_ready = false;
+    }
     if (s_pwr != NULL) {
-        sd_pwr_ctrl_del_on_chip_ldo(s_pwr);
+        esp_err_t err = sd_pwr_ctrl_del_on_chip_ldo(s_pwr);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "libération du LDO : %s", esp_err_to_name(err));
+        }
         s_pwr = NULL;
     }
     s_path = SD_PWR_UNKNOWN;
@@ -75,6 +112,7 @@ static esp_err_t probe_once(bool use_on_chip_ldo)
         ESP_LOGE(TAG, "init hôte SDMMC : %s", esp_err_to_name(err));
         goto fail;
     }
+    s_host_ready = true;
 
     /*
      * Slot 0 passe par l'IO MUX ; les pins déclarés ici sont précisément ceux
@@ -116,16 +154,25 @@ static esp_err_t probe_once(bool use_on_chip_ldo)
     return ESP_OK;
 
 fail:
-    sdmmc_host_deinit();
-    if (s_pwr != NULL) {
-        sd_pwr_ctrl_del_on_chip_ldo(s_pwr);
-        s_pwr = NULL;
-    }
+    release();
     return err;
+}
+
+esp_err_t sd_card_init(void)
+{
+    if (s_lock == NULL) {
+        s_lock = xSemaphoreCreateMutexStatic(&s_lock_buf);
+    }
+    return s_lock != NULL ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 esp_err_t sd_probe(void)
 {
+    if (s_lock == NULL) {
+        return ESP_ERR_INVALID_STATE;   /* sd_card_init() n'a pas été appelé */
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+
     release();
 
     esp_err_t err = probe_once(false);
@@ -143,18 +190,19 @@ esp_err_t sd_probe(void)
         }
     }
 
-    if (err != ESP_OK) {
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "%s, %llu Mo, bus %d bits, %d kHz",
+                 s_card->cid.name,
+                 ((uint64_t)s_card->csd.capacity * s_card->csd.sector_size) / (1024 * 1024),
+                 s_card->log_bus_width ? (1 << s_card->log_bus_width) : 1,
+                 s_card->max_freq_khz);
+    } else {
         ESP_LOGW(TAG, "aucune carte (%s) — le coffre reste utilisable, la SD non",
                  esp_err_to_name(err));
-        return err;
     }
 
-    ESP_LOGI(TAG, "%s, %llu Mo, bus %d bits, %d kHz",
-             s_card->cid.name,
-             ((uint64_t)s_card->csd.capacity * s_card->csd.sector_size) / (1024 * 1024),
-             s_card->log_bus_width ? (1 << s_card->log_bus_width) : 1,
-             s_card->max_freq_khz);
-    return ESP_OK;
+    xSemaphoreGive(s_lock);
+    return err;
 }
 
 bool sd_present(void)
@@ -188,22 +236,41 @@ static esp_err_t check_range(uint32_t start_sector, uint32_t count)
     return ESP_OK;
 }
 
+/*
+ * Le verrou couvre le contrôle de bornes ET le transfert : c'est pendant
+ * l'appel SDMMC que la tâche console pourrait libérer la carte sous les pieds
+ * de la tâche USB.
+ */
 esp_err_t sd_read_sectors(void *dst, uint32_t start_sector, uint32_t count)
 {
-    esp_err_t err = check_range(start_sector, count);
-    if (err != ESP_OK) {
-        return err;
+    if (s_lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
     }
-    return sdmmc_read_sectors(s_card, dst, start_sector, count);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+
+    esp_err_t err = check_range(start_sector, count);
+    if (err == ESP_OK) {
+        err = sdmmc_read_sectors(s_card, dst, start_sector, count);
+    }
+
+    xSemaphoreGive(s_lock);
+    return err;
 }
 
 esp_err_t sd_write_sectors(const void *src, uint32_t start_sector, uint32_t count)
 {
-    esp_err_t err = check_range(start_sector, count);
-    if (err != ESP_OK) {
-        return err;
+    if (s_lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
     }
-    return sdmmc_write_sectors(s_card, src, start_sector, count);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+
+    esp_err_t err = check_range(start_sector, count);
+    if (err == ESP_OK) {
+        err = sdmmc_write_sectors(s_card, src, start_sector, count);
+    }
+
+    xSemaphoreGive(s_lock);
+    return err;
 }
 
 const sdmmc_card_t *sd_raw_card(void)
