@@ -12,8 +12,10 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror -g -DTEST_HOST")
 add_executable(test_runner
     test_main.c
     test_link_proto.c
+    test_msc_lba.c
     ../main/link/link_proto.c
     ../main/link/cr_crc16.c
+    ../main/usb/msc_lba.c
 )
 
 # `main/` sur le chemin d'inclusion : les tests incluent « link/link_proto.h »

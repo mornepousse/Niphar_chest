@@ -3,6 +3,7 @@ set(srcs
     "storage/sd_card.c"
     "usb/usb_device.c"
     "usb/msc_disk.c"
+    "usb/msc_lba.c"
     "console/console.c"
 )
 

@@ -5,12 +5,14 @@ int _test_pass_count = 0;
 int _test_fail_count = 0;
 
 extern void test_link_proto(void);
+extern void test_msc_lba(void);
 
 int main(void)
 {
     printf("=== tests hôte — coffre Niphar ===\n");
 
     test_link_proto();
+    test_msc_lba();
 
     printf("\n=================================\n");
     printf("%d assertions OK, %d échecs\n", _test_pass_count, _test_fail_count);

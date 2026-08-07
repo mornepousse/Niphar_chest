@@ -8,6 +8,7 @@
 #include "tusb.h"
 
 #include "storage/sd_card.h"
+#include "usb/msc_lba.h"
 
 static const char *TAG = "msc";
 
@@ -145,71 +146,64 @@ static int32_t transfer(bool writing, uint32_t lba, uint32_t offset,
         s_stats.max_bufsize = bufsize;
     }
 
-    uint64_t addr = (uint64_t)lba * (uint64_t)ss + (uint64_t)offset;
-    const uint64_t capacity = (uint64_t)sd_sector_count() * (uint64_t)ss;
-    if (addr + (uint64_t)bufsize > capacity) {
-        return -1;   /* hors média : refusé, pas tronqué */
+    /*
+     * Le chemin direct exige un tampon accessible au DMA ; ceux que TinyUSB
+     * présente ne le sont pas garantis. La capacité est une propriété de la
+     * région, pas de l'octet : la tester une fois sur la base suffit.
+     */
+    const bool dma_ok = esp_ptr_dma_capable(buffer);
+
+    /* Toute la validation et la découpe vivent dans msc_lba, sous tests hôte :
+     * c'est la seule arithmétique du projet qu'un hôte non fiable pilote. */
+    msc_lba_iter_t it;
+    if (!msc_lba_begin(&it, lba, offset, bufsize, ss, sd_sector_count(), dma_ok)) {
+        return -1;
     }
 
     uint32_t done = 0;
-    while (done < bufsize) {
-        const uint32_t sector = (uint32_t)(addr / ss);
-        const uint32_t in_sector = (uint32_t)(addr % ss);
-        uint32_t chunk = ss - in_sector;
-        if (chunk > bufsize - done) {
-            chunk = bufsize - done;
-        }
-
-        /*
-         * Chemin rapide : transfert aligné, secteurs entiers, tampon déjà
-         * accessible au DMA. C'est le cas courant, et il évite une recopie par
-         * secteur.
-         */
-        if (in_sector == 0 && chunk == ss) {
-            uint32_t whole = (bufsize - done) / ss;
-            if (whole >= 1 && esp_ptr_dma_capable(buffer + done)) {
-                esp_err_t err = writing
-                    ? sd_write_sectors(buffer + done, sector, whole)
-                    : sd_read_sectors(buffer + done, sector, whole);
-                if (err != ESP_OK) {
-                    return -1;
-                }
-                const uint32_t moved = whole * ss;
-                s_stats.fast_sectors += whole;
-                done += moved;
-                addr += moved;
-                continue;
+    msc_span_t sp;
+    while (msc_lba_next(&it, &sp)) {
+        if (sp.sectors > 0 && dma_ok) {
+            /* Secteurs entiers, alignés, tampon DMA : transfert direct. */
+            esp_err_t err = writing
+                ? sd_write_sectors(buffer + done, sp.sector, sp.sectors)
+                : sd_read_sectors(buffer + done, sp.sector, sp.sectors);
+            if (err != ESP_OK) {
+                return -1;
             }
-            if (whole >= 1) {
+            s_stats.fast_sectors += sp.sectors;
+        } else {
+            /* Rebond : accès partiel, ou tampon inutilisable en DMA. Sans
+             * chemin direct, msc_lba ne produit jamais plus d'un secteur. */
+            if (sp.sectors > 0) {
                 s_stats.not_dma_hits++;
             }
-        }
+            s_stats.bounce_sectors++;
 
-        /* Chemin lent : un secteur via le rebond. */
-        s_stats.bounce_sectors++;
-        if (writing) {
-            if (chunk != ss) {
-                /* Écriture partielle : lire-modifier-écrire, sinon on efface le reste. */
-                if (sd_read_sectors(s_bounce, sector, 1) != ESP_OK) {
+            if (writing) {
+                if (sp.bytes != ss) {
+                    /* Écriture partielle : lire-modifier-écrire, sinon on
+                     * effacerait le reste du secteur. */
+                    if (sd_read_sectors(s_bounce, sp.sector, 1) != ESP_OK) {
+                        return -1;
+                    }
+                }
+                memcpy(s_bounce + sp.in_sector, buffer + done, sp.bytes);
+                if (sd_write_sectors(s_bounce, sp.sector, 1) != ESP_OK) {
                     return -1;
                 }
+            } else {
+                if (sd_read_sectors(s_bounce, sp.sector, 1) != ESP_OK) {
+                    return -1;
+                }
+                memcpy(buffer + done, s_bounce + sp.in_sector, sp.bytes);
             }
-            memcpy(s_bounce + in_sector, buffer + done, chunk);
-            if (sd_write_sectors(s_bounce, sector, 1) != ESP_OK) {
-                return -1;
-            }
-        } else {
-            if (sd_read_sectors(s_bounce, sector, 1) != ESP_OK) {
-                return -1;
-            }
-            memcpy(buffer + done, s_bounce + in_sector, chunk);
         }
 
-        done += chunk;
-        addr += chunk;
+        done += sp.bytes;
     }
 
-    return (int32_t)bufsize;
+    return (int32_t)done;
 }
 
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buffer,
