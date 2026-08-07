@@ -10,6 +10,19 @@
  * TUD_CCID_DESC_LEN, KASE_CCID_ITF_DESC). Le préfixe KASE_ est conservé tel
  * quel : le renommer casserait la comparaison avec l'amont sans rien
  * apporter (voir .superpowers/sdd/2026-08-07-portage-ccid-otp/task-10-brief.md).
+ *
+ * DIVERGENCE (Niphar_chest tâche 12) : KASE_CCID_ITF_DESC gagne un 5ᵉ
+ * paramètre `_epsize`, absent de l'original. L'amont fige wMaxPacketSize à
+ * 64 pour les deux points bulk, ce que mode_pgp.c reprenait tel quel pour
+ * s_fs_config ET s_hs_config — mais l'USB 2.0 (tableau 5-5) impose 512 comme
+ * SEULE valeur légale pour un point bulk en haute vitesse, jamais 64. Sur le
+ * coffre, qui négocie la haute vitesse (contrairement au dongle KeSp,
+ * jamais testé à cette vitesse pour CCID), ce descripteur non conforme
+ * faisait échouer le pilote CCID interne de scdaemon dès l'ouverture
+ * (« unexpected bulk-in msg type (00) » puis timeout) — trouvé en validant
+ * `gpg --card-status` sur matériel. mode_storage.c fait déjà cette
+ * distinction pour TUD_MSC_DESCRIPTOR (64 en FS, 512 en HS) ; CCID suit
+ * maintenant le même modèle. Voir l'appel dans mode_pgp.c.
  */
 
 #include "tusb.h"
@@ -45,15 +58,17 @@
     0x00,                       /* bPINSupport = 0 (no pinpad; PIN over APDU) */ \
     0x01                        /* bMaxCCIDBusySlots = 1 */
 
-/* Interface: CCID smartcard reader (class 0x0B). No TinyUSB macro exists. */
+/* Interface: CCID smartcard reader (class 0x0B). No TinyUSB macro exists.
+ * `_epsize` : 64 pour un descripteur plein débit, 512 pour haute vitesse —
+ * voir la divergence documentée en tête de fichier. */
 #define TUD_CCID_DESC_LEN (9 + 54 + 7 + 7)   /* itf + CCID class desc + 2 EP */
-#define KASE_CCID_ITF_DESC(_itfnum, _stridx, _epout, _epin) \
+#define KASE_CCID_ITF_DESC(_itfnum, _stridx, _epout, _epin, _epsize) \
     /* Interface: bNumEndpoints=2, class 0x0B (CCID), subclass 0x00, \
      * bInterfaceProtocol=0x00 (bulk; 0x01/0x02 would be ICCD) */ \
     9, TUSB_DESC_INTERFACE, _itfnum, 0, 2, TUSB_CLASS_SMART_CARD, 0x00, 0x00, _stridx, \
     /* CCID functional/class descriptor (54 bytes) */ \
     KASE_CCID_DESC, \
     /* Bulk OUT endpoint */ \
-    7, TUSB_DESC_ENDPOINT, _epout, TUSB_XFER_BULK, U16_TO_U8S_LE(64), 0, \
+    7, TUSB_DESC_ENDPOINT, _epout, TUSB_XFER_BULK, U16_TO_U8S_LE(_epsize), 0, \
     /* Bulk IN endpoint */ \
-    7, TUSB_DESC_ENDPOINT, _epin, TUSB_XFER_BULK, U16_TO_U8S_LE(64), 0
+    7, TUSB_DESC_ENDPOINT, _epin, TUSB_XFER_BULK, U16_TO_U8S_LE(_epsize), 0

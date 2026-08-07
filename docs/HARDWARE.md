@@ -158,6 +158,81 @@ tiennent par construction — `_Static_assert` dans `main/board_common.h` et gre
 `scripts/fast.sh` — et ces garde-fous ne doivent pas être contournés « juste
 pour un test ».
 
+## Validation OpenPGP CCID — 2026-08-07
+
+Tâche 12 du portage sécurité (`.superpowers/sdd/2026-08-07-portage-ccid-otp/`),
+sur le kit JC-ESP32P4-M3-DEV, hôte gpg 2.4.9 / scdaemon (pilote CCID interne,
+`pcscd` **inactif**, volontairement).
+
+**Prouvé** :
+- `usb mode pgp` puis `gpg --card-status` voit la carte : Application ID, série
+  dérivé de la MAC, attributs de clé (`nistp256 cv25519 nistp256`). Tout le
+  chemin CCID → APDU → objets de données OpenPGP fonctionne.
+- **Exclusivité** : `lsblk` ne montre aucun disque pendant que gpg dialogue
+  avec la carte — un seul jeu de descripteurs USB à la fois, comme conçu
+  (`usb/usb_mode.c`).
+- **Confirmation physique exigée**, éprouvée dans les deux sens sur une clé de
+  signature générée sur la carte (`GENERATE 0x47/80`, `PSO:CDS`
+  `00 2A 9E 9A`, testé via `SCD PKSIGN` brut plutôt que le flux `--card-edit`
+  complet — voir « écarts » ci-dessous) :
+  - **sans** `sec confirm` : le worker CCID envoie une trame CCID
+    d'extension de temps (WTX) toutes les ~1,5 s pendant que le firmware
+    attend l'appui ; après exactement 15 s (`SEC_CONFIRM_TIMEOUT_MS`), la
+    carte répond `SW=6985` (Conditions of use not satisfied) et scdaemon
+    rapporte l'échec.
+  - **avec** `sec confirm` tapé pendant la fenêtre d'attente : la carte
+    répond `SW=9000` avec une signature ECDSA P-256 de 64 octets, quelques
+    centaines de ms après l'appui simulé. `Signature counter` passe à 1.
+  - Les deux moitiés comptent : sans la première, rien ne prouve que la
+    confirmation soit réellement requise ; sans la seconde, rien ne prouve
+    qu'elle suffise.
+
+**Pas prouvé** : l'échange CR-HMAC réel du mode OTP-HID (voir tâche 11 —
+vérifié à l'énumération USB seulement, faute d'outillage HID sur ce poste).
+Ne pas documenter l'OTP comme validé tant que ce test manque.
+
+### Trois bugs trouvés en validant, absents des tâches précédentes
+
+Cette tâche n'était censée toucher aucun code (voir son brief) ; les trois
+correctifs suivants sont apparus en essayant de faire fonctionner
+`gpg --card-status`, pas en cherchant des bugs :
+
+1. **`openpgp_do_init()`/`openpgp_card_load()` jamais appelés** (signalé par
+   la tâche 10) — le magasin de DO démarrait vide. Câblé à l'entrée du mode
+   PGP (`usb/mode_pgp.c:mode_pgp_data_load()`, appelée par `usb_mode.c` après
+   `usb_device_install()`), pas au démarrage : voir `CLAUDE.md` pour le choix.
+2. **`nvs_flash_init()` jamais appelé nulle part** dans le firmware — toute
+   écriture NVS (DO, PIN, clés) échouait `ESP_ERR_NVS_NOT_INITIALIZED`.
+   Silencieux tant que rien ne lisait/écrivait vraiment la NVS (avant que
+   ccid.c ne rende `openpgp_card_apdu` atteignable, cf. tâche 10). Ajouté dans
+   `main.c`, avant l'USB.
+3. **Descripteur CCID non conforme USB 2.0 en haute vitesse** :
+   `KASE_CCID_ITF_DESC` figeait `wMaxPacketSize` à 64 octets pour les deux
+   points bulk, aux deux vitesses — copié tel quel depuis KeSp (un dongle
+   ESP32-S3, jamais éprouvé à cette vitesse pour CCID). Le coffre négocie la
+   haute vitesse (480 Mbps), où l'USB 2.0 impose 512 comme SEULE valeur
+   légale pour un point bulk (tableau 5-5 de la spec). Le descripteur non
+   conforme laissait l'énumération passer mais corrompait les échanges bulk
+   côté hôte (`scdaemon --debug-ccid-driver` : « unexpected bulk-in msg type
+   (00) », puis timeout). Corrigé en paramétrant la taille (64 en FS, 512 en
+   HS), sur le modèle déjà en place pour `TUD_MSC_DESCRIPTOR` dans
+   `mode_storage.c`.
+
+   Un quatrième symptôme lié au même défaut de conformité DMA/cache : les
+   tampons statiques de `ccid.c` (`s_out_buf`/`s_in_buf`/`s_wtx_buf`)
+   n'étaient pas alignés sur la ligne de cache (64 o), requis sur ESP32-P4
+   pour que `esp_cache_msync()` garde le CPU et le DMA USB cohérents. Log
+   observé : `cache: esp_cache_msync(112): start address ... not aligned`,
+   aux adresses exactes de ces tampons (vérifié via `nm` sur l'ELF). Corrigé
+   avec `CFG_TUSB_MEM_ALIGN` (déjà défini dans `tusb_config.h`, utilisé
+   nulle part ailleurs dans le code porté).
+
+   Les deux — endpoint 64 o en HS et tampons non alignés — se manifestaient
+   par le même symptôme observable côté hôte (réponses CCID corrompues) ;
+   corriger l'un sans l'autre n'aurait pas suffi. **KeSp (ESP32-S3) n'a jamais
+   ce problème** : le S3 n'a pas la même architecture de cache-cohérence DMA
+   que le P4, d'où l'absence de tout précédent amont sur ces deux points.
+
 ## Divers
 
 - **C6 embarqué du module : vierge et non câblé** (U0RXD/U0TXD/IO9 NC) — flashable

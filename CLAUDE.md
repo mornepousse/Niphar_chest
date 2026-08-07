@@ -31,6 +31,38 @@ font échouer le build sur ces deux points. Ne pas les contourner.
 un bouton BOOTMODE ; ces règles n'y seront donc jamais vérifiées à l'exécution.
 Elles tiennent par construction, pas par expérience.
 
+## Le coffre n'expose rien au démarrage
+
+À froid, le coffre démarre en `USB_MODE_NONE` (`main/usb/usb_mode.h`) :
+**aucune** interface USB fonctionnelle n'est installée — ni disque, ni carte à
+puce, ni HID. C'est délibéré (« plein de choses, une à la fois », jamais deux
+en même temps) et **c'est le comportement normal**, pas une panne : un coffre
+qui vient d'être flashé ou reseté n'apparaîtra dans aucun `lsusb`/`lsblk`/
+`gpg --card-status` tant qu'on ne lui a rien demandé.
+
+Le sélecteur est la console série (`main/console/console.c`), pas l'USB
+lui-même :
+
+```
+usb mode none       # rien exposé — l'état de repos
+usb mode storage     # microSD en MSC
+usb mode pgp          # carte OpenPGP en CCID
+usb mode otp          # clé CR-HMAC en HID
+```
+
+Chaque bascule désinstalle d'abord le mode courant (`usb_device_uninstall()`
+— vraie déconnexion USB vue par l'hôte) avant d'installer le suivant : à tout
+instant, au plus un jeu de descripteurs est présent. Voir `main/usb/usb_mode.c`.
+
+**Effet de bord à connaître** : `usb mode pgp` recharge l'état persistant
+OpenPGP (DO, PIN, clés — `usb/mode_pgp.c:mode_pgp_data_load()`) à **chaque**
+entrée dans le mode, pas seulement au premier boot — nécessaire parce que
+`ccid_drv_init()` réarme les PIN d'usine en RAM à chaque bascule. Charger cet
+état au démarrage (comme `sd_probe()`/`sec_gate_init()`) aurait été plus
+simple mais contredit ce principe : mettre des clés privées en RAM avant que
+quiconque n'ait demandé le mode PGP n'a pas de sens. Détail et preuve sur
+matériel : [`docs/HARDWARE.md`](docs/HARDWARE.md#validation-openpgp-ccid--2026-08-07).
+
 ## Build
 
 Deux cartes. Elles ne divergent que sur le lien S3↔coffre, absent du kit ; tout

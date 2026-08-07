@@ -28,3 +28,12 @@ const uint8_t *mode_pgp_hs_config(void);
  * usb_device_serial() à chaque appel — bon marché, celui-ci met en cache.
  */
 const char **mode_pgp_strings(int *out_count);
+
+/*
+ * Charge en RAM l'état persistant de la carte OpenPGP (DO, PIN/retry, clés)
+ * et y appose le numéro de série dérivé de la MAC. À appeler par usb_mode.c
+ * juste après un usb_device_install() réussi vers USB_MODE_PGP — jamais
+ * avant, ni au démarrage. Voir le commentaire en tête de la définition dans
+ * mode_pgp.c pour le choix et l'exigence d'ordre vis-à-vis de ccid_drv_init().
+ */
+void mode_pgp_data_load(void);

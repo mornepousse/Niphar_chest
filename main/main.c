@@ -11,6 +11,7 @@
 #include "esp_chip_info.h"
 #include "esp_flash.h"
 #include "esp_system.h"
+#include "nvs_flash.h"
 
 #include "board.h"
 #include "console/console.h"
@@ -59,6 +60,30 @@ void app_main(void)
         ESP_LOGE(TAG, "verrou carte SD : %s", esp_err_to_name(sd_err));
     }
     (void)sd_probe();
+
+    /*
+     * NVS avant l'USB : c'est le socle flash dont les DO/PIN/clés OpenPGP
+     * (mode_pgp_data_load(), tâche 12) et les secrets sec_store (mode OTP)
+     * ont besoin pour persister — mais rien ne les charge encore ici, ce
+     * n'est que la partition NVS qui s'ouvre, pas un mode qui s'active.
+     * Découvert en câblant la tâche 12 : sans cet appel, nvs_open() échoue
+     * ESP_ERR_NVS_NOT_INITIALIZED, PUT DATA et VERIFY (pin persist)
+     * réussissent en RAM le temps de la session mais rien ne survit à un
+     * reset. Pas de bouton reset sur le coffre (docs/HARDWARE.md), donc
+     * jamais rencontré avant ce test bout en bout.
+     */
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS : partition à réinitialiser (%s)", esp_err_to_name(nvs_err));
+        nvs_err = nvs_flash_erase();
+        if (nvs_err == ESP_OK) {
+            nvs_err = nvs_flash_init();
+        }
+    }
+    if (nvs_err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS indisponible : %s — PGP/OTP resteront en RAM seule, sans persistance",
+                 esp_err_to_name(nvs_err));
+    }
 
     /*
      * L'USB ensuite, mais sans exposer de fonction : le coffre démarre en

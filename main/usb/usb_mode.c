@@ -91,6 +91,17 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         return err;
     }
 
+    if (mode == USB_MODE_PGP) {
+        /*
+         * Après coup, jamais avant : usb_device_install() vient de faire
+         * tourner ccid_drv_init() (via tusb_init()), qui réarme les PIN
+         * d'usine en RAM. Charger l'état persisté plus tôt se ferait
+         * écraser. Voir le commentaire de mode_pgp_data_load() pour le choix
+         * « à l'entrée du mode » plutôt qu'au démarrage (tâche 12).
+         */
+        mode_pgp_data_load();
+    }
+
     s_mode = mode;
     return ESP_OK;
 }

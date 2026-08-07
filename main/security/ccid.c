@@ -33,7 +33,20 @@
  * main/idf_component.yml), where usbd_edpt_xfer() takes a fifth bool
  * argument. Every call site below passes `false` — all of them run on the
  * tud_task, never from an ISR, matching TinyUSB's own class drivers (e.g.
- * msc_device.c). This is the only change from the KeSp original.
+ * msc_device.c).
+ *
+ * DIVERGENCE (Niphar_chest task 12) : s_out_buf/s_in_buf/s_wtx_buf gagnent
+ * CFG_TUSB_MEM_ALIGN (voir tusb_config.h), absent de l'original. KeSp cible
+ * l'ESP32-S3 ; le coffre est un ESP32-P4, dont le contrôleur USB DMA exige
+ * des tampons alignés sur la ligne de cache (esp_cache_msync, 64 o) pour que
+ * le CPU et le DMA voient la même donnée. Sans cet attribut, le compilateur
+ * plaçait ces tampons statiques à une adresse quelconque ; esp_cache_msync
+ * échouait silencieusement à chaque transfert bulk (log "cache:
+ * esp_cache_msync ... not aligned"), et l'hôte recevait des réponses CCID
+ * corrompues (vues sur matériel : scdaemon lisait un octet de type de
+ * message à 0x00 au lieu de la vraie réponse). Trouvé en validant `gpg
+ * --card-status` (tâche 12) — le mode PGP énumérait correctement mais aucun
+ * échange APDU n'aboutissait jamais avant ce correctif.
  */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -112,12 +125,16 @@ static uint8_t s_ep_in;    /* bulk IN  endpoint addr (device -> host) */
 /* ------------------------------------------------------------------ */
 /* APDU buffers (static, no malloc)                                    */
 /* ------------------------------------------------------------------ */
-static uint8_t s_out_buf[CCID_BUF_SZ];   /* incoming CCID message (OUT)  */
-static uint8_t s_in_buf[CCID_BUF_SZ];    /* outgoing CCID response (IN)  */
+/* CFG_TUSB_MEM_ALIGN (tusb_config.h) : aligne sur la ligne de cache — requis
+ * sur ESP32-P4 pour que esp_cache_msync() reste cohérent CPU/DMA sur ces
+ * tampons passés directement à usbd_edpt_xfer(). Voir la divergence tâche 12
+ * ci-dessus. */
+CFG_TUSB_MEM_ALIGN static uint8_t s_out_buf[CCID_BUF_SZ];   /* incoming CCID message (OUT)  */
+CFG_TUSB_MEM_ALIGN static uint8_t s_in_buf[CCID_BUF_SZ];    /* outgoing CCID response (IN)  */
 
 /* Separate buffer for WTX frames so they never clobber s_in_buf while
  * the worker is building the final APDU response. */
-static uint8_t s_wtx_buf[CCID_HDR_LEN];
+CFG_TUSB_MEM_ALIGN static uint8_t s_wtx_buf[CCID_HDR_LEN];
 
 /* ------------------------------------------------------------------ */
 /* Worker-task state                                                    */
