@@ -10,6 +10,7 @@ set(srcs
     "security/apdu.c"
     "security/otp_proto.c"
     "security/cr_hmac.c"
+    "security/openpgp_do.c"
 )
 
 idf_component_register(
