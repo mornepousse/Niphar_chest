@@ -13,6 +13,7 @@ set(srcs
     "security/openpgp_do.c"
     "security/openpgp_card.c"
     "security/openpgp_crypto.c"
+    "security/sec_gate.c"
 )
 
 idf_component_register(

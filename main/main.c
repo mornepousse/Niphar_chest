@@ -14,6 +14,7 @@
 
 #include "board.h"
 #include "console/console.h"
+#include "sec_gate.h"
 #include "storage/sd_card.h"
 #include "usb/usb_device.h"
 
@@ -68,6 +69,16 @@ void app_main(void)
     if (usb_err != ESP_OK) {
         ESP_LOGE(TAG, "USB indisponible : %s — la console reste le recours",
                  esp_err_to_name(usb_err));
+    }
+
+    /*
+     * La source de confirmation avant la console : « sec confirm » (kit) en
+     * dépend directement, et le journal de démarrage doit dire d'où viendra
+     * l'appui avant que quiconque puisse en armer une.
+     */
+    esp_err_t gate_err = sec_gate_init();
+    if (gate_err != ESP_OK) {
+        ESP_LOGE(TAG, "sec_gate indisponible : %s", esp_err_to_name(gate_err));
     }
 
     /*

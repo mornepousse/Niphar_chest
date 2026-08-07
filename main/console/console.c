@@ -10,6 +10,7 @@
 #include "esp_timer.h"
 #include "sdmmc_cmd.h"
 
+#include "sec_gate.h"
 #include "storage/sd_card.h"
 #include "usb/msc_disk.h"
 #include "usb/usb_device.h"
@@ -139,6 +140,30 @@ static int cmd_usb(int argc, char **argv)
     return 0;
 }
 
+static int cmd_sec(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage : sec confirm | sec source\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "source") == 0) {
+        printf("confirmation : %s\n", sec_gate_source());
+        return 0;
+    }
+
+#if !BOARD_LINK_AVAILABLE
+    if (strcmp(argv[1], "confirm") == 0) {
+        sec_gate_console_confirm();
+        printf("appui simulé — sans effet s'il n'y a pas d'opération armée.\n");
+        return 0;
+    }
+#endif
+
+    printf("sous-commande inconnue : %s\n", argv[1]);
+    return 1;
+}
+
 esp_err_t console_start(void)
 {
     esp_console_repl_t *repl = NULL;
@@ -183,6 +208,18 @@ esp_err_t console_start(void)
     err = esp_console_cmd_register(&usb_cmd);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "commande usb : %s", esp_err_to_name(err));
+        return err;
+    }
+
+    const esp_console_cmd_t sec_cmd = {
+        .command = "sec",
+        .help = "Sécurité : « sec source », et « sec confirm » sur carte sans lien",
+        .hint = "confirm|source",
+        .func = &cmd_sec,
+    };
+    err = esp_console_cmd_register(&sec_cmd);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "commande sec : %s", esp_err_to_name(err));
         return err;
     }
 

@@ -13,6 +13,7 @@ extern void test_apdu(void);
 extern void test_otp_proto(void);
 extern void test_openpgp_do(void);
 extern void test_openpgp_card(void);
+extern void test_sec_gate(void);
 
 int main(void)
 {
@@ -26,6 +27,7 @@ int main(void)
     test_otp_proto();
     test_openpgp_do();
     test_openpgp_card();
+    test_sec_gate();
     test_msc_lba();
 
     printf("\n=================================\n");

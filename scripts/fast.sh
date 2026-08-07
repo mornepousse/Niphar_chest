@@ -58,6 +58,19 @@ for f in sdkconfig.defaults sdkconfig.defaults.*; do
     fi
 done
 
+# --- Garde-fou 4 : la béquille de confirmation ne part pas en production ----
+# sec_gate_console_confirm n'existe que sur une carte sans lien. Si ce symbole
+# apparaît hors d'un bloc conditionné à BOARD_LINK_AVAILABLE, la béquille
+# pourrait se retrouver dans le firmware du coffre — indistinguable, à l'usage,
+# d'un dispositif qui fonctionne.
+if grep -rn 'sec_gate_console_confirm' main/ --include='*.c' --include='*.h' \
+        | grep -vE '^main/security/sec_gate\.(c|h):' \
+        | grep -vE '^main/console/console\.c:'; then
+    echo "ERREUR : la béquille de confirmation est référencée hors des deux"
+    echo "         fichiers qui la conditionnent à BOARD_LINK_AVAILABLE."
+    fail=1
+fi
+
 # Un seul point de sortie pour TOUS les garde-fous : en ajouter un après ce
 # test le rendrait bavard mais inoffensif — c'est exactement l'erreur commise
 # ici le 2026-08-07, et elle ne s'est vue qu'en vérifiant le code de sortie.
