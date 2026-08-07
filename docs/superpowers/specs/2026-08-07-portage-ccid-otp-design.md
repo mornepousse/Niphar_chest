@@ -26,21 +26,49 @@ CR-HMAC compatible YubiKey sur HID, et FIDO2 y est explicitement noté « Phase 
 — out of scope ». Ce qui se porte est donc **CCID + OTP-HID** ; un vrai CTAP2
 serait du développement neuf, à décider séparément.
 
-## 2. Ce que le P4 débloque
+## 2. Une fonction à la fois, commandée par le clavier
 
-Sur l'ESP32-S3, CCID et OTP-HID sont **mutuellement exclusifs** : le contrôleur
-pleine vitesse n'a que 4 endpoints IN, et les deux ensemble débordent
-(`KeSp_firmware/docs/SECURITY_KEY.md`). L'OTG haute vitesse du P4 en a 16
-(`DWC2_EP_MAX`, `dwc2_esp32.h:74`).
+**Le coffre n'expose jamais plus d'une fonction USB.** C'est la devise du
+projet — « plein de choses, une à la fois » — et c'est une décision de sécurité
+autant que d'ergonomie : une clé PGP ne doit pas être présente sur le bus parce
+qu'on voulait un disque.
 
-Le coffre peut donc exposer **MSC + CCID + OTP-HID simultanément** — ce
-qu'aucune carte de KeSp ne sait faire. C'est le premier gain propre au coffre,
-et il est acquis sans effort de conception.
+Quatre modes, exclusifs :
+
+| mode | ce que l'hôte voit |
+|---|---|
+| `NONE` | rien — état au démarrage |
+| `STORAGE` | le disque (MSC) |
+| `PGP` | la carte OpenPGP (CCID) |
+| `OTP` | la clé CR-HMAC (HID) |
+
+**Le sélecteur est le S3.** Le coffre vit dans la moitié gauche du clavier :
+partout où tu emportes le clavier, le S3 est là et alimenté, donc capable de
+commander. Sur le kit de dev, faute de S3, une commande console tient ce rôle —
+verrouillée par construction comme la béquille de confirmation (§5).
+
+**Au démarrage, rien.** Une fonction ne s'expose que sur ordre explicite, et
+l'ordre ne survit pas au débranchement. Un coffre branché sur une machine
+inconnue ne présente donc aucune surface tant que tu n'as rien demandé.
+
+Deux conséquences, dont une gênante :
+
+- **Changer de mode impose une ré-énumération.** Les interfaces d'un
+  périphérique USB configuré ne se modifient pas : il faut quitter le bus et y
+  revenir avec d'autres descripteurs. L'hôte verra un débranchement suivi d'un
+  rebranchement à chaque bascule. C'est imposé par l'USB, pas choisi.
+- **Sur `niphar_chest`, tant que le lien SPI n'existe pas, rien ne peut être
+  sélectionné** — le firmware du coffre sera inerte côté USB. C'est cohérent
+  avec le reste : refuser plutôt que d'accorder par défaut.
+
+Le budget d'endpoints du P4 (16 contre 4 sur le S3) cesse d'être un argument de
+conception, puisqu'on n'expose jamais plus d'un jeu à la fois. Il reste une
+marge confortable, rien de plus.
 
 ## 3. Portée
 
-Dans la portée : le portage des deux volets, le composite USB à trois
-interfaces, une source de confirmation utilisable sur le kit, et le portage des
+Dans la portée : le portage des deux volets, la bascule de mode USB et son
+sélecteur, une source de confirmation utilisable sur le kit, et le portage des
 tests hôte existants.
 
 Hors portée : le transport SPI du lien (sa propre spec, en attente de la carte),
@@ -104,25 +132,35 @@ est donc verrouillée par construction, sur le modèle du garde Secure Boot :
 Sur le coffre avant que le lien existe, les opérations expireront au bout de
 15 s. C'est le comportement honnête : refuser plutôt que d'accorder.
 
-## 6. Composite USB
+## 6. USB à mode unique
 
-Le MSC passe de seul occupant à un parmi trois.
+Chaque mode a son propre jeu de descripteurs, et un seul est monté à la fois.
+Les endpoints ne sont donc jamais en concurrence : chaque mode repart de la
+même paire.
 
-| interface | OUT | IN |
-|---|---|---|
-| MSC | `0x01` | `0x81` |
-| CCID | `0x02` | `0x82` |
-| HID (OTP) | `0x03` | `0x83` |
+| mode | interface | OUT | IN |
+|---|---|---|---|
+| `STORAGE` | MSC | `0x01` | `0x81` |
+| `PGP` | CCID | `0x01` | `0x81` |
+| `OTP` | HID | `0x01` | `0x81` |
+| `NONE` | — | — | — |
 
-Six endpoints sur seize. `ccid.c` s'enregistre auprès de TinyUSB par
-`usbd_app_driver_get_cb`, un mécanisme de TinyUSB **brut** — donc compatible
-avec l'architecture retenue au socle, où `esp_tinyusb` a été écarté. C'est une
-coïncidence heureuse, pas un choix : le wrapper aurait ici encore posé
-problème.
+Un nouveau module **`usb_mode`** possède la pile USB : il installe TinyUSB avec
+les descripteurs du mode demandé, et bascule en détachant puis réinstallant.
+`usb_device.c` cesse d'être le propriétaire du périphérique pour devenir la
+mécanique que `usb_mode` pilote.
 
-Chaque interface est activable indépendamment. La mutuelle exclusion de KeSp
-n'a plus de raison d'être, mais les options restent séparées : un coffre qui
-n'expose que le disque doit rester possible.
+`ccid.c` s'enregistre auprès de TinyUSB par `usbd_app_driver_get_cb`, un
+mécanisme de TinyUSB **brut** — donc compatible avec l'architecture retenue au
+socle, où `esp_tinyusb` a été écarté. Ce n'était pas prévu : le wrapper aurait
+ici encore posé problème.
+
+**Point délicat.** `usbd_app_driver_get_cb` est résolu à l'édition de liens,
+pas à l'exécution : la classe CCID est présente dans le binaire quel que soit le
+mode. Ce qui change d'un mode à l'autre, ce sont les **descripteurs** — donc ce
+que l'hôte voit. Une classe compilée mais non décrite n'est jamais atteinte,
+puisque aucune interface ne lui est associée. C'est correct, mais ça mérite
+d'être su : le code de la carte OpenPGP est là même en mode `STORAGE`.
 
 ## 7. Tests
 
@@ -163,7 +201,9 @@ les defaults partagés. Le garde-fou existe déjà dans `scripts/fast.sh`.
 
 | Décision | Alternative écartée | Raison |
 |---|---|---|
-| CCID **et** OTP-HID | CCID seul d'abord | le budget d'endpoints du P4 les rend compatibles, et l'OTP n'a jamais pu être validé ailleurs |
+| Quatre modes exclusifs, un seul monté | composite MSC + CCID + HID permanent | « une à la fois » est la devise du projet et une décision de sécurité : une clé PGP ne doit pas être sur le bus parce qu'on voulait un disque |
+| Aucune fonction au démarrage | dernier mode mémorisé en NVS | un coffre branché sur une machine inconnue ne présente aucune surface tant que rien n'a été demandé |
+| CCID **et** OTP-HID portés | CCID seul d'abord | ils sont deux modes distincts, et l'OTP n'a jamais pu être validé ailleurs faute d'endpoints |
 | Confirmation par la console, kit seulement | confirmation automatique sous Kconfig | rien n'empêcherait de la laisser active ; un dispositif qui s'auto-confirme se comporte comme un dispositif qui marche |
 | Copie quasi verbatim | réécriture adaptée au coffre | le code est éprouvé sur matériel ; diverger coûte le bénéfice et coupe les corrections futures |
 | `cr_crc16` dans `main/sys/` | une copie par volet | deux CRC divergents seraient un bug silencieux à l'interface, ce que son commentaire prétend justement éviter |
