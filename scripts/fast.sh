@@ -16,10 +16,14 @@ fail=0
 # seul chemin de flash et de debug. Le réaffecter rend une mauvaise version
 # irrécupérable sans fer à souder. Le kit de dev, lui, pardonne — donc ce
 # garde-fou ne se vérifiera jamais à l'exécution : il tient ici.
-# board.h a le droit de les nommer, c'est lui qui les déclare réservés.
-if grep -rnE 'GPIO_NUM_(24|25)\b' main/ --include='*.c' --include='*.h' \
-        | grep -v '^main/board.h:'; then
-    echo "ERREUR : GPIO24/25 (USB-Serial-JTAG) utilisés hors de main/board.h."
+# GPIO35 s'y ajoute : c'est le seul strap qui décide entre boot applicatif et
+# mode download (TRM table 11.2-2), et le coffre n'a pas de bouton de secours.
+# Les en-têtes de carte ont le droit de les nommer : ce sont eux qui les
+# déclarent réservés.
+if grep -rnE 'GPIO_NUM_(24|25|35)\b' main/ boards/ --include='*.c' --include='*.h' \
+        | grep -vE '^(main/board_common\.h|boards/[^/]+/board\.h):'; then
+    echo "ERREUR : GPIO24/25 (USB-Serial-JTAG) ou GPIO35 (strap de boot) utilisés"
+    echo "         hors des en-têtes de carte."
     echo "         Voir docs/HARDWARE.md — le coffre deviendrait irrécupérable."
     fail=1
 fi

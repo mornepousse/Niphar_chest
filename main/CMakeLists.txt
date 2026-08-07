@@ -8,7 +8,9 @@ set(srcs
 
 idf_component_register(
     SRCS ${srcs}
-    INCLUDE_DIRS "."
+    # ${BOARD_DIR} en premier : c'est de là que vient « board.h », sans qu'aucun
+    # source n'ait à savoir quelle carte est sélectionnée.
+    INCLUDE_DIRS "${BOARD_DIR}" "."
     # Volontairement réduit à ce que le code utilise vraiment.
     REQUIRES esp_driver_gpio spi_flash sdmmc esp_driver_sdmmc console
              espressif__tinyusb esp_timer

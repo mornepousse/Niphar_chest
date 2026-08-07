@@ -1,14 +1,16 @@
 #pragma once
 
 /*
- * Contrat matériel du coffre — voir docs/HARDWARE.md (vérifié à la netlist
- * Niphargus, revue 2026-08-06).
+ * Ce que le coffre et le kit de dev ont en commun — voir docs/HARDWARE.md
+ * (vérifié à la netlist Niphargus, revue 2026-08-06).
  *
- * Le kit JC-ESP32P4-M3-DEV câble la microSD exactement comme le coffre, d'où
- * une cible de build unique. Vérifié contre le BSP du vendeur
- * (esp32_p4_function_ev_board.h) et contre le silicium : « card one
- * (SDMMC_HOST_SLOT_0) signals are multiplexed with GPIO39-GPIO48 … via IO MUX »
- * — ESP32-P4 Series Datasheet v0.7, p. 81.
+ * Le kit JC-ESP32P4-M3-DEV câble la microSD exactement comme le coffre.
+ * Vérifié contre le BSP du vendeur (esp32_p4_function_ev_board.h:71-76) et
+ * contre le silicium : « card one (SDMMC_HOST_SLOT_0) signals are multiplexed
+ * with GPIO39-GPIO48 … via IO MUX » — ESP32-P4 Series Datasheet v0.7, p. 81.
+ *
+ * Les deux cartes divergent sur le lien S3↔coffre, et sur lui seul : chaque
+ * boards/<nom>/board.h inclut ce fichier puis déclare son propre bloc.
  */
 
 #include "driver/gpio.h"
@@ -52,22 +54,30 @@
  *
  * Le kit de dev, lui, pardonne (CH340C + bouton BOOTMODE). Cette règle ne se
  * vérifiera donc jamais à l'exécution sur le kit : elle tient par les
- * _Static_assert ci-dessous et par scripts/check.sh.
+ * _Static_assert ci-dessous et par scripts/fast.sh.
  */
 #define BOARD_USJ_DM        GPIO_NUM_24
 #define BOARD_USJ_DP        GPIO_NUM_25
 
-#define BOARD_PIN_IS_RESERVED(p) ((p) == BOARD_USJ_DM || (p) == BOARD_USJ_DP)
+/*
+ * Strap de boot du P4. GPIO35 seul décide entre boot applicatif et mode
+ * download (TRM table 11.2-2) ; GPIO34/36/37/38 sont sans effet tant qu'il est
+ * haut. Déclaré ici pour que les _Static_assert puissent le refuser.
+ */
+#define BOARD_BOOT_STRAP    GPIO_NUM_35
+
+#define BOARD_PIN_IS_RESERVED(p) \
+    ((p) == BOARD_USJ_DM || (p) == BOARD_USJ_DP || (p) == BOARD_BOOT_STRAP)
 
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_CLK),
-               "BOARD_SD_CLK empiete sur l'USB-Serial-JTAG (GPIO24/25) : le coffre deviendrait irrecuperable");
+               "BOARD_SD_CLK empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_CMD),
-               "BOARD_SD_CMD empiete sur l'USB-Serial-JTAG (GPIO24/25) : le coffre deviendrait irrecuperable");
+               "BOARD_SD_CMD empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_D0),
-               "BOARD_SD_D0 empiete sur l'USB-Serial-JTAG (GPIO24/25) : le coffre deviendrait irrecuperable");
+               "BOARD_SD_D0 empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_D1),
-               "BOARD_SD_D1 empiete sur l'USB-Serial-JTAG (GPIO24/25) : le coffre deviendrait irrecuperable");
+               "BOARD_SD_D1 empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_D2),
-               "BOARD_SD_D2 empiete sur l'USB-Serial-JTAG (GPIO24/25) : le coffre deviendrait irrecuperable");
+               "BOARD_SD_D2 empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_D3),
-               "BOARD_SD_D3 empiete sur l'USB-Serial-JTAG (GPIO24/25) : le coffre deviendrait irrecuperable");
+               "BOARD_SD_D3 empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");

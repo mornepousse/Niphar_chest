@@ -29,7 +29,9 @@ void app_main(void)
         flash_size = 0;
     }
 
-    ESP_LOGI(TAG, "coffre Niphar %s", NIPHAR_VERSION);
+    /* La carte en clair dès la première ligne : les deux firmwares se
+     * ressemblent, et savoir lequel tourne évite des heures de diagnostic. */
+    ESP_LOGI(TAG, "coffre Niphar %s — carte %s", NIPHAR_VERSION, BOARD_NAME);
     /* esp_chip_info_t.revision est au format MXX : major = /100, minor = %100. */
     ESP_LOGI(TAG, "ESP32-P4 rev v%d.%d, %d coeur(s), flash %" PRIu32 " Mo",
              chip.revision / 100, chip.revision % 100,
@@ -39,6 +41,13 @@ void app_main(void)
              BOARD_SD_CLK, BOARD_SD_CMD,
              BOARD_SD_D0, BOARD_SD_D1, BOARD_SD_D2, BOARD_SD_D3,
              BOARD_SD_BUS_WIDTH);
+#if BOARD_LINK_AVAILABLE
+    ESP_LOGI(TAG, "lien S3 sur CS=%d MOSI=%d SCK=%d MISO=%d IRQ=%d",
+             BOARD_LINK_CS, BOARD_LINK_MOSI, BOARD_LINK_SCK,
+             BOARD_LINK_MISO, BOARD_LINK_IRQ);
+#else
+    ESP_LOGI(TAG, "lien S3 : indisponible sur cette carte");
+#endif
 
     /*
      * Une carte absente n'est pas une erreur fatale : le coffre doit rester

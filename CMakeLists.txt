@@ -1,6 +1,20 @@
-# Coffre Niphar — ESP32-P4. Cible de build unique : le kit JC-ESP32P4-M3-DEV et
-# le coffre partagent le même pinout (voir docs/HARDWARE.md).
+# Coffre Niphar — ESP32-P4.
 cmake_minimum_required(VERSION 3.16)
+
+# Sélection de la carte : idf.py -DBOARD=niphar_chest build
+#
+# Le défaut est le kit, et ce n'est pas arbitraire : c'est le seul matériel qui
+# existe, et le sens de l'erreur compte. Flasher du jc_devkit sur un coffre ne
+# fait que priver du lien ; l'inverse enverrait du SPI dans le bus I2C du codec
+# audio du kit.
+if(NOT DEFINED BOARD)
+    set(BOARD "jc_devkit" CACHE STRING "Carte cible")
+endif()
+set(BOARD_DIR "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD}" CACHE INTERNAL "")
+if(NOT EXISTS "${BOARD_DIR}/board.h")
+    message(FATAL_ERROR "Carte '${BOARD}' inconnue : ${BOARD_DIR}/board.h est absent")
+endif()
+message(STATUS "Niphar_chest board: ${BOARD}")
 
 # Version : le tag git est la source de vérité, pas de fichier VERSION.
 # --always couvre le cas « aucun tag encore posé ».

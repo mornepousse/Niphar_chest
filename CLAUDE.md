@@ -33,13 +33,25 @@ Elles tiennent par construction, pas par expérience.
 
 ## Build
 
-Cible unique : le kit et le coffre partagent le même pinout, il n'y a rien à
-faire varier.
+Deux cartes. Elles ne divergent que sur le lien S3↔coffre, absent du kit ; tout
+le reste (microSD, USB) est commun et vit dans `main/board_common.h`.
+
+| carte | lien S3 | matériel |
+|---|---|---|
+| `jc_devkit` *(défaut)* | non | le kit, seul matériel existant |
+| `niphar_chest` | oui | le coffre, pas encore fabriqué |
 
 ```bash
 source ~/esp/esp-idf/export.sh
-idf.py build
+idf.py -B build_jc_devkit -DBOARD=jc_devkit -DSDKCONFIG=build_jc_devkit/sdkconfig build
 ```
+
+Le défaut est le kit, et le sens de l'erreur compte : flasher du `jc_devkit` sur
+un coffre ne fait que priver du lien, l'inverse enverrait du SPI dans le bus I2C
+du codec audio du kit.
+
+Aucun source n'inclut un chemin de carte : `${BOARD_DIR}` est en tête des
+includes, donc `#include "board.h"` résout vers la carte sélectionnée.
 
 Flash et monitor : `/esp-build`, `/esp-flash`, `/esp-cycle`, `/esp-monitor`
 (config dans `.esp-dev.yml`).
@@ -109,10 +121,17 @@ transferts, parsing d'en-têtes, machines à états) : test écrit **d'abord**,
 ajouté à la suite de tests de la phase rapide. Le test doit être rouge avant
 l'implémentation, vert après, et parallel-safe (pas d'état global muté).
 
-Il n'y a pas encore de harnais de tests hôte : le ratchet de `check.sh` est
-inerte et la phase rapide se réduit aux garde-fous plus le build. Le premier
-morceau de logique pure — vraisemblablement l'adressage LBA du MSC — doit
-arriver avec son harnais, sur le modèle du `test/` de KeSp_firmware.
+Le harnais hôte existe : `test/`, compilé par CMake avec le compilateur de la
+machine, lancé par `scripts/fast.sh` **avant** le build firmware. Le ratchet est
+actif (`.tripwire-testcount`, committé) et le pre-push refuse une baisse.
+
+Un test ne vaut que s'il mord : après l'avoir écrit, introduire un bug
+transitoire qui devrait le faire échouer, vérifier le rouge, revenir. C'est ce
+qui distingue un test d'une assertion décorative.
+
+Seule la logique pure entre dans `test/` — pas d'appel ESP-IDF, sinon ça ne
+compile pas sur l'hôte. Cette contrainte est un outil de conception : ce qui
+n'est pas testable est presque toujours ce qui mélange calcul et matériel.
 
 ### Économie de modèles (subagents)
 Le pipeline check.sh permet de descendre en gamme SANS risque d'hallucination,
