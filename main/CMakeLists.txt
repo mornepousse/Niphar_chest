@@ -8,6 +8,8 @@ set(srcs
     "security/sec_confirm.c"
     "security/sec_store.c"
     "security/apdu.c"
+    "security/otp_proto.c"
+    "security/cr_hmac.c"
 )
 
 idf_component_register(
@@ -20,7 +22,7 @@ idf_component_register(
     INCLUDE_DIRS "${BOARD_DIR}" "." "sys" "security"
     # Volontairement réduit à ce que le code utilise vraiment.
     REQUIRES esp_driver_gpio spi_flash sdmmc esp_driver_sdmmc console
-             espressif__tinyusb esp_timer nvs_flash
+             espressif__tinyusb esp_timer nvs_flash mbedtls
     PRIV_REQUIRES usb
 )
 

@@ -17,11 +17,13 @@ add_executable(test_runner
     test_sec_confirm.c
     test_sec_store.c
     test_apdu.c
+    test_otp_proto.c
     ../main/link/link_proto.c
     ../main/sys/cr_crc16.c
     ../main/security/sec_confirm.c
     ../main/security/sec_store.c
     ../main/security/apdu.c
+    ../main/security/otp_proto.c
     ../main/usb/msc_lba.c
     nvs_fake.c
 )
