@@ -16,7 +16,7 @@
 #include "console/console.h"
 #include "sec_gate.h"
 #include "storage/sd_card.h"
-#include "usb/usb_device.h"
+#include "usb/usb_mode.h"
 
 static const char *TAG = "niphar";
 
@@ -61,11 +61,12 @@ void app_main(void)
     (void)sd_probe();
 
     /*
-     * Le MSC ensuite. Il énumère même sans carte : l'hôte apprendra l'absence
-     * de média par TEST UNIT READY, ce qui vaut mieux qu'un périphérique
-     * fantôme. Un échec ici ne doit pas empêcher la console de démarrer.
+     * L'USB ensuite, mais sans exposer de fonction : le coffre démarre en
+     * USB_MODE_NONE (voir usb/usb_mode.h) et c'est la console — ou, plus tard,
+     * le clavier via le lien S3 — qui demandera explicitement un mode. Un
+     * échec ici ne doit pas empêcher la console de démarrer.
      */
-    esp_err_t usb_err = usb_device_start();
+    esp_err_t usb_err = usb_mode_init();
     if (usb_err != ESP_OK) {
         ESP_LOGE(TAG, "USB indisponible : %s — la console reste le recours",
                  esp_err_to_name(usb_err));

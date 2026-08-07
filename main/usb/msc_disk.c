@@ -59,6 +59,16 @@ void msc_disk_get_stats(msc_disk_stats_t *out)
 esp_err_t msc_disk_init(void)
 {
     /*
+     * Idempotent : depuis la tâche 9, usb_mode.c rappelle msc_disk_init() à
+     * chaque entrée en USB_MODE_STORAGE, pas seulement au démarrage. Sans ce
+     * garde, chaque aller-retour de mode réallouerait le tampon de rebond et
+     * perdrait l'ancien pointeur — une fuite DMA silencieuse.
+     */
+    if (s_bounce != NULL) {
+        return ESP_OK;
+    }
+
+    /*
      * La taille de secteur n'est connue qu'une fois la carte détectée. Sans
      * carte au démarrage, on prend 512 o — la valeur de toutes les cartes SD
      * courantes — et sd_probe() ne changera rien à cette hypothèse : un média

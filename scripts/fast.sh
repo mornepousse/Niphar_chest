@@ -71,6 +71,19 @@ if grep -rn 'sec_gate_console_confirm' main/ --include='*.c' --include='*.h' \
     fail=1
 fi
 
+# Même béquille, même garde : sur une carte avec lien, le sélecteur de mode
+# USB viendra du S3, pas de la console. usb_mode_set peut légitimement être
+# appelé par usb_mode.c lui-même (son prototype) et par console.c (la
+# béquille, conditionnée à BOARD_LINK_AVAILABLE). main.c n'appelle que
+# usb_mode_init(), qui n'est pas concerné par ce garde-fou.
+if grep -rn 'usb_mode_set' main/ --include='*.c' --include='*.h' \
+        | grep -vE '^main/usb/usb_mode\.(c|h):' \
+        | grep -vE '^main/console/console\.c:'; then
+    echo "ERREUR : usb_mode_set est référencé hors de usb_mode.{c,h} et de"
+    echo "         console.c (la béquille sans lien)."
+    fail=1
+fi
+
 # Un seul point de sortie pour TOUS les garde-fous : en ajouter un après ce
 # test le rendrait bavard mais inoffensif — c'est exactement l'erreur commise
 # ici le 2026-08-07, et elle ne s'est vue qu'en vérifiant le code de sortie.

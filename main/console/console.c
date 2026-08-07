@@ -14,6 +14,7 @@
 #include "storage/sd_card.h"
 #include "usb/msc_disk.h"
 #include "usb/usb_device.h"
+#include "usb/usb_mode.h"
 
 static const char *TAG = "console";
 
@@ -119,9 +120,30 @@ static int cmd_usb(int argc, char **argv)
     (void)argc;
     (void)argv;
 
+#if !BOARD_LINK_AVAILABLE
+    /*
+     * Béquille de développement : sur une carte avec lien, le sélecteur de
+     * mode viendra du clavier via le S3, pas de la console. Verrouillée
+     * comme sec_gate_console_confirm — voir le garde-fou 4 de fast.sh, étendu
+     * à usb_mode_set par cette même tâche.
+     */
+    if (argc >= 3 && strcmp(argv[1], "mode") == 0) {
+        usb_mode_t m = USB_MODE_NONE;
+        if      (strcmp(argv[2], "none")    == 0) m = USB_MODE_NONE;
+        else if (strcmp(argv[2], "storage") == 0) m = USB_MODE_STORAGE;
+        else if (strcmp(argv[2], "pgp")     == 0) m = USB_MODE_PGP;
+        else if (strcmp(argv[2], "otp")     == 0) m = USB_MODE_OTP;
+        else { printf("mode inconnu : %s\n", argv[2]); return 1; }
+        esp_err_t err = usb_mode_set(m);
+        printf("mode %s : %s\n", usb_mode_name(m), esp_err_to_name(err));
+        return err == ESP_OK ? 0 : 1;
+    }
+#endif
+
     msc_disk_stats_t st;
     msc_disk_get_stats(&st);
 
+    printf("mode          : %s\n", usb_mode_name(usb_mode_get()));
     printf("état          : %s\n", usb_device_mounted() ? "configuré par l'hôte" : "non configuré");
     printf("bufsize max   : %" PRIu32 " o (demandé par TinyUSB)\n", st.max_bufsize);
     printf("secteurs DMA  : %" PRIu32 "\n", st.fast_sectors);
@@ -201,7 +223,11 @@ esp_err_t console_start(void)
 
     const esp_console_cmd_t usb_cmd = {
         .command = "usb",
-        .help = "État USB et compteurs du chemin MSC (rapide vs rebond)",
+        .help = "État USB, compteurs du chemin MSC (rapide vs rebond)"
+#if !BOARD_LINK_AVAILABLE
+                ", et « usb mode none|storage|pgp|otp » (béquille de dev, sans lien)"
+#endif
+                ,
         .hint = NULL,
         .func = &cmd_usb,
     };

@@ -21,6 +21,7 @@ add_executable(test_runner
     test_openpgp_do.c
     test_openpgp_card.c
     test_sec_gate.c
+    test_usb_mode.c
     ../main/link/link_proto.c
     ../main/sys/cr_crc16.c
     ../main/security/sec_confirm.c
@@ -30,6 +31,7 @@ add_executable(test_runner
     ../main/security/openpgp_do.c
     ../main/security/openpgp_card.c
     ../main/usb/msc_lba.c
+    ../main/usb/usb_mode_name.c
     nvs_fake.c
 )
 
