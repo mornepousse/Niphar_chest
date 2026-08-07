@@ -11,6 +11,8 @@
  * le coffre n'expose rien du tout.
  */
 
+#include <stdbool.h>
+
 #ifdef TEST_HOST
 /* usb_mode_name.c est compilé sur l'hôte (voir test/CMakeLists.txt) : pas
  * d'ESP-IDF disponible, donc pas de vrai esp_err.h. Même faux typedef que
@@ -41,6 +43,17 @@ esp_err_t usb_mode_init(void);
 esp_err_t usb_mode_set(usb_mode_t mode);
 
 usb_mode_t usb_mode_get(void);
+
+/*
+ * Le mode rendu par usb_mode_get() est-il certain ?
+ *
+ * Faux entre le démontage de la pile et la réussite de l'installation
+ * suivante, donc notamment après une bascule qui a échoué : ce que voit l'hôte
+ * n'est alors plus garanti conforme. Sans cet accesseur, l'incertitude
+ * n'existerait que dans une statique invisible, et la console afficherait un
+ * mode d'aplomb dans le cas précis où il ne faut pas s'y fier.
+ */
+bool usb_mode_is_known(void);
 
 /* Jamais NULL, même pour une valeur hors bornes : cette fonction doit rester
  * utilisable pour journaliser une bascule invalide. */

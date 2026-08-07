@@ -7,6 +7,7 @@
 #include "usb/mode_storage.h"
 #include "usb/msc_disk.h"
 #include "usb/usb_device.h"
+#include "usb/usb_mode_state.h"
 
 static const char *TAG = "usb_mode";
 
@@ -39,6 +40,11 @@ esp_err_t usb_mode_init(void)
 usb_mode_t usb_mode_get(void)
 {
     return s_mode;
+}
+
+bool usb_mode_is_known(void)
+{
+    return s_mode_known;
 }
 
 esp_err_t usb_mode_set(usb_mode_t mode)
@@ -78,11 +84,34 @@ esp_err_t usb_mode_set(usb_mode_t mode)
      */
     esp_err_t err = usb_device_uninstall();
     if (err != ESP_OK) {
-        /* Le mode précédent n'est plus servi de façon fiable — le dire.
-         * s_mode_known reste faux, donc une nouvelle demande du même mode
-         * n'est pas court-circuitée et retentera la désinstallation. */
+        /*
+         * Échec de la désinstallation : elle n'a alors RIEN détaché — ni
+         * tud_disconnect(), ni tusb_deinit(), ni le PHY (contrat en tête de
+         * usb_device.h). Le périphérique du mode PRÉCÉDENT est donc toujours
+         * sur le bus, et c'est lui qu'il faut annoncer : poser USB_MODE_NONE
+         * ici était la résurgence, par une autre porte, du s_mode qui ment.
+         *
+         * Conserver le mode n'est pas cosmétique — c'est ce qui fait repasser
+         * la tentative suivante par le mode_pgp_stop() ci-dessus, donc referme
+         * la porte des callbacks CCID AVANT le tusb_deinit() qui détruit la
+         * file de tud_task (divergence BLOQUANT 1 en tête de
+         * security/ccid.c). Avec NONE, cette étape était sautée et la sûreté
+         * ne tenait plus que par la rémanence de s_shutdown.
+         *
+         * Et on NE réarme PAS le CCID au passage, malgré l'apparente
+         * asymétrie avec mode_pgp_stop() : usb_device_uninstall() a déjà posé
+         * son drapeau d'arrêt de tâche avant d'échouer, donc plus personne ne
+         * fera tourner tud_task. Un CCID rouvert n'aurait rien pour répondre,
+         * et son premier usbd_defer_func() irait dans une file que plus
+         * personne ne vide — osal_queue_send() y attend sans limite de temps
+         * (managed_components/espressif__tinyusb/src/osal/osal_freertos.h:282).
+         * Le mode est fini ; la reprise passe par une nouvelle bascule, pas
+         * par une réanimation.
+         */
         ESP_LOGE(TAG, "désinstallation avant bascule : %s", esp_err_to_name(err));
-        s_mode = USB_MODE_NONE;
+        const usb_mode_state_t st = usb_mode_state_on_failure(s_mode, USB_MODE_FAIL_UNINSTALL);
+        s_mode = st.mode;
+        s_mode_known = st.known;
         return err;
     }
 
@@ -105,7 +134,10 @@ esp_err_t usb_mode_set(usb_mode_t mode)
              * usb_mode_get() ET court-circuiter la prochaine demande de ce
              * même mode, qui renverrait ESP_OK sans rien installer. */
             ESP_LOGE(TAG, "init du disque : %s", esp_err_to_name(err));
-            s_mode = USB_MODE_NONE;
+            const usb_mode_state_t st =
+                usb_mode_state_on_failure(s_mode, USB_MODE_FAIL_AFTER_UNINSTALL);
+            s_mode = st.mode;
+            s_mode_known = st.known;
             return err;
         }
         strings = mode_storage_strings(&string_count);
@@ -132,7 +164,10 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         /* Même raison qu'au-dessus : rien n'est installé, il faut le dire. */
         ESP_LOGE(TAG, "installation du mode %s : %s",
                  usb_mode_name(mode), esp_err_to_name(err));
-        s_mode = USB_MODE_NONE;
+        const usb_mode_state_t st =
+            usb_mode_state_on_failure(s_mode, USB_MODE_FAIL_AFTER_UNINSTALL);
+        s_mode = st.mode;
+        s_mode_known = st.known;
         return err;
     }
 

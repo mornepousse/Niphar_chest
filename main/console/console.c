@@ -143,7 +143,12 @@ static int cmd_usb(int argc, char **argv)
     msc_disk_stats_t st;
     msc_disk_get_stats(&st);
 
-    printf("mode          : %s\n", usb_mode_name(usb_mode_get()));
+    /* L'incertitude s'affiche : après une bascule ratée, le mode annoncé est
+     * ce que l'hôte voit encore, pas ce qui est servi. Sans cette mention, la
+     * console montrerait un mode d'aplomb dans le seul cas où il ne faut pas
+     * s'y fier — voir usb/usb_mode_state.h. */
+    printf("mode          : %s%s\n", usb_mode_name(usb_mode_get()),
+           usb_mode_is_known() ? "" : "  (INCERTAIN — dernière bascule en échec, rebasculer)");
     printf("état          : %s\n", usb_device_mounted() ? "configuré par l'hôte" : "non configuré");
     printf("bufsize max   : %" PRIu32 " o (demandé par TinyUSB)\n", st.max_bufsize);
     printf("secteurs DMA  : %" PRIu32 "\n", st.fast_sectors);

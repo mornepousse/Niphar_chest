@@ -38,6 +38,27 @@ esp_err_t usb_device_install(const uint8_t *fs_cfg, const uint8_t *hs_cfg,
  * la tâche qui appelle tud_task(), désinitialise le contrôleur puis libère
  * le PHY. Sûr à appeler même si rien n'est installé — no-op idempotent,
  * pour que usb_mode_init() n'ait pas à savoir si c'est le premier appel.
+ *
+ * PRÉCONDITION — tout ce qui poste des callbacks sur la file de tud_task doit
+ * avoir été mis au repos AVANT d'appeler. Aujourd'hui il n'y en a qu'un, le
+ * worker CCID, qu'on arrête par mode_pgp_stop() (voir usb/mode_pgp.h, qui
+ * documente le même ordre côté appelant). tusb_deinit() détruit cette file ;
+ * un producteur encore ouvert écrirait dedans après sa destruction —
+ * osal_queue_send() sur une file NULL fait échouer un configASSERT() de
+ * FreeRTOS. Voir la divergence BLOQUANT 1 en tête de security/ccid.c.
+ * usb_mode.c est le seul appelant et respecte cet ordre ; la dépendance est
+ * écrite ici parce que rien dans la signature ne la laisse voir, et qu'un
+ * deuxième appelant n'aurait aucun moyen de la deviner.
+ *
+ * ESP_ERR_TIMEOUT si la tâche USB n'est pas sortie en 1 s. Dans ce cas RIEN
+ * n'a été détaché : ni tud_disconnect(), ni tusb_deinit(), ni le PHY. L'hôte
+ * voit donc toujours le périphérique du mode précédent — l'appelant doit
+ * continuer à l'annoncer comme attaché, et surtout ne pas conclure qu'il n'y a
+ * plus rien (usb/usb_mode_state.h dit pourquoi). La fonction reste néanmoins
+ * un point de non-retour pour le mode en cours : l'arrêt de la tâche a déjà
+ * été demandé, donc plus personne ne fera tourner tud_task. On reprend en
+ * rappelant cette fonction — la tentative suivante consomme le jeton que la
+ * tâche donne en sortant — jamais en essayant de réanimer le mode précédent.
  */
 esp_err_t usb_device_uninstall(void);
 

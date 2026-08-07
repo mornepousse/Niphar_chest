@@ -369,8 +369,19 @@ esp_err_t usb_device_uninstall(void)
          * consommé quand un `give` arrive après l'expiration du take. Ce jeton
          * resté en réserve pré-armerait la désinstallation SUIVANTE, qui
          * rendrait la main immédiatement alors que sa tâche n'est pas sortie.
+         *
+         * MAIS seulement quand on ENTAME un démontage. Si s_task_run est déjà
+         * faux, on est dans une nouvelle tentative après un ESP_ERR_TIMEOUT, et
+         * le jeton éventuellement présent est exactement l'inverse d'un
+         * parasite : c'est la preuve que la tâche est sortie depuis. Le jeter
+         * là condamnait la reprise — plus personne ne le redonnerait, chaque
+         * tentative suivante expirerait à son tour, et le coffre restait
+         * enfermé pour de bon dans un mode qu'il ne pouvait plus démonter.
+         * C'est le seul chemin par lequel l'état interne devenait
+         * irrécupérable, et il annulait la reprise que le commentaire ci-dessous
+         * promet.
          */
-        if (s_task_done != NULL) {
+        if (s_task_run && s_task_done != NULL) {
             (void)xSemaphoreTake(s_task_done, 0);
         }
 
