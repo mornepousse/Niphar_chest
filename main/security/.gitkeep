@@ -1,4 +1,5 @@
-/* Répertoire des composants de sécurité (CCID, FIDO, NVS).
+/* Répertoire des composants de sécurité (OpenPGP CCID, CR-HMAC OTP-HID).
+ * Pas de FIDO ici : il n'existe pas dans ce projet ni dans KeSp_firmware.
  *
  * Créé lors de la tâche 1 du portage de pile de sécurité. Le CMakeLists.txt
  * du firmware (main/CMakeLists.txt) ouvre ce répertoire en INCLUDE_DIRS dès la
