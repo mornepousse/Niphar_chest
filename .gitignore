@@ -8,3 +8,6 @@ managed_components/
 compile_commands.json
 .vscode/
 *.swp
+
+# Espace de travail des exécutions de plans (subagent-driven development)
+.superpowers/
