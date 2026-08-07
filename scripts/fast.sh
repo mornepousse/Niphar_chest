@@ -40,6 +40,27 @@ if grep -rn 'esp_deep_sleep_start' main/ --include='*.c' --include='*.h'; then
     fail=1
 fi
 
+# --- Garde-fou 3 : le kit de dev reste un kit de dev ----------------------
+# Secure Boot et Flash Encryption brûlent des eFuses au premier boot, et c'est
+# IRRÉVERSIBLE : un kit ainsi verrouillé ne redevient jamais un outil de
+# développement. Ces options n'ont leur place que dans une config propre au
+# coffre, décidée exprès — jamais dans les defaults partagés.
+# Boucle plutôt qu'un glob passé à grep : un motif sans correspondance ferait
+# sortir grep en statut 2 (erreur), que `if` traite comme « rien trouvé » —
+# le garde verrait la violation et se tairait.
+for f in sdkconfig.defaults sdkconfig.defaults.*; do
+    [ -f "$f" ] || continue
+    if grep -nE '^CONFIG_(SECURE_BOOT|SECURE_FLASH_ENC_ENABLED|SECURE_BOOT_V2_ENABLED)=y' "$f"; then
+        echo "ERREUR : Secure Boot ou Flash Encryption dans $f."
+        echo "         Ces options brûlent des eFuses de façon irréversible et"
+        echo "         transformeraient le kit de dev en carte verrouillée."
+        fail=1
+    fi
+done
+
+# Un seul point de sortie pour TOUS les garde-fous : en ajouter un après ce
+# test le rendrait bavard mais inoffensif — c'est exactement l'erreur commise
+# ici le 2026-08-07, et elle ne s'est vue qu'en vérifiant le code de sortie.
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
