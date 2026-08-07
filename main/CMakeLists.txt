@@ -11,7 +11,10 @@ idf_component_register(
     SRCS ${srcs}
     # ${BOARD_DIR} en premier : c'est de là que vient « board.h », sans qu'aucun
     # source n'ait à savoir quelle carte est sélectionnée.
-    INCLUDE_DIRS "${BOARD_DIR}" "."
+    # "sys" et "security" à plat : les fichiers portés depuis KeSp s'incluent
+    # ainsi, et les laisser verbatim vaut mieux que réécrire leurs includes à
+    # chaque synchronisation amont.
+    INCLUDE_DIRS "${BOARD_DIR}" "." "sys" "security"
     # Volontairement réduit à ce que le code utilise vraiment.
     REQUIRES esp_driver_gpio spi_flash sdmmc esp_driver_sdmmc console
              espressif__tinyusb esp_timer

@@ -1,4 +1,4 @@
-#include "link/cr_crc16.h"
+#include "cr_crc16.h"
 
 uint16_t cr_crc16(const uint8_t *data, uint16_t len)
 {

@@ -13,14 +13,19 @@ add_executable(test_runner
     test_main.c
     test_link_proto.c
     test_msc_lba.c
+    test_cr_crc16.c
     ../main/link/link_proto.c
-    ../main/link/cr_crc16.c
+    ../main/sys/cr_crc16.c
     ../main/usb/msc_lba.c
 )
 
 # `main/` sur le chemin d'inclusion : les tests incluent « link/link_proto.h »
 # exactement comme le firmware, sans chemin relatif tordu.
+# sys et security à plat : comme dans le firmware, les fichiers portés depuis
+# KeSp s'incluent ainsi.
 target_include_directories(test_runner PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../main
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/sys
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/security
 )
