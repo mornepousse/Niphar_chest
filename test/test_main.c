@@ -1,0 +1,18 @@
+/* Lanceur des tests hôte du coffre Niphar. */
+#include "test_framework.h"
+
+int _test_pass_count = 0;
+int _test_fail_count = 0;
+
+extern void test_link_proto(void);
+
+int main(void)
+{
+    printf("=== tests hôte — coffre Niphar ===\n");
+
+    test_link_proto();
+
+    printf("\n=================================\n");
+    printf("%d assertions OK, %d échecs\n", _test_pass_count, _test_fail_count);
+    return _test_fail_count == 0 ? 0 : 1;
+}

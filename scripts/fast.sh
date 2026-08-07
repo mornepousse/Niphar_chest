@@ -37,6 +37,14 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
+# --- Tests hôte -----------------------------------------------------------
+# Avant le build : ils sont plus rapides, et un échec ici rend le build inutile.
+# Seule la logique pure y passe — le reste n'est pas testable sans matériel,
+# et c'est précisément ce qui justifie de l'en séparer.
+cmake -S test -B test/build >/dev/null || exit 1
+cmake --build test/build >/dev/null || exit 1
+./test/build/test_runner || exit 1
+
 # --- Build ----------------------------------------------------------------
 if ! command -v idf.py >/dev/null 2>&1; then
     # shellcheck disable=SC1091

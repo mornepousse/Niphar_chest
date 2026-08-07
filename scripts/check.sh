@@ -35,7 +35,7 @@ MODULE_FAST=()
 # tests. Vide -> ratchet inerte. Référence committée : .tripwire-testcount
 # (la baisser = diff visible en review). Rouge au pre-push si le compte chute
 # (TRIPWIRE_RATCHET_STRICT=1, posé par le hook pre-push).
-TEST_COUNT_CMD=""
+TEST_COUNT_CMD="grep -rho TEST_ASSERT test/ --include=test_*.c | wc -l"
 
 # Avis TDD (optionnel) : formes grep -E des chemins source et test. Vides -> inerte.
 SRC_GREP=""
