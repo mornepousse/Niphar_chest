@@ -9,7 +9,7 @@ typedef enum {
     SEC_CONFIRM_IDLE = 0,
     SEC_CONFIRM_PENDING,
     SEC_CONFIRM_AUTHORIZED,
-    SEC_CONFIRM_TIMEDOUT, /* return-only signal from poll(); s_state never holds this value */
+    SEC_CONFIRM_TIMEDOUT, /* return-only signal from poll() and peek(); s_state never holds this value */
 } sec_confirm_state_t;
 
 void sec_confirm_reset(void);
