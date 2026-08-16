@@ -39,6 +39,14 @@ static void test_pgp_and_otp_differ(void)
     TEST_ASSERT(!rgb_eq(p.rgb, o.rgb), "pgp et otp n'ont pas la meme couleur");
     TEST_ASSERT(!rgb_eq(p.rgb, (led_rgb_t){0, 0, 0}), "pgp est visible");
     TEST_ASSERT(!rgb_eq(o.rgb, (led_rgb_t){0, 0, 0}), "otp est visible");
+
+    /* storage n'etait eprouve par rien : la boucle de totalite ne regarde que
+     * le motif, jamais la couleur. */
+    led_view_t s = led_state_view(USB_MODE_STORAGE, false, LED_EVENT_NONE);
+    TEST_ASSERT(!rgb_eq(s.rgb, p.rgb) && !rgb_eq(s.rgb, o.rgb),
+                "storage ne partage sa couleur ni avec pgp ni avec otp");
+    TEST_ASSERT(!rgb_eq(s.rgb, (led_rgb_t){0, 0, 0}),
+                "storage est visible, pas confondu avec l'etat muet");
 }
 
 /* La pulsation ne doit signifier qu'une chose : « j'attends ton doigt ». */
@@ -91,6 +99,32 @@ static void test_verdict_is_brighter_than_rest(void)
     TEST_ASSERT(flash.rgb.g > idle.rgb.g, "le flash de bascule est plus lumineux");
 }
 
+/* otp -> pgp est la moitie des bascules reelles de la cle (l'autre etant
+ * pgp -> otp) : sans ce test, seule la branche OTP de LED_EVENT_MODE etait
+ * exercee, et une regression sur la couleur de bascule vers PGP serait passee
+ * inapercue la moitie du temps. */
+static void test_mode_flash_colour_for_pgp(void)
+{
+    led_view_t v = led_state_view(USB_MODE_PGP, false, LED_EVENT_MODE);
+    TEST_ASSERT_EQ(v.pattern, LED_PATTERN_FLASH, "la bascule vers pgp flashe");
+    TEST_ASSERT(rgb_eq(v.rgb, (led_rgb_t){0, 0, LED_BRIGHT}),
+                "le flash de bascule vers pgp porte la couleur pgp en luminosite haute");
+}
+
+/* Comportement fige, pas change : une bascule vers un mode aberrant n'est
+ * jamais emise en pratique (hmi.c n'appelle usb_mode_cycle_next() qu'apres
+ * succes, et usb_mode_cycle_after() ne rend jamais que pgp ou otp), et la
+ * spec ne demande pas d'indicateur "mode inconnu" dedie. Ce test fige donc le
+ * flash noir resultant, pour qu'un futur changement de ce comportement soit
+ * un choix delibere et non un accident silencieux. */
+static void test_mode_flash_for_aberrant_mode_is_black_but_defined(void)
+{
+    led_view_t v = led_state_view((usb_mode_t)USB_MODE_COUNT, false, LED_EVENT_MODE);
+    TEST_ASSERT_EQ(v.pattern, LED_PATTERN_FLASH, "meme aberrant, le motif reste flash");
+    TEST_ASSERT(rgb_eq(v.rgb, (led_rgb_t){0, 0, 0}),
+                "comportement fige : flash noir sur mode aberrant (delibere, cf commentaire)");
+}
+
 void test_led_state(void)
 {
     TEST_SUITE("led_state");
@@ -102,4 +136,6 @@ void test_led_state(void)
     TEST_RUN(test_verdict_overrides_everything);
     TEST_RUN(test_granted_and_refused_differ);
     TEST_RUN(test_verdict_is_brighter_than_rest);
+    TEST_RUN(test_mode_flash_colour_for_pgp);
+    TEST_RUN(test_mode_flash_for_aberrant_mode_is_black_but_defined);
 }
