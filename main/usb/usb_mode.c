@@ -7,6 +7,7 @@
 #include "usb/mode_storage.h"
 #include "usb/msc_disk.h"
 #include "usb/usb_device.h"
+#include "usb/usb_mode_cycle.h"
 #include "usb/usb_mode_state.h"
 
 static const char *TAG = "usb_mode";
@@ -185,4 +186,9 @@ esp_err_t usb_mode_set(usb_mode_t mode)
     s_mode = mode;
     s_mode_known = true;
     return ESP_OK;
+}
+
+esp_err_t usb_mode_cycle_next(void)
+{
+    return usb_mode_set(usb_mode_cycle_after(s_mode));
 }

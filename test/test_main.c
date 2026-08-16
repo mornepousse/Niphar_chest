@@ -16,6 +16,7 @@ extern void test_openpgp_card(void);
 extern void test_sec_gate(void);
 extern void test_usb_mode(void);
 extern void test_ccid_zlp(void);
+extern void test_usb_mode_cycle(void);
 
 int main(void)
 {
@@ -33,6 +34,7 @@ int main(void)
     test_msc_lba();
     test_usb_mode();
     test_ccid_zlp();
+    test_usb_mode_cycle();
 
     printf("\n=================================\n");
     printf("%d assertions OK, %d échecs\n", _test_pass_count, _test_fail_count);

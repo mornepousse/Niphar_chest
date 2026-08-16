@@ -42,6 +42,16 @@ esp_err_t usb_mode_init(void);
  */
 esp_err_t usb_mode_set(usb_mode_t mode);
 
+/*
+ * Passe au mode suivant du cycle de la carte-clé (usb/usb_mode_cycle.h).
+ *
+ * Existe pour que l'IHM n'ait pas à appeler usb_mode_set : ce symbole est
+ * confiné par le garde-fou 4 de scripts/fast.sh à ce module et à la console,
+ * et l'élargir à hmi.c affaiblirait le garde pour un gain nul. La politique du
+ * cycle reste chez le module qui possède les modes.
+ */
+esp_err_t usb_mode_cycle_next(void);
+
 usb_mode_t usb_mode_get(void);
 
 /*
