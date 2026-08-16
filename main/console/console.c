@@ -18,6 +18,7 @@
 
 static const char *TAG = "console";
 
+#if BOARD_HAS_SD
 static const char *pwr_path_str(sd_pwr_path_t p)
 {
     switch (p) {
@@ -77,7 +78,6 @@ static int cmd_sd_bench(void)
     return 0;
 }
 
-#if BOARD_HAS_SD
 static int cmd_sd(int argc, char **argv)
 {
     if (argc < 2) {
