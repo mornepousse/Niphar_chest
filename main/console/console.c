@@ -234,7 +234,7 @@ esp_err_t console_start(void)
         .command = "usb",
         .help = "État USB, compteurs du chemin MSC (rapide vs rebond)"
 #if BOARD_CONSOLE_ACTIONS
-                ", et « usb mode none|storage|pgp|otp » (béquille de dev, sans lien)"
+                ", et « usb mode none|storage|pgp|otp » (béquille de dev, console habilitée)"
 #endif
                 ,
         .hint = NULL,
@@ -248,7 +248,7 @@ esp_err_t console_start(void)
 
     const esp_console_cmd_t sec_cmd = {
         .command = "sec",
-        .help = "Sécurité : « sec source », et « sec confirm » sur carte sans lien",
+        .help = "Sécurité : « sec source », et « sec confirm » sur carte où la console a le pouvoir",
         .hint = "confirm|source",
         .func = &cmd_sec,
     };

@@ -1,10 +1,11 @@
-# Config esp-dev — coffre Niphar. Deux cartes : elles ne divergent que sur le
-# lien S3↔coffre, absent du kit (docs/HARDWARE.md).
+# Config esp-dev — coffre Niphar. Trois cartes : jc_devkit et niphar_chest ne
+# divergent que sur le lien S3↔coffre, absent du kit ; wt9932_key est la clé
+# autonome, sans lien ni microSD, avec boutons/LED en façade (docs/HARDWARE.md).
 #
-# jc_devkit par défaut : c'est le seul matériel qui existe, et le sens de
+# jc_devkit par défaut : c'est le premier matériel qui a existé, et le sens de
 # l'erreur compte — du jc_devkit sur un coffre ne fait que priver du lien,
 # l'inverse enverrait du SPI dans le bus I2C du codec du kit.
-boards: [jc_devkit, niphar_chest]
+boards: [jc_devkit, niphar_chest, wt9932_key]
 current_board_file: .tripwire-variant
 
 build:      "idf.py -B build_{board} -DBOARD={board} -DSDKCONFIG=build_{board}/sdkconfig build"

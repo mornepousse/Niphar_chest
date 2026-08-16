@@ -260,3 +260,112 @@ correctifs suivants sont apparus en essayant de faire fonctionner
 - Straps P4 (GPIO34-38) : tous NC ; GPIO35 a un pull-up interne → SPI boot par défaut.
 - 9 pins GND du module câblés ; DSI/CSI/LDO_VO4 non câblés (assumé).
 - Lien direct S3↔P4 : AUCUN (abandonné) — le P4 parle à l'hôte par l'USB, point.
+
+## Carte-clé WT9932P4-TINY
+
+Troisième carte du projet — une clé de sécurité autonome, sans microSD, sans
+lien vers un clavier : deux boutons et une LED adressable en façade en tiennent
+lieu. Brochage lu sur le schéma constructeur (`WT9932P4-TINY_1v2`, JLCEDA,
+révisé 2025-08-07).
+
+**⚠️ Brochage non vérifié au matériel.** Le schéma a été lu sur un rendu
+d'image du fabricant (1920 px), pas sur le PCB ni sur une netlist exportée —
+contrairement au tableau du coffre en tête de ce document, qui lui est vérifié
+pin par pin. Les boutons IO32/IO33 ne sont pas encore soudés sur l'exemplaire
+de Mae. **À recouper avec la sérigraphie du module avant tout câblage** —
+uniquement le brochage USB-Serial-JTAG / OTG HS / strap de boot a été confirmé
+en le flashant réellement (tâche 6, voir plus bas).
+
+| Élément | Pin(s) | Détail |
+|---|---|---|
+| LED adressable WS2812 | IO51 (DIN) | Alimentée en 5 V, données en 3,3 V — sous le seuil VIH strict (0,7×VDD = 3,5 V). Voir avertissement matériel ci-dessous. |
+| LED témoin d'alimentation | R13 (1 kΩ) | Non pilotable, câblée en direct. |
+| Boutons utilisateur | IO32 (MODE), IO33 (CONFIRM) | Vers la masse, pull-up interne, aucun composant externe. Pas encore soudés — à câbler par Mae. |
+| Bouton BOOT | IO35 | Strap de boot du P4 — **non exposé au firmware**, voir ci-dessous. |
+| RESET | CHIP_PU | RC de mise sous tension, pas de bouton reset dédié (comme le coffre). |
+| J4 | OTG HS | PHY USB 2.0 haute vitesse — le port produit (MSC/CCID/HID). |
+| J3 | USB-Serial-JTAG | Seul chemin de flash/debug (GPIO24/25) — mêmes règles que le coffre. |
+| microSD | — | Aucun connecteur au schéma : `BOARD_HAS_SD 0`. |
+
+### Pourquoi GPIO35 (bouton BOOT) reste hors du firmware
+
+GPIO35 est l'un des cinq straps de boot de l'ESP32-P4 : « ESP32-P4 has five
+strapping pins: GPIO34, GPIO35, GPIO36, GPIO37, GPIO38 » — *ESP32-P4 TRM*,
+chap. 11.2, p. 795. Son niveau au reset décide seul entre boot applicatif et
+mode download : table 11.2-2, p. 796 — `GPIO35 = 1` (défaut, pull-up interne)
+sélectionne le SPI Boot mode, `GPIO35 = 0` sélectionne le Joint Download Boot,
+indépendamment de GPIO36/37/38.
+
+Le silicium autoriserait pourtant sa réutilisation après coup : « After the
+reset is released, the strapping pins work as normal-function pins » (même
+page, §11.2.1 / 11.2.2). La carte-clé s'en prive quand même — trois raisons :
+
+1. Un appui pendant la mise sous tension forcerait le mode download au lieu de
+   démarrer l'application : la clé disparaîtrait du bus au lieu de s'annoncer.
+2. Un reset accidentel bouton enfoncé (CHIP_PU repasse bas puis haut) produit
+   le même effet en cours d'usage.
+3. `scripts/fast.sh` (garde-fou n°1) exclut déjà les en-têtes de carte de son
+   grep sur `GPIO_NUM_(24|25|35)` — un usage de GPIO35 dans `boards/wt9932_key/
+   board.h` resterait donc vert pendant que le sens de la broche s'y
+   inverserait, de « réservée » à « bouton utilisateur ». Le firmware ne doit
+   pas dépendre d'un garde qui ne le verrait pas.
+
+IO32 et IO33 ont été choisies à la place parce que ce sont, avec IO26 à IO31,
+les seules broches du P4 dont les trois colonnes de la table GPIO sont vides —
+ni fonction analogique, ni LP GPIO, ni restriction de commentaire (*ESP-IDF
+Programming Guide*, « GPIO & RTC GPIO — ESP32-P4 », § GPIO Summary). Elles
+sortent sur J7 et n'empiètent sur aucun bloc occupé par les cartes sœurs
+(microSD sur GPIO39-48, lien S3 sur GPIO7-11).
+
+### Cette carte ne résiste pas au dump de flash
+
+Contrairement au coffre de production (jumpers JP1/JP2 retirés, voir plus
+haut), **rien n'isole physiquement l'USB-Serial-JTAG de l'hôte sur la
+carte-clé** : le bouton BOOT est en façade, et déclencher le mode download
+logiciel par RTS/DTR reste également ouvert (TRM chap. 53, table 53.3-2, p.
+2715, cf. « L'hôte peut forcer le mode download » ci-dessus). Un hôte — ou
+quiconque manipule physiquement la clé — peut dumper la flash entière.
+
+C'est significatif ici parce que la flash contient les clés privées OpenPGP en
+clair (mode PGP, `usb/mode_pgp.c`) : un dump complet les expose. La parade
+retenue pour le coffre (retirer les jumpers en production) ne s'applique pas à
+cette carte — elle n'a pas de jumpers équivalents à retirer, et son propos
+(clé transportable, boutons + LED en façade) suppose justement un boîtier
+accessible. Aucune mitigation n'est proposée ici ; c'est un écart de sécurité
+connu, à traiter séparément (Secure Boot / Flash Encryption, hors-scope des
+`sdkconfig.defaults*` partagés par garde-fou n°3 de `fast.sh`).
+
+### Validé sur matériel — 2026-08-16
+
+Tâche 6 de `.superpowers/sdd/2026-08-16-carte-cle-wt9932/`, module WT9932P4-TINY
+réel (MAC `30:ed:a0:e0:bc:5f`), en écrasant le firmware `jc_devkit` qui y était
+précédemment flashé.
+
+- `chip_id` confirme la puce avant tout flash : ESP32-P4 rev v1.0, MAC
+  `30:ed:a0:e0:bc:5f` — donc le port `by-id …-30:ED:A0:E0:BC:5F-if00` désigne
+  bien ce module, pas une autre carte de la machine de dev.
+- Boot mesuré par reset RTS seul (DTR haut, jamais de strap en mode download)
+  et lecture brute du port, sans TTY : `main_task: Calling app_main()` à
+  t=832 ms, tous les logs de `app_main()` (carte, microSD sautée, `sec_gate`)
+  au même tick, prompt `niphar>` atteint. Avec un terminal qui répond à la
+  sonde ANSI de linenoise (`ESC[5n`, comme le ferait tout terminal
+  interactif), `main_task: Returned from app_main()` tombe à t=919 ms — un
+  gain net face aux ~11 s d'avant (sondage SD absent qui timeoutait). Voir
+  « écart de mesure » ci-dessous.
+- `lsusb` : aucun `303a:4021` (le VID:PID composite MSC/CCID/HID) — seul
+  `303a:1001` (USB-Serial-JTAG) apparaît, confirmant `USB_MODE_NONE` au
+  démarrage sur cette carte aussi.
+
+**Écart de mesure, pour qui reproduit avec `boot_capture.py` tel quel** : ce
+script ne répond jamais à la requête de statut ANSI (`ESC[5n`) que
+`esp_console_setup_prompt()` envoie pour détecter un terminal capable
+(`linenoiseProbe()`, `components/console/linenoise/linenoise.c`, budget
+500 ms). Sans réponse, la sonde épuise son budget et le prompt bascule en
+mode « dumb » — mesuré à un delta constant et reproductible de 1000 ms entre
+`Calling app_main()` et `Returned from app_main()` sur trois essais (832→1832,
+819→1819, 832→1832). C'est un artefact du script de capture non interactif,
+pas une régression du firmware : dès qu'un répondant existe côté hôte (testé
+en renvoyant `ESC[0n` sur réception de la sonde), le même boot tombe à 100 ms
+(819→919). Les deux nombres sont sous la barre du sondage SD à 11 s ; le
+second est la mesure fidèle à ce que verrait un utilisateur sur un vrai
+terminal.

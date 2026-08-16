@@ -148,3 +148,14 @@ _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_MISO),
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LINK_IRQ),
                "BOARD_LINK_IRQ empiete sur un pin reserve");
 #endif
+
+#if BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_BUTTON
+_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_BTN_MODE),
+               "BOARD_BTN_MODE empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");
+_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_BTN_CONFIRM),
+               "BOARD_BTN_CONFIRM empiete sur un pin reserve (USB-Serial-JTAG ou strap de boot)");
+_Static_assert(BOARD_BTN_MODE != BOARD_BTN_CONFIRM,
+               "les deux boutons sont sur la meme broche");
+_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LED_WS2812),
+               "BOARD_LED_WS2812 empiete sur un pin reserve");
+#endif
