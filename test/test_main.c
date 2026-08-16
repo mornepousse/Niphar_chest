@@ -18,6 +18,7 @@ extern void test_usb_mode(void);
 extern void test_ccid_zlp(void);
 extern void test_usb_mode_cycle(void);
 extern void test_button_debounce(void);
+extern void test_led_state(void);
 
 int main(void)
 {
@@ -37,6 +38,7 @@ int main(void)
     test_ccid_zlp();
     test_usb_mode_cycle();
     test_button_debounce();
+    test_led_state();
 
     printf("\n=================================\n");
     printf("%d assertions OK, %d échecs\n", _test_pass_count, _test_fail_count);
