@@ -15,6 +15,7 @@
 
 #include "board.h"
 #include "console/console.h"
+#include "hmi/hmi.h"
 #include "sec_gate.h"
 #include "storage/sd_card.h"
 #include "usb/usb_mode.h"
@@ -111,6 +112,18 @@ void app_main(void)
     esp_err_t gate_err = sec_gate_init();
     if (gate_err != ESP_OK) {
         ESP_LOGE(TAG, "sec_gate indisponible : %s", esp_err_to_name(gate_err));
+    }
+
+    /*
+     * L'IHM (boutons + LED) après usb_mode_init() et sec_gate_init() : le
+     * premier appui MODE bascule le mode, et le bouton de confirmation relaie
+     * vers sec_gate — les deux sélecteurs doivent déjà exister. No-op sur une
+     * carte sans bouton (voir main/hmi/hmi.c).
+     */
+    esp_err_t hmi_err = hmi_init();
+    if (hmi_err != ESP_OK) {
+        ESP_LOGW(TAG, "IHM indisponible : %s — pilotage par la console seulement",
+                 esp_err_to_name(hmi_err));
     }
 
     /*
