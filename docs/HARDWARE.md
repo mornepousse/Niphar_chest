@@ -273,8 +273,12 @@ d'image du fabricant (1920 px), pas sur le PCB ni sur une netlist exportée —
 contrairement au tableau du coffre en tête de ce document, qui lui est vérifié
 pin par pin. Les boutons IO32/IO33 ne sont pas encore soudés sur l'exemplaire
 de Mae. **À recouper avec la sérigraphie du module avant tout câblage** —
-uniquement le brochage USB-Serial-JTAG / OTG HS / strap de boot a été confirmé
-en le flashant réellement (tâche 6, voir plus bas).
+seul le port USB-Serial-JTAG a été réellement exercé (tâche 6, voir plus bas) :
+`chip_id` puis un flash complet y sont passés avec succès. L'OTG HS (J4) n'a
+transporté aucun trafic — le firmware est resté en `USB_MODE_NONE` tout du
+long — et le strap de boot n'a pas été testé en pratique (aucun appui sur le
+bouton BOOT, la mise en mode download utilisée pour flasher passe par
+RTS/DTR logiciel sur l'USB-Serial-JTAG, pas par IO35).
 
 | Élément | Pin(s) | Détail |
 |---|---|---|

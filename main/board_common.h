@@ -9,7 +9,12 @@
  * contre le silicium : « card one (SDMMC_HOST_SLOT_0) signals are multiplexed
  * with GPIO39-GPIO48 … via IO MUX » — ESP32-P4 Series Datasheet v0.7, p. 81.
  *
- * Les deux cartes divergent sur le lien S3↔coffre, et sur lui seul.
+ * Trois cartes régies ici, pas deux. jc_devkit et niphar_chest ne divergent
+ * QUE sur le lien S3↔coffre — même microSD, même axe de confirmation par
+ * défaut sinon. wt9932_key diverge sur bien plus : pas de lien, pas de
+ * microSD (BOARD_HAS_SD=0), confirmation par bouton en façade au lieu du
+ * lien ou de la console seule. Voir boards/<nom>/board.h pour le détail par
+ * carte, et docs/HARDWARE.md pour le contrat matériel de chacune.
  *
  * ORDRE D'INCLUSION : chaque boards/<nom>/board.h déclare d'abord son bloc de
  * lien, PUIS inclut ce fichier — qui vérifie l'ensemble en dernier. L'inverse
@@ -115,6 +120,23 @@ _Static_assert(BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_NONE
 #if BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_LINK
 _Static_assert(BOARD_LINK_AVAILABLE,
                "presence annoncee par le lien sur une carte qui n'en a pas");
+#endif
+
+/*
+ * La bequille console (voir sec_gate.h) est interdite quand la
+ * presence vient du lien : c'est la famille coffre, celle que les jumpers
+ * JP1/JP2 retires en production isolent physiquement de l'hote (voir
+ * docs/HARDWARE.md). Une confirmation qu'on peut y accorder sans geste
+ * physique y serait indistinguable, a l'usage, d'un dispositif qui
+ * fonctionne. La restriction ne vise QUE BOARD_CONFIRM_LINK, pas
+ * BOARD_CONFIRM_BUTTON : sur une carte a bouton (la cle), garder la console
+ * est un compromis assume — voir sec_gate.h — parce que rien n'y isole de
+ * toute facon l'USB-Serial-JTAG de l'hote. Avant cette regle, la garantie ne
+ * tenait que parce que niphar_chest/board.h ecrit BOARD_CONSOLE_ACTIONS=0 ;
+ * elle est maintenant imposee par construction, pas par convention.
+ */
+#if BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_LINK && BOARD_CONSOLE_ACTIONS
+#error "la bequille console est interdite sur une carte dont la presence vient du lien : c'est le firmware du coffre"
 #endif
 
 /* `defined()` n'existe pas dans une expression C : ce contrôle-ci se fait au

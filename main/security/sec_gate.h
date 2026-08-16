@@ -19,10 +19,26 @@
  *
  * BOARD_CONSOLE_ACTIONS ne conditionne QUE sec_gate_console_confirm (la
  * béquille de développement) : sa présence ne dit rien de la source réelle de
- * confirmation, qui est BOARD_CONFIRM_SOURCE. Une confirmation qu'on peut
- * accorder sans geste physique est indistinguable, à l'usage, d'un dispositif
- * qui fonctionne — c'est exactement ce que la béquille ne doit jamais devenir
- * sur une carte qui a une source réelle (lien ou bouton).
+ * confirmation, qui est BOARD_CONFIRM_SOURCE.
+ *
+ * La vraie règle n'est PAS « jamais aux côtés d'une source réelle » — ça se
+ * lirait dans le code, et ce serait faux : wt9932_key a BOARD_CONFIRM_BUTTON
+ * ET BOARD_CONSOLE_ACTIONS=1 en même temps. La règle est plus étroite :
+ * interdite sur les cartes à LIEN (famille coffre — voir le
+ * _Static_assert dans board_common.h, qui la rend impossible à violer par
+ * oubli), permise sur une carte à bouton comme compromis déclaré. Sur la
+ * carte-clé, la console reste utilisable pour le dev parce que c'est une clé
+ * de développement personnelle, pas un produit scellé — et parce que
+ * docs/HARDWARE.md documente déjà, indépendamment de ce compromis, que rien
+ * n'isole physiquement son USB-Serial-JTAG de l'hôte (pas de jumpers JP1/JP2
+ * comme sur le coffre de production) : quiconque peut y parler à la console
+ * peut de toute façon dumper la flash. Ce n'est donc pas cette béquille qui
+ * fait la différence de posture de sécurité sur cette carte-là.
+ *
+ * Sur le coffre, en revanche, une confirmation qu'on peut accorder sans
+ * geste physique serait indistinguable, à l'usage, d'un dispositif qui
+ * fonctionne — c'est exactement ce que la béquille ne doit jamais devenir là
+ * où la présence est censée venir du lien.
  */
 
 #include "esp_err.h"

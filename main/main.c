@@ -39,10 +39,12 @@ void app_main(void)
              chip.revision / 100, chip.revision % 100,
              chip.cores, flash_size / (1024 * 1024));
     ESP_LOGI(TAG, "heap libre : %" PRIu32 " o", esp_get_free_heap_size());
+#if BOARD_HAS_SD
     ESP_LOGI(TAG, "microSD attendue sur CLK=%d CMD=%d D0-D3=%d,%d,%d,%d (slot 0, %d-bit)",
              BOARD_SD_CLK, BOARD_SD_CMD,
              BOARD_SD_D0, BOARD_SD_D1, BOARD_SD_D2, BOARD_SD_D3,
              BOARD_SD_BUS_WIDTH);
+#endif
 #if BOARD_LINK_AVAILABLE
     ESP_LOGI(TAG, "lien S3 sur CS=%d MOSI=%d SCK=%d MISO=%d IRQ=%d",
              BOARD_LINK_CS, BOARD_LINK_MOSI, BOARD_LINK_SCK,

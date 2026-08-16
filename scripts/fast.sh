@@ -130,7 +130,7 @@ fi
 # par la phase complète). Le témoin positif plus bas empêche ce contrôle de
 # devenir silencieusement creux.
 witness_seen=0
-for d in build build_jc_devkit build_niphar_chest; do
+for d in build build_jc_devkit build_niphar_chest build_wt9932_key; do
     obj="$d/esp-idf/main/CMakeFiles/__idf_main.dir/console/console.c.obj"
     [ -f "$obj" ] || continue
     board="$(sed -n 's/^BOARD:[^=]*=//p' "$d/CMakeCache.txt" 2>/dev/null | head -1)"
