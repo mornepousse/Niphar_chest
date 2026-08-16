@@ -9,10 +9,9 @@
 #include "esp_mac.h"
 #include "esp_private/usb_phy.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "tusb.h"
-
-#include "usb/msc_disk.h"
 
 static const char *TAG = "usb";
 
@@ -23,29 +22,23 @@ static const char *TAG = "usb";
  * KeSp_firmware pour que les règles udev et les clients de l'hôte ne confondent
  * jamais le coffre avec le clavier ou son dongle. À faire enregistrer auprès
  * d'Espressif si le projet sort un jour du domaine privé.
+ *
+ * Un seul PID pour tous les modes : le coffre n'expose jamais deux fonctions
+ * ensemble (usb_mode.h), donc l'hôte ne voit jamais deux identités à la fois.
  */
 #define NIPHAR_USB_VID 0x303A
 #define NIPHAR_USB_PID 0x4021
 
-enum {
-    ITF_NUM_MSC = 0,
-    ITF_NUM_TOTAL,
-};
-
-/* EP0 est réservé ; le MSC prend une paire bulk. */
-#define EPNUM_MSC_OUT 0x01
-#define EPNUM_MSC_IN  0x81
-
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN)
-
-enum {
-    STRID_LANGID = 0,
-    STRID_MANUFACTURER,
-    STRID_PRODUCT,
-    STRID_SERIAL,
-    STRID_MSC,
-    STRID_COUNT,
-};
+/*
+ * Index de chaîne communs à tous les modes. Chaque table de chaînes fournie à
+ * usb_device_install() doit les respecter dans cet ordre : c'est la seule
+ * convention qui relie ce fichier (qui ne connaît aucun mode) aux indices
+ * iManufacturer/iProduct/iSerialNumber figés dans desc_device ci-dessous.
+ */
+#define USB_STRID_LANGID       0
+#define USB_STRID_MANUFACTURER 1
+#define USB_STRID_PRODUCT      2
+#define USB_STRID_SERIAL       3
 
 static const tusb_desc_device_t desc_device = {
     .bLength            = sizeof(tusb_desc_device_t),
@@ -58,9 +51,9 @@ static const tusb_desc_device_t desc_device = {
     .idVendor           = NIPHAR_USB_VID,
     .idProduct          = NIPHAR_USB_PID,
     .bcdDevice          = 0x0100,
-    .iManufacturer      = STRID_MANUFACTURER,
-    .iProduct           = STRID_PRODUCT,
-    .iSerialNumber      = STRID_SERIAL,
+    .iManufacturer      = USB_STRID_MANUFACTURER,
+    .iProduct           = USB_STRID_PRODUCT,
+    .iSerialNumber      = USB_STRID_SERIAL,
     .bNumConfigurations = 0x01,
 };
 
@@ -81,37 +74,41 @@ static const tusb_desc_device_qualifier_t desc_qualifier = {
 };
 
 /*
- * Bus-powered : le coffre n'a pas d'autre source que l'USB, d'où l'absence de
- * l'attribut self-powered et une consommation annoncée de 500 mA.
- */
-static const uint8_t desc_fs_config[] = {
-    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 500),
-    TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, STRID_MSC, EPNUM_MSC_OUT, EPNUM_MSC_IN, 64),
-};
-
-static const uint8_t desc_hs_config[] = {
-    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 500),
-    TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, STRID_MSC, EPNUM_MSC_OUT, EPNUM_MSC_IN, 512),
-};
-
-/*
  * Numéro de série dérivé de la MAC. Un hôte identifie un volume de stockage par
  * son numéro de série : le figer ferait passer deux coffres pour le même
  * périphérique, avec des règles udev et un cache d'hôte qui se mélangent.
+ *
+ * Partagé par tous les modes (voir usb_device_serial() ci-dessous) : c'est
+ * une identité de l'appareil, pas d'une fonction.
  */
 static char s_serial[13] = "000000000000";
+static bool s_serial_ready;
 
-static const char *s_strings[STRID_COUNT] = {
-    [STRID_LANGID]       = (const char[]){ 0x09, 0x04 },  /* anglais (US) */
-    [STRID_MANUFACTURER] = "Mae PUGIN",
-    [STRID_PRODUCT]      = "Coffre Niphar",
-    [STRID_SERIAL]       = s_serial,
-    [STRID_MSC]          = "Coffre microSD",
-};
+/* Descripteurs et chaînes du mode actuellement installé — fournis par
+ * usb_device_install(), NULL quand rien n'est installé. */
+static const uint8_t *s_fs_cfg;
+static const uint8_t *s_hs_cfg;
+static const char **s_strings;
+static int s_string_count;
 
 static usb_phy_handle_t s_phy;
 static TaskHandle_t s_task;
+static volatile bool s_task_run;
+static SemaphoreHandle_t s_task_done;
 static volatile bool s_mounted;
+
+const char *usb_device_serial(void)
+{
+    if (!s_serial_ready) {
+        uint8_t mac[6] = { 0 };
+        if (esp_efuse_mac_get_default(mac) == ESP_OK) {
+            snprintf(s_serial, sizeof(s_serial), "%02X%02X%02X%02X%02X%02X",
+                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        }
+        s_serial_ready = true;
+    }
+    return s_serial;
+}
 
 /* ------------------------------------------------------------------------ */
 /* Callbacks de descripteurs                                                 */
@@ -125,7 +122,7 @@ uint8_t const *tud_descriptor_device_cb(void)
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index)
 {
     (void)index;
-    return (tud_speed_get() == TUSB_SPEED_HIGH) ? desc_hs_config : desc_fs_config;
+    return (tud_speed_get() == TUSB_SPEED_HIGH) ? s_hs_cfg : s_fs_cfg;
 }
 
 uint8_t const *tud_descriptor_device_qualifier_cb(void)
@@ -137,14 +134,46 @@ uint8_t const *tud_descriptor_device_qualifier_cb(void)
  * Descripteur « other speed » : la même configuration, vue à l'autre vitesse.
  * Le type doit être réécrit, d'où la copie — le descripteur rendu doit rester
  * valide après le retour, c'est pourquoi le tampon est statique.
+ *
+ * La longueur totale n'est plus une constante de compilation puisque le
+ * contenu dépend du mode installé : elle se lit dans l'en-tête du descripteur
+ * de configuration source (wTotalLength, octets 2-3, petit-boutien). Le
+ * tampon est dimensionné large pour couvrir les modes futurs (CCID, HID).
  */
+#define OTHER_SPEED_CFG_MAX 256
+
 uint8_t const *tud_descriptor_other_speed_configuration_cb(uint8_t index)
 {
     (void)index;
-    static uint8_t buf[CONFIG_TOTAL_LEN];
-    const uint8_t *src = (tud_speed_get() == TUSB_SPEED_HIGH) ? desc_fs_config : desc_hs_config;
-    memcpy(buf, src, CONFIG_TOTAL_LEN);
+    static uint8_t buf[OTHER_SPEED_CFG_MAX];
+
+    const uint8_t *src = (tud_speed_get() == TUSB_SPEED_HIGH) ? s_fs_cfg : s_hs_cfg;
+    if (src == NULL) {
+        return NULL;
+    }
+
+    uint16_t len = (uint16_t)(src[2] | ((uint16_t)src[3] << 8));
+    if (len > sizeof(buf)) {
+        /* Ne devrait jamais arriver avec les descripteurs du projet — mais
+         * tronquer plutôt que déborder si un mode futur grossit trop. */
+        ESP_LOGE(TAG, "descripteur other-speed tronqué : %u > %u o",
+                 (unsigned)len, (unsigned)sizeof(buf));
+        len = sizeof(buf);
+    }
+    memcpy(buf, src, len);
     buf[1] = TUSB_DESC_OTHER_SPEED_CONFIG;
+    /*
+     * wTotalLength doit décrire le tampon RENDU, pas la source. Borner le
+     * memcpy ne suffit pas : TinyUSB relit ce champ dans le tampon qu'on lui
+     * rend et transfère cette longueur-là (usbd.c, process_get_descriptor).
+     * Avec la valeur source laissée en place, une troncature ferait lire
+     * au-delà des OTHER_SPEED_CFG_MAX octets de buf et enverrait le
+     * débordement de .bss à l'hôte. Inatteignable avec les modes actuels
+     * (86 octets au plus) — c'est justement pourquoi ça doit être écrit ici et
+     * pas le jour où un mode grossira.
+     */
+    buf[2] = (uint8_t)(len & 0xFF);
+    buf[3] = (uint8_t)((len >> 8) & 0xFF);
     return buf;
 }
 
@@ -153,13 +182,13 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid)
     (void)langid;
     static uint16_t desc[32];
 
-    if (index >= STRID_COUNT || s_strings[index] == NULL) {
+    if (s_strings == NULL || index >= (uint8_t)s_string_count || s_strings[index] == NULL) {
         return NULL;
     }
 
     uint8_t count;
-    if (index == STRID_LANGID) {
-        memcpy(&desc[1], s_strings[STRID_LANGID], 2);
+    if (index == USB_STRID_LANGID) {
+        memcpy(&desc[1], s_strings[USB_STRID_LANGID], 2);
         count = 1;
     } else {
         const char *str = s_strings[index];
@@ -216,29 +245,37 @@ void tud_resume_cb(void)
 }
 
 /* ------------------------------------------------------------------------ */
-/* Installation                                                              */
+/* Installation / désinstallation                                            */
 /* ------------------------------------------------------------------------ */
 
 static void usb_task(void *arg)
 {
     (void)arg;
-    while (true) {
-        tud_task();   /* bloquant tant qu'il n'y a rien à faire */
+    while (s_task_run) {
+        /* Timeout court plutôt qu'un blocage indéfini : c'est ce qui permet à
+         * usb_device_uninstall() de faire sortir proprement cette boucle sans
+         * toucher à l'état interne de TinyUSB depuis un autre contexte. */
+        tud_task_ext(100, false);
     }
+    xSemaphoreGive(s_task_done);
+    vTaskDelete(NULL);
 }
 
-esp_err_t usb_device_start(void)
+esp_err_t usb_device_install(const uint8_t *fs_cfg, const uint8_t *hs_cfg,
+                              const char **strings, int string_count)
 {
-    uint8_t mac[6] = { 0 };
-    if (esp_efuse_mac_get_default(mac) == ESP_OK) {
-        snprintf(s_serial, sizeof(s_serial), "%02X%02X%02X%02X%02X%02X",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    if (fs_cfg == NULL || hs_cfg == NULL || strings == NULL || string_count <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_phy != NULL) {
+        ESP_LOGE(TAG, "installation demandée alors qu'un mode est déjà en place");
+        return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t err = msc_disk_init();
-    if (err != ESP_OK) {
-        return err;
-    }
+    s_fs_cfg = fs_cfg;
+    s_hs_cfg = hs_cfg;
+    s_strings = strings;
+    s_string_count = string_count;
 
     /*
      * PHY UTMI interne, en mode device. Pas de monitoring VBUS : le coffre est
@@ -253,28 +290,142 @@ esp_err_t usb_device_start(void)
         .ext_io_conf = NULL,
         .otg_io_conf = NULL,
     };
-    ESP_RETURN_ON_ERROR(usb_new_phy(&phy_conf, &s_phy), TAG, "PHY USB");
+    esp_err_t err = usb_new_phy(&phy_conf, &s_phy);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "PHY USB : %s", esp_err_to_name(err));
+        s_fs_cfg = NULL;
+        s_hs_cfg = NULL;
+        s_strings = NULL;
+        s_string_count = 0;
+        return err;
+    }
 
     if (!tusb_init()) {
         ESP_LOGE(TAG, "tusb_init a échoué");
         usb_del_phy(s_phy);
         s_phy = NULL;
+        s_fs_cfg = NULL;
+        s_hs_cfg = NULL;
+        s_strings = NULL;
+        s_string_count = 0;
         return ESP_FAIL;
+    }
+
+    if (s_task_done == NULL) {
+        s_task_done = xSemaphoreCreateBinary();
+        if (s_task_done == NULL) {
+            tusb_deinit(TUD_OPT_RHPORT);
+            usb_del_phy(s_phy);
+            s_phy = NULL;
+            s_fs_cfg = NULL;
+            s_hs_cfg = NULL;
+            s_strings = NULL;
+            s_string_count = 0;
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     /*
      * Priorité au-dessus de la boucle applicative : un NAK tardif sur un
      * transfert de masse dégrade le débit, et l'hôte a des délais serrés.
      */
+    s_task_run = true;
     if (xTaskCreate(usb_task, "usb", 4096, NULL, 5, &s_task) != pdPASS) {
         ESP_LOGE(TAG, "création de la tâche USB");
+        s_task_run = false;
+        tusb_deinit(TUD_OPT_RHPORT);
         usb_del_phy(s_phy);
         s_phy = NULL;
+        s_fs_cfg = NULL;
+        s_hs_cfg = NULL;
+        s_strings = NULL;
+        s_string_count = 0;
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "périphérique MSC sur le port haute vitesse, %04x:%04x, série %s",
-             NIPHAR_USB_VID, NIPHAR_USB_PID, s_serial);
+    ESP_LOGI(TAG, "périphérique installé, %04x:%04x, série %s",
+             NIPHAR_USB_VID, NIPHAR_USB_PID, usb_device_serial());
+    return ESP_OK;
+}
+
+esp_err_t usb_device_uninstall(void)
+{
+    if (s_phy == NULL && s_task == NULL) {
+        return ESP_OK;   /* déjà désinstallé — idempotent, voir usb_device.h */
+    }
+
+    /*
+     * La tâche USB s'arrête AVANT tout le reste.
+     *
+     * usbd n'est pas réentrant, et tud_disconnect() comme tusb_deinit()
+     * touchent les mêmes registres DWC2 que tud_task_ext(). Les appeler depuis
+     * la tâche appelante pendant que usb_task tourne encore, c'est deux
+     * contextes dans la même machine à états. L'ordre est donc : sortir la
+     * boucle, attendre qu'elle ait vraiment rendu la main, puis détacher.
+     */
+    if (s_task != NULL) {
+        /*
+         * Purge du sémaphore avant d'attendre : il est binaire et n'est jamais
+         * consommé quand un `give` arrive après l'expiration du take. Ce jeton
+         * resté en réserve pré-armerait la désinstallation SUIVANTE, qui
+         * rendrait la main immédiatement alors que sa tâche n'est pas sortie.
+         *
+         * MAIS seulement quand on ENTAME un démontage. Si s_task_run est déjà
+         * faux, on est dans une nouvelle tentative après un ESP_ERR_TIMEOUT, et
+         * le jeton éventuellement présent est exactement l'inverse d'un
+         * parasite : c'est la preuve que la tâche est sortie depuis. Le jeter
+         * là condamnait la reprise — plus personne ne le redonnerait, chaque
+         * tentative suivante expirerait à son tour, et le coffre restait
+         * enfermé pour de bon dans un mode qu'il ne pouvait plus démonter.
+         * C'est le seul chemin par lequel l'état interne devenait
+         * irrécupérable, et il annulait la reprise que le commentaire ci-dessous
+         * promet.
+         */
+        if (s_task_run && s_task_done != NULL) {
+            (void)xSemaphoreTake(s_task_done, 0);
+        }
+
+        s_task_run = false;
+
+        /* Marge large devant le tud_task_ext(100) de la boucle. */
+        BaseType_t done = pdFALSE;
+        if (s_task_done != NULL) {
+            done = xSemaphoreTake(s_task_done, pdMS_TO_TICKS(1000));
+        }
+        if (done != pdTRUE) {
+            /*
+             * Ne PAS enchaîner : tusb_deinit() et usb_del_phy() sous une tâche
+             * encore vivante, c'est une utilisation après libération. On rend
+             * l'échec, s_task reste posé — une nouvelle tentative réattendra le
+             * sémaphore, que la tâche finira par donner en sortant.
+             */
+            ESP_LOGE(TAG, "la tâche USB n'est pas sortie en 1 s — désinstallation refusée");
+            return ESP_ERR_TIMEOUT;
+        }
+        s_task = NULL;
+    }
+
+    /* Détache du bus : l'hôte doit voir une vraie déconnexion, pas un silence
+     * qu'il pourrait attribuer à un périphérique figé. Plus personne ne tourne
+     * dans tud_task à ce point. */
+    if (tusb_inited()) {
+        tud_disconnect();
+    }
+
+    tusb_deinit(TUD_OPT_RHPORT);
+
+    if (s_phy != NULL) {
+        usb_del_phy(s_phy);
+        s_phy = NULL;
+    }
+
+    s_fs_cfg = NULL;
+    s_hs_cfg = NULL;
+    s_strings = NULL;
+    s_string_count = 0;
+    s_mounted = false;
+
+    ESP_LOGI(TAG, "périphérique désinstallé");
     return ESP_OK;
 }
 

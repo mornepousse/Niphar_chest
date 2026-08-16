@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-#include "link/cr_crc16.h"
+#include "cr_crc16.h"
 
 /* Mot magique « NIPH », octet par octet : pas de cast sur un uint32_t, qui
  * dépendrait de l'ordre des octets de la machine — or ce code tourne aussi sur

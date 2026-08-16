@@ -11,11 +11,13 @@
 #include "esp_chip_info.h"
 #include "esp_flash.h"
 #include "esp_system.h"
+#include "nvs_flash.h"
 
 #include "board.h"
 #include "console/console.h"
+#include "sec_gate.h"
 #include "storage/sd_card.h"
-#include "usb/usb_device.h"
+#include "usb/usb_mode.h"
 
 static const char *TAG = "niphar";
 
@@ -60,14 +62,49 @@ void app_main(void)
     (void)sd_probe();
 
     /*
-     * Le MSC ensuite. Il énumère même sans carte : l'hôte apprendra l'absence
-     * de média par TEST UNIT READY, ce qui vaut mieux qu'un périphérique
-     * fantôme. Un échec ici ne doit pas empêcher la console de démarrer.
+     * NVS avant l'USB : c'est le socle flash dont les DO/PIN/clés OpenPGP
+     * (mode_pgp_data_load(), tâche 12) et les secrets sec_store (mode OTP)
+     * ont besoin pour persister — mais rien ne les charge encore ici, ce
+     * n'est que la partition NVS qui s'ouvre, pas un mode qui s'active.
+     * Découvert en câblant la tâche 12 : sans cet appel, nvs_open() échoue
+     * ESP_ERR_NVS_NOT_INITIALIZED, PUT DATA et VERIFY (pin persist)
+     * réussissent en RAM le temps de la session mais rien ne survit à un
+     * reset. Pas de bouton reset sur le coffre (docs/HARDWARE.md), donc
+     * jamais rencontré avant ce test bout en bout.
      */
-    esp_err_t usb_err = usb_device_start();
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS : partition à réinitialiser (%s)", esp_err_to_name(nvs_err));
+        nvs_err = nvs_flash_erase();
+        if (nvs_err == ESP_OK) {
+            nvs_err = nvs_flash_init();
+        }
+    }
+    if (nvs_err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS indisponible : %s — PGP/OTP resteront en RAM seule, sans persistance",
+                 esp_err_to_name(nvs_err));
+    }
+
+    /*
+     * L'USB ensuite, mais sans exposer de fonction : le coffre démarre en
+     * USB_MODE_NONE (voir usb/usb_mode.h) et c'est la console — ou, plus tard,
+     * le clavier via le lien S3 — qui demandera explicitement un mode. Un
+     * échec ici ne doit pas empêcher la console de démarrer.
+     */
+    esp_err_t usb_err = usb_mode_init();
     if (usb_err != ESP_OK) {
         ESP_LOGE(TAG, "USB indisponible : %s — la console reste le recours",
                  esp_err_to_name(usb_err));
+    }
+
+    /*
+     * La source de confirmation avant la console : « sec confirm » (kit) en
+     * dépend directement, et le journal de démarrage doit dire d'où viendra
+     * l'appui avant que quiconque puisse en armer une.
+     */
+    esp_err_t gate_err = sec_gate_init();
+    if (gate_err != ESP_OK) {
+        ESP_LOGE(TAG, "sec_gate indisponible : %s", esp_err_to_name(gate_err));
     }
 
     /*

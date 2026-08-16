@@ -10,9 +10,11 @@
 #include "esp_timer.h"
 #include "sdmmc_cmd.h"
 
+#include "sec_gate.h"
 #include "storage/sd_card.h"
 #include "usb/msc_disk.h"
 #include "usb/usb_device.h"
+#include "usb/usb_mode.h"
 
 static const char *TAG = "console";
 
@@ -118,9 +120,35 @@ static int cmd_usb(int argc, char **argv)
     (void)argc;
     (void)argv;
 
+#if !BOARD_LINK_AVAILABLE
+    /*
+     * Béquille de développement : sur une carte avec lien, le sélecteur de
+     * mode viendra du clavier via le S3, pas de la console. Verrouillée
+     * comme sec_gate_console_confirm — voir le garde-fou 4 de fast.sh, étendu
+     * à usb_mode_set par cette même tâche.
+     */
+    if (argc >= 3 && strcmp(argv[1], "mode") == 0) {
+        usb_mode_t m = USB_MODE_NONE;
+        if      (strcmp(argv[2], "none")    == 0) m = USB_MODE_NONE;
+        else if (strcmp(argv[2], "storage") == 0) m = USB_MODE_STORAGE;
+        else if (strcmp(argv[2], "pgp")     == 0) m = USB_MODE_PGP;
+        else if (strcmp(argv[2], "otp")     == 0) m = USB_MODE_OTP;
+        else { printf("mode inconnu : %s\n", argv[2]); return 1; }
+        esp_err_t err = usb_mode_set(m);
+        printf("mode %s : %s\n", usb_mode_name(m), esp_err_to_name(err));
+        return err == ESP_OK ? 0 : 1;
+    }
+#endif
+
     msc_disk_stats_t st;
     msc_disk_get_stats(&st);
 
+    /* L'incertitude s'affiche : après une bascule ratée, le mode annoncé est
+     * ce que l'hôte voit encore, pas ce qui est servi. Sans cette mention, la
+     * console montrerait un mode d'aplomb dans le seul cas où il ne faut pas
+     * s'y fier — voir usb/usb_mode_state.h. */
+    printf("mode          : %s%s\n", usb_mode_name(usb_mode_get()),
+           usb_mode_is_known() ? "" : "  (INCERTAIN — dernière bascule en échec, rebasculer)");
     printf("état          : %s\n", usb_device_mounted() ? "configuré par l'hôte" : "non configuré");
     printf("bufsize max   : %" PRIu32 " o (demandé par TinyUSB)\n", st.max_bufsize);
     printf("secteurs DMA  : %" PRIu32 "\n", st.fast_sectors);
@@ -137,6 +165,30 @@ static int cmd_usb(int argc, char **argv)
         printf("(aucun transfert encore)\n");
     }
     return 0;
+}
+
+static int cmd_sec(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("usage : sec confirm | sec source\n");
+        return 1;
+    }
+
+    if (strcmp(argv[1], "source") == 0) {
+        printf("confirmation : %s\n", sec_gate_source());
+        return 0;
+    }
+
+#if !BOARD_LINK_AVAILABLE
+    if (strcmp(argv[1], "confirm") == 0) {
+        sec_gate_console_confirm();
+        printf("appui simulé — sans effet s'il n'y a pas d'opération armée.\n");
+        return 0;
+    }
+#endif
+
+    printf("sous-commande inconnue : %s\n", argv[1]);
+    return 1;
 }
 
 esp_err_t console_start(void)
@@ -176,13 +228,29 @@ esp_err_t console_start(void)
 
     const esp_console_cmd_t usb_cmd = {
         .command = "usb",
-        .help = "État USB et compteurs du chemin MSC (rapide vs rebond)",
+        .help = "État USB, compteurs du chemin MSC (rapide vs rebond)"
+#if !BOARD_LINK_AVAILABLE
+                ", et « usb mode none|storage|pgp|otp » (béquille de dev, sans lien)"
+#endif
+                ,
         .hint = NULL,
         .func = &cmd_usb,
     };
     err = esp_console_cmd_register(&usb_cmd);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "commande usb : %s", esp_err_to_name(err));
+        return err;
+    }
+
+    const esp_console_cmd_t sec_cmd = {
+        .command = "sec",
+        .help = "Sécurité : « sec source », et « sec confirm » sur carte sans lien",
+        .hint = "confirm|source",
+        .func = &cmd_sec,
+    };
+    err = esp_console_cmd_register(&sec_cmd);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "commande sec : %s", esp_err_to_name(err));
         return err;
     }
 

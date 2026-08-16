@@ -13,14 +13,36 @@ add_executable(test_runner
     test_main.c
     test_link_proto.c
     test_msc_lba.c
+    test_cr_crc16.c
+    test_sec_confirm.c
+    test_sec_store.c
+    test_apdu.c
+    test_otp_proto.c
+    test_openpgp_do.c
+    test_openpgp_card.c
+    test_sec_gate.c
+    test_usb_mode.c
+    test_ccid_zlp.c
     ../main/link/link_proto.c
-    ../main/link/cr_crc16.c
+    ../main/sys/cr_crc16.c
+    ../main/security/sec_confirm.c
+    ../main/security/sec_store.c
+    ../main/security/apdu.c
+    ../main/security/otp_proto.c
+    ../main/security/openpgp_do.c
+    ../main/security/openpgp_card.c
     ../main/usb/msc_lba.c
+    ../main/usb/usb_mode_name.c
+    nvs_fake.c
 )
 
 # `main/` sur le chemin d'inclusion : les tests incluent « link/link_proto.h »
 # exactement comme le firmware, sans chemin relatif tordu.
+# sys et security à plat : comme dans le firmware, les fichiers portés depuis
+# KeSp s'incluent ainsi.
 target_include_directories(test_runner PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../main
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/sys
+    ${CMAKE_CURRENT_SOURCE_DIR}/../main/security
 )

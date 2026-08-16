@@ -1,0 +1,9 @@
+/* Répertoire des composants de sécurité (OpenPGP CCID, CR-HMAC OTP-HID).
+ * Pas de FIDO ici : il n'existe pas dans ce projet ni dans KeSp_firmware.
+ *
+ * Créé lors de la tâche 1 du portage de pile de sécurité. Le CMakeLists.txt
+ * du firmware (main/CMakeLists.txt) ouvre ce répertoire en INCLUDE_DIRS dès la
+ * tâche 1, mais il n'est peuplé qu'aux tâches suivantes. Ce fichier stub existe
+ * uniquement pour matérialiser le répertoire sous git : sans lui, un clone frais
+ * n'aurait pas main/security/, et le CMake d'esp-idf échouerait avant compilation.
+ */

@@ -6,7 +6,7 @@
 > étapes utilisent la syntaxe case à cocher (`- [ ]`).
 
 **But :** porter la pile OpenPGP CCID et CR-HMAC OTP-HID de `KeSp_firmware`
-vers le coffre, en composite avec le MSC existant, avec une source de
+vers le coffre, en modes USB exclusifs aux côtés du MSC existant, avec une source de
 confirmation utilisable sur le kit de dev et impossible à embarquer sur le
 coffre.
 
@@ -774,120 +774,303 @@ git commit -m "sécurité : sec_gate, la béquille qui ne peut pas partir en pro
 
 ---
 
-### Tâche 9 : CCID sur l'USB — composite MSC + CCID
+### Tâche 9 : `usb_mode` — une fonction à la fois
 
 **Fichiers :**
-- Créer : `main/security/ccid.c`, `main/security/ccid.h`
-- Modifier : `main/tusb_config.h`, `main/usb/usb_device.c`, `main/CMakeLists.txt`
+- Créer : `main/usb/usb_mode.c`, `main/usb/usb_mode.h`
+- Modifier : `main/usb/usb_device.{c,h}`, `main/main.c`, `main/console/console.c`,
+  `main/CMakeLists.txt`, `scripts/fast.sh`
+- Test : `test/test_usb_mode.c`
 
 **Interfaces :**
-- Consomme : `openpgp_card` (tâche 7), `sec_confirm` (tâche 2).
-- Produit : `usbd_class_driver_t const *usbd_app_driver_get_cb(uint8_t *driver_count)`
-  — surcharge forte d'un symbole faible de TinyUSB. C'est ainsi que la classe
-  CCID s'enregistre, sans que `usb_device.c` ait à la connaître.
+- Consomme : `usb_device_start()` et `usb_device_mounted()` (existants).
+- Produit :
 
-- [ ] **Étape 1 : copier**
+```c
+typedef enum {
+    USB_MODE_NONE = 0,   /* aucune fonction exposée — état au démarrage */
+    USB_MODE_STORAGE,    /* le disque (MSC) */
+    USB_MODE_PGP,        /* la carte OpenPGP (CCID) — tâche 10 */
+    USB_MODE_OTP,        /* la clé CR-HMAC (HID) — tâche 11 */
+    USB_MODE_COUNT,
+} usb_mode_t;
+
+esp_err_t    usb_mode_init(void);              /* démarre en USB_MODE_NONE */
+esp_err_t    usb_mode_set(usb_mode_t mode);    /* bascule, avec ré-énumération */
+usb_mode_t   usb_mode_get(void);
+const char  *usb_mode_name(usb_mode_t mode);   /* jamais NULL, même hors bornes */
+```
+
+Cette tâche n'ajoute **aucune** interface nouvelle : elle transforme le MSC
+permanent en un mode parmi d'autres, et prouve la bascule sur les deux seuls
+modes qui existent encore — `NONE` et `STORAGE`. Les modes `PGP` et `OTP` sont
+déclarés dès maintenant pour que les tâches suivantes n'aient qu'à remplir leur
+jeu de descripteurs, mais `usb_mode_set` les refuse avec `ESP_ERR_NOT_SUPPORTED`.
+
+- [ ] **Étape 1 : écrire le test d'abord**
+
+Créer `test/test_usb_mode.c` :
+
+```c
+/* usb_mode est surtout du pilotage de matériel, mais son contrat de noms et de
+ * bornes est pur — et c'est lui qui garantit qu'aucune fonction ne s'expose
+ * sans avoir été demandée. */
+#include "test_framework.h"
+
+#include "usb/usb_mode.h"
+
+static void test_name_never_null(void)
+{
+    for (int m = 0; m < USB_MODE_COUNT; m++) {
+        TEST_ASSERT(usb_mode_name((usb_mode_t)m) != NULL, "chaque mode a un nom");
+    }
+    TEST_ASSERT(usb_mode_name((usb_mode_t)USB_MODE_COUNT) != NULL,
+                "un mode hors bornes rend quand même un nom");
+    TEST_ASSERT(usb_mode_name((usb_mode_t)255) != NULL,
+                "une valeur aberrante rend quand même un nom");
+}
+
+/* Le mode 0 doit être NONE : c'est la valeur d'une variable statique non
+ * initialisée, donc l'état par défaut doit être le plus sûr. */
+static void test_none_is_zero(void)
+{
+    TEST_ASSERT_EQ(USB_MODE_NONE, 0, "NONE vaut zéro, l'état par défaut sûr");
+}
+
+static void test_names_are_distinct(void)
+{
+    for (int a = 0; a < USB_MODE_COUNT; a++) {
+        for (int b = a + 1; b < USB_MODE_COUNT; b++) {
+            TEST_ASSERT(strcmp(usb_mode_name((usb_mode_t)a),
+                               usb_mode_name((usb_mode_t)b)) != 0,
+                        "deux modes ne portent pas le même nom");
+        }
+    }
+}
+
+void test_usb_mode(void)
+{
+    TEST_SUITE("usb_mode");
+    TEST_RUN(test_name_never_null);
+    TEST_RUN(test_none_is_zero);
+    TEST_RUN(test_names_are_distinct);
+}
+```
+
+`usb_mode_name` doit donc vivre dans un fichier compilable sur l'hôte : le
+mettre dans `usb_mode.c` **avant** tout `#include` d'ESP-IDF ne suffira pas.
+Créer `main/usb/usb_mode_name.c` qui n'inclut que `usb_mode.h`, et y placer
+cette seule fonction. `usb_mode.c` garde tout ce qui touche au matériel.
+
+Câbler dans `test/CMakeLists.txt` (`test_usb_mode.c` et
+`../main/usb/usb_mode_name.c`) et dans `test/test_main.c`.
+
+- [ ] **Étape 2 : lancer le test, vérifier qu'il échoue**
+
+Run : `cmake -S test -B test/build && cmake --build test/build`
+Attendu : ÉCHEC de compilation — `usb/usb_mode.h` n'existe pas.
+
+- [ ] **Étape 3 : écrire l'en-tête et les noms**
+
+`main/usb/usb_mode.h` avec l'énumération et les quatre prototypes ci-dessus,
+plus un commentaire expliquant pourquoi `NONE` est l'état de démarrage.
+
+`main/usb/usb_mode_name.c` :
+
+```c
+#include "usb/usb_mode.h"
+
+const char *usb_mode_name(usb_mode_t mode)
+{
+    switch (mode) {
+    case USB_MODE_NONE:    return "aucun";
+    case USB_MODE_STORAGE: return "stockage";
+    case USB_MODE_PGP:     return "carte OpenPGP";
+    case USB_MODE_OTP:     return "clé CR-HMAC";
+    default:               return "inconnu";
+    }
+}
+```
+
+Run : `cmake --build test/build && ./test/build/test_runner`
+Attendu : PASS, 8 assertions de plus.
+
+- [ ] **Étape 4 : rendre `usb_device` pilotable**
+
+Aujourd'hui `usb_device_start()` installe TinyUSB une fois pour toutes avec les
+descripteurs du MSC. Le découper :
+
+- `esp_err_t usb_device_install(const uint8_t *fs_cfg, const uint8_t *hs_cfg,
+  const char **strings, int string_count)` — installe le PHY, la tâche et les
+  descripteurs fournis ;
+- `esp_err_t usb_device_uninstall(void)` — détache du bus, arrête la tâche,
+  libère le PHY.
+
+Déplacer les descripteurs MSC de `usb_device.c` vers un nouveau
+`main/usb/mode_storage.{c,h}` qui expose `const uint8_t *mode_storage_fs_config(void)`
+et son pendant haute vitesse. `usb_device.c` ne connaît plus aucun mode.
+
+- [ ] **Étape 5 : écrire `usb_mode.c`**
+
+`usb_mode_set` : si le mode demandé est le mode courant, ne rien faire et
+renvoyer `ESP_OK`. Sinon `usb_device_uninstall()`, puis `usb_device_install()`
+avec les descripteurs du nouveau mode — ou rien du tout pour `USB_MODE_NONE`.
+`USB_MODE_PGP` et `USB_MODE_OTP` renvoient `ESP_ERR_NOT_SUPPORTED` tant que
+leurs tâches ne sont pas faites.
+
+Journaliser chaque bascule : `ESP_LOGI(TAG, "mode USB : %s -> %s", ...)`. C'est
+le seul témoin d'une ré-énumération côté coffre.
+
+- [ ] **Étape 6 : le sélecteur console, verrouillé comme la béquille**
+
+Dans `main/console/console.c`, ajouter une sous-commande à `usb` :
+
+```c
+#if !BOARD_LINK_AVAILABLE
+    if (argc >= 3 && strcmp(argv[1], "mode") == 0) {
+        usb_mode_t m = USB_MODE_NONE;
+        if      (strcmp(argv[2], "none")    == 0) m = USB_MODE_NONE;
+        else if (strcmp(argv[2], "storage") == 0) m = USB_MODE_STORAGE;
+        else if (strcmp(argv[2], "pgp")     == 0) m = USB_MODE_PGP;
+        else if (strcmp(argv[2], "otp")     == 0) m = USB_MODE_OTP;
+        else { printf("mode inconnu : %s\n", argv[2]); return 1; }
+        esp_err_t err = usb_mode_set(m);
+        printf("mode %s : %s\n", usb_mode_name(m), esp_err_to_name(err));
+        return err == ESP_OK ? 0 : 1;
+    }
+#endif
+```
+
+Sur une carte avec lien, le sélecteur viendra du S3 : cette béquille n'a pas à
+exister. Étendre le garde-fou 4 de `scripts/fast.sh` pour qu'il refuse aussi
+`usb_mode_set` hors de `usb_mode.{c,h}`, `console.c` et `main.c`.
+
+`main/main.c` : remplacer l'appel à `usb_device_start()` par `usb_mode_init()`.
+
+- [ ] **Étape 7 : vérifier sur matériel**
+
+Run : `./scripts/check.sh --force` puis flasher le kit.
+
+Run : `lsusb -d 303a:4021`
+Attendu : **rien** — au démarrage, aucune fonction n'est exposée.
+
+Sur la console : `usb mode storage`.
+Run : `lsusb -d 303a:4021 && lsblk | grep -i niphar`
+Attendu : le périphérique apparaît, le disque est là.
+
+Sur la console : `usb mode none`.
+Run : `lsusb -d 303a:4021`
+Attendu : plus rien. La bascule dans les deux sens est le test qui compte.
+
+- [ ] **Étape 8 : commit**
+
+```bash
+git add -A
+git commit -m "usb : une fonction à la fois, le MSC devient un mode"
+```
+
+---
+
+### Tâche 10 : le mode `PGP` — CCID
+
+**Fichiers :**
+- Créer : `main/security/ccid.c`, `main/security/ccid.h`,
+  `main/security/ccid_desc.h`, `main/usb/mode_pgp.{c,h}`
+- Modifier : `main/tusb_config.h`, `main/usb/usb_mode.c`, `main/CMakeLists.txt`
+
+**Interfaces :**
+- Consomme : `usb_device_install/uninstall` et `usb_mode_t` (tâche 9),
+  `openpgp_card` (tâche 7), `sec_confirm` (tâche 2).
+- Produit : `const uint8_t *mode_pgp_fs_config(void)` et
+  `mode_pgp_hs_config(void)`, sur le modèle exact de `mode_storage`.
+
+- [ ] **Étape 1 : copier `ccid.c` et son descripteur**
 
 ```bash
 KESP=~/Documents/GitHub/KeSp_firmware
 cp "$KESP/main/security/ccid.c" "$KESP/main/security/ccid.h" main/security/
 ```
 
-- [ ] **Étape 2 : les descripteurs**
-
-Dans `main/usb/usb_device.c`, étendre l'énumération d'interfaces :
-
-```c
-enum {
-    ITF_NUM_MSC = 0,
-    ITF_NUM_CCID,
-    ITF_NUM_TOTAL,
-};
-```
-
-Ajouter les endpoints CCID sous ceux du MSC :
-
-```c
-#define EPNUM_CCID_OUT 0x02
-#define EPNUM_CCID_IN  0x82
-```
-
 TinyUSB n'a **pas** de macro pour la classe CCID : KeSp a écrit la sienne.
-Copier verbatim le bloc `KeSp_firmware/main/comm/usb/usb_hid.c:120-162` — c'est
-`KASE_CCID_DESC` (le descripteur fonctionnel de 54 octets, CCID Rev 1.1 §5.1),
+Copier verbatim le bloc `KeSp_firmware/main/comm/usb/usb_hid.c:120-162` — soit
+`KASE_CCID_DESC` (descripteur fonctionnel de 54 octets, CCID Rev 1.1 §5.1),
 `TUD_CCID_DESC_LEN` et `KASE_CCID_ITF_DESC(_itfnum, _stridx, _epout, _epin)` —
-dans un nouveau fichier `main/security/ccid_desc.h`, avec un `#pragma once` et
-une note de provenance. Le mettre là plutôt que dans `usb_device.c` garde le
-descripteur avec le code de la classe qu'il décrit.
+dans un nouveau `main/security/ccid_desc.h`, avec `#pragma once` et une note de
+provenance. Le garder près du code de la classe qu'il décrit.
 
 Renommer le préfixe `KASE_` en `NIPHAR_` **est une divergence à ne pas faire** :
-elle n'apporte rien et casserait la comparaison avec l'amont.
+elle n'apporte rien et casse la comparaison avec l'amont.
 
-Puis dans `usb_device.c`, inclure `ccid_desc.h` et ajouter aux deux
-configurations, après la ligne `TUD_MSC_DESCRIPTOR(...)` :
+- [ ] **Étape 2 : le jeu de descripteurs du mode**
 
-```c
-    KASE_CCID_ITF_DESC(ITF_NUM_CCID, STRID_CCID, EPNUM_CCID_OUT, EPNUM_CCID_IN),
-```
-
-Corriger la longueur totale :
+`main/usb/mode_pgp.c`, calqué sur `mode_storage.c` :
 
 ```c
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN + TUD_CCID_DESC_LEN)
+enum { ITF_NUM_CCID = 0, ITF_NUM_TOTAL };
+#define EPNUM_CCID_OUT 0x01
+#define EPNUM_CCID_IN  0x81
+#define PGP_CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CCID_DESC_LEN)
 ```
 
-Ajouter `STRID_CCID` à l'énumération des chaînes, avant `STRID_COUNT`, et
-`[STRID_CCID] = "Coffre OpenPGP"` au tableau `s_strings`.
+et les deux tableaux de configuration contenant
+`TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, PGP_CONFIG_TOTAL_LEN, 0x00, 500)`
+suivi de `KASE_CCID_ITF_DESC(ITF_NUM_CCID, STRID_CCID, EPNUM_CCID_OUT, EPNUM_CCID_IN)`.
+
+Le mode fournit aussi son tableau de chaînes, avec `"Coffre OpenPGP"` en
+descripteur d'interface.
 
 - [ ] **Étape 3 : forcer l'édition de liens de la classe**
 
 `ccid.c` définit `usbd_app_driver_get_cb` en surcharge forte d'un symbole faible.
 Si rien du fichier n'est référencé, l'éditeur de liens peut l'écarter et la
 classe disparaît en silence. KeSp règle ça dans `usb_hid.c:370` par une
-référence explicite ; reproduire le même mécanisme dans `usb_device.c`, avec un
+référence explicite ; reproduire le mécanisme dans `mode_pgp.c`, avec un
 commentaire disant pourquoi.
 
-- [ ] **Étape 4 : vérifier sur matériel**
+Dans `main/tusb_config.h`, rien à activer : le CCID n'est pas une classe
+TinyUSB standard, c'est un pilote applicatif.
 
-Run : `./scripts/check.sh --force`
-Attendu : VERT.
+- [ ] **Étape 4 : brancher le mode**
 
-```bash
-PORT=$(ls /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00 | head -1)
-idf.py -B build_jc_devkit -p "$PORT" app-flash
-```
+Dans `usb_mode.c`, remplacer le `ESP_ERR_NOT_SUPPORTED` de `USB_MODE_PGP` par
+l'installation des descripteurs de `mode_pgp`.
 
+- [ ] **Étape 5 : vérifier sur matériel**
+
+Run : `./scripts/check.sh --force` puis flasher le kit.
+
+Console : `usb mode pgp`.
 Run : `lsusb -v -d 303a:4021 2>/dev/null | grep -E "bInterfaceClass|bNumInterfaces"`
-Attendu : deux interfaces, dont une de classe `11` (Chip/SmartCard).
+Attendu : **une seule** interface, de classe `11` (Chip/SmartCard).
 
-Run : `lsblk | grep -i niphar`
-Attendu : le disque est **toujours** là — le MSC ne doit pas avoir régressé.
+Console : `usb mode storage`.
+Run : `lsusb -v -d 303a:4021 2>/dev/null | grep -cE "bInterfaceClass"`
+Attendu : `1` — et c'est le stockage. Les deux ne coexistent jamais.
 
-- [ ] **Étape 5 : commit**
+- [ ] **Étape 6 : commit**
 
 ```bash
 git add -A
-git commit -m "usb : CCID en composite avec le MSC"
+git commit -m "usb : mode PGP, la carte OpenPGP sur CCID"
 ```
 
 ---
 
-### Tâche 10 : OTP-HID — la troisième interface
+### Tâche 11 : le mode `OTP` — HID
 
 **Fichiers :**
-- Créer : `main/security/otp_hid.c`, `main/security/otp_hid.h`
-- Modifier : `main/tusb_config.h`, `main/usb/usb_device.c`, `main/CMakeLists.txt`
+- Créer : `main/security/otp_hid.c`, `main/security/otp_hid.h`,
+  `main/usb/mode_otp.{c,h}`
+- Modifier : `main/tusb_config.h`, `main/usb/usb_mode.c`, `main/CMakeLists.txt`
 
 **Interfaces :**
-- Consomme : `otp_proto`, `cr_hmac` (tâche 5), `sec_store` (tâche 3),
-  `sec_confirm` (tâche 2).
-- Produit : les callbacks HID de TinyUSB (`tud_hid_get_report_cb`,
-  `tud_hid_set_report_cb`) et le descripteur de rapport que `usb_device.c`
-  expose.
+- Consomme : `usb_device_install/uninstall` (tâche 9), `otp_proto` et `cr_hmac`
+  (tâche 5), `sec_store` (tâche 3), `sec_confirm` (tâche 2).
+- Produit : `const uint8_t *mode_otp_fs_config(void)` et `mode_otp_hs_config(void)`.
 
-C'est ici que le coffre fait ce qu'aucune carte de KeSp ne peut : CCID et
-OTP-HID en même temps. Sur le S3 les deux débordaient le budget de 4 endpoints
-IN ; le P4 en a seize.
+C'est ici que l'OTP-HID tourne pour la première fois sur du matériel : chez
+KeSp il n'a jamais pu être validé, l'ESP32-S3 n'ayant pas assez d'endpoints IN
+pour le cumuler avec le reste. Le traiter comme du code neuf.
 
 - [ ] **Étape 1 : copier et activer HID**
 
@@ -903,17 +1086,17 @@ Dans `main/tusb_config.h`, remplacer `#define CFG_TUD_HID 0` par :
 #define CFG_TUD_HID_EP_BUFSIZE      64
 ```
 
-- [ ] **Étape 2 : les descripteurs**
+- [ ] **Étape 2 : le jeu de descripteurs du mode**
 
-Ajouter `ITF_NUM_HID` à l'énumération, avant `ITF_NUM_TOTAL`, et :
+`main/usb/mode_otp.c` :
 
 ```c
-#define EPNUM_HID_OUT 0x03
-#define EPNUM_HID_IN  0x83
+enum { ITF_NUM_HID = 0, ITF_NUM_TOTAL };
+#define EPNUM_HID_IN  0x81
+#define OTP_CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
 ```
 
-Contrairement au CCID, TinyUSB fournit la macro. Ajouter aux deux
-configurations :
+et, dans les deux configurations :
 
 ```c
     TUD_HID_DESCRIPTOR(ITF_NUM_HID, STRID_HID, HID_ITF_PROTOCOL_NONE,
@@ -923,94 +1106,47 @@ configurations :
 `HID_ITF_PROTOCOL_NONE` et non `_KEYBOARD` : le coffre n'est pas un clavier, et
 l'annoncer comme tel ferait que l'hôte lui envoie des rapports de LED.
 
-Corriger la longueur totale :
-
-```c
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN \
-                          + TUD_CCID_DESC_LEN + TUD_HID_DESC_LEN)
-```
-
 Le descripteur de rapport `desc_hid_report` et le callback
 `tud_hid_descriptor_report_cb` viennent de
 `KeSp_firmware/main/comm/usb/usb_hid.c:237` — copier la définition du tableau et
 le callback, en ne gardant que la branche OTP (le clavier n'existe pas ici).
-Ajouter `STRID_HID` à l'énumération et `[STRID_HID] = "Coffre OTP"` au tableau
-des chaînes.
 
-- [ ] **Étape 3 : rendre chaque interface débrayable**
+- [ ] **Étape 3 : brancher le mode et vérifier**
 
-La mutuelle exclusion de KeSp n'a plus lieu d'être — le budget d'endpoints du P4
-les accepte toutes —, mais un coffre qui n'expose que le disque doit rester
-possible : moins d'interfaces, moins de surface offerte à l'hôte.
+Dans `usb_mode.c`, remplacer le `ESP_ERR_NOT_SUPPORTED` de `USB_MODE_OTP`.
 
-Créer `main/Kconfig.projbuild` :
+Run : `./scripts/check.sh --force` puis flasher le kit.
 
-```
-menu "Coffre Niphar"
-
-config NIPHAR_SEC_CCID
-    bool "Carte OpenPGP sur CCID"
-    default y
-    help
-        Expose une interface CCID (classe 0x0B) portant la carte OpenPGP.
-        Le budget d'endpoints du P4 permet de la cumuler avec l'OTP-HID et
-        le stockage de masse — ce que l'ESP32-S3 ne pouvait pas.
-
-config NIPHAR_SEC_OTP_HID
-    bool "Clé CR-HMAC sur HID (compatible YubiKey)"
-    default y
-    help
-        Expose une interface HID portant le challenge-response HMAC-SHA1.
-        Jamais validée sur matériel, y compris chez KeSp_firmware.
-
-endmenu
-```
-
-Conditionner les deux blocs de descripteurs, les sources dans
-`main/CMakeLists.txt` et `CFG_TUD_HID` dans `main/tusb_config.h` à ces options.
-`CONFIG_TOTAL_LEN` et `ITF_NUM_*` doivent se recalculer correctement dans les
-quatre combinaisons.
-
-- [ ] **Étape 4 : vérifier les combinaisons**
-
-Run, pour chacune des quatre combinaisons (les deux options à `y`/`n`) :
-`idf.py -B build_jc_devkit -DBOARD=jc_devkit -DSDKCONFIG=build_jc_devkit/sdkconfig build`
-Attendu : compile dans les quatre cas.
-
-Le cas « les deux à `n` » doit produire exactement le firmware d'avant ce
-portage — le disque seul.
-
-- [ ] **Étape 5 : vérifier sur matériel**
-
-Run : `./scripts/check.sh --force` puis flasher le kit (les deux options à `y`).
-
+Console : `usb mode otp`.
 Run : `lsusb -v -d 303a:4021 2>/dev/null | grep -cE "bInterfaceClass"`
-Attendu : `3` — stockage de masse, carte à puce, HID.
+Attendu : `1`, de classe `3` (HID).
 
-- [ ] **Étape 6 : le disque n'a pas régressé**
+Enchaîner les quatre modes dans l'ordre `none → storage → pgp → otp → none`, en
+vérifiant `lsusb` à chaque étape.
+Attendu : exactement une interface en `storage`, `pgp` et `otp` ; aucun
+périphérique en `none`. Aucune bascule ne doit faire planter le coffre — la
+console doit répondre après les quatre.
 
-Run : `lsblk | grep -i niphar`
-Attendu : le disque est toujours là.
-
-- [ ] **Étape 7 : commit**
+- [ ] **Étape 4 : commit**
 
 ```bash
 git add -A
-git commit -m "usb : OTP-HID en troisième interface, ce que le S3 ne pouvait pas"
+git commit -m "usb : mode OTP, le CR-HMAC valide pour la première fois"
 ```
 
 ---
 
-### Tâche 11 : validation bout en bout sur le kit
+### Tâche 12 : validation bout en bout sur le kit
 
 **Fichiers :**
 - Modifier : `docs/HARDWARE.md`, `README.md`, `CLAUDE.md`
 
 Aucun code. Cette tâche existe parce qu'un portage qui compile n'est pas un
-portage qui marche, et que c'est la première fois que ces deux interfaces
-tournent ensemble où que ce soit.
+portage qui marche.
 
 - [ ] **Étape 1 : la carte OpenPGP répond**
+
+Console : `usb mode pgp`, puis sur l'hôte :
 
 ```bash
 gpg --card-status
@@ -1019,23 +1155,29 @@ Attendu : la carte est vue, avec son numéro de série.
 
 - [ ] **Étape 2 : une opération qui exige la confirmation**
 
-Générer une clé de test, puis signer. Au moment où gpg attend, taper `sec confirm`
-sur la console du coffre.
+Générer une clé de test, puis signer. Au moment où gpg attend, taper
+`sec confirm` sur la console du coffre.
 
-Attendu : sans `sec confirm`, l'opération échoue après 15 s. Avec, elle aboutit.
-**Les deux moitiés de ce test comptent** : une confirmation qui n'est pas
-nécessaire ne prouve rien.
+Attendu : **sans** `sec confirm`, l'opération échoue après 15 s ; **avec**, elle
+aboutit. Les deux moitiés comptent — une confirmation qui n'est pas nécessaire
+ne prouve rien.
 
-- [ ] **Étape 3 : le disque survit**
+- [ ] **Étape 3 : l'exclusivité tient**
 
-Pendant que gpg dialogue avec la carte, monter le disque et lire un fichier.
-Attendu : les deux fonctionnent simultanément.
+Pendant que gpg dialogue avec la carte, vérifier qu'aucun disque n'est présent :
+
+Run : `lsblk | grep -i niphar`
+Attendu : rien. C'est la garantie centrale de cette conception.
 
 - [ ] **Étape 4 : consigner les résultats**
 
 Mettre à jour `README.md` (case « Intégration PGP/FIDO ») et ajouter à
 `docs/HARDWARE.md` une note sur ce qui a été validé, avec la date. Corriger le
 terme « FIDO » du README : ce qui existe est OpenPGP CCID et CR-HMAC OTP-HID.
+
+Documenter dans `CLAUDE.md` le sélecteur de mode et le fait que le coffre
+n'expose rien au démarrage — c'est le genre de comportement qui passe pour une
+panne quand on l'a oublié.
 
 - [ ] **Étape 5 : commit**
 
@@ -1044,12 +1186,12 @@ git add -A
 git commit -m "docs : portage sécurité validé sur le kit"
 ```
 
----
-
 ## Ce que ce plan ne fait pas
 
-- **Le lien SPI** reste non implémenté : sur `niphar_chest`, `sec_gate` refuse
-  toute confirmation. C'est voulu, et c'est le comportement honnête.
+- **Le lien SPI** reste non implémenté. Sur `niphar_chest`, cela a deux effets :
+  `sec_gate` refuse toute confirmation, et surtout **aucun mode USB ne peut être
+  sélectionné** — le firmware du coffre sera inerte côté USB jusqu'à ce que le
+  lien existe. C'est voulu : refuser plutôt qu'exposer par défaut.
 - **Le stockage des clés n'est pas tranché.** Le code écrira des secrets en NVS,
   et l'audit du 2026-08-07 a montré que l'hôte peut forcer le mode download donc
   dumper la flash. Sur le kit, sans enjeu. **Avant que le coffre porte une vraie

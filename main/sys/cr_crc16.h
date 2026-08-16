@@ -9,4 +9,7 @@
  * et deux CRC divergents entre les deux dépôts seraient une source de bugs
  * silencieux à l'interface.
  */
+/* Déplacé de main/link/ vers main/sys/ le 2026-08-07 : la pile CCID portée
+ * depuis KeSp s'en sert aussi, et deux copies divergentes entre volets
+ * seraient exactement le bug silencieux que ce fichier prétend éviter. */
 uint16_t cr_crc16(const uint8_t *data, uint16_t len);
