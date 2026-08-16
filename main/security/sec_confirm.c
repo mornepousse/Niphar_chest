@@ -17,7 +17,11 @@
  * (and the caller re-checks the slot). No touch can be fabricated and no wrong
  * slot can be granted. If a SECOND poll context is ever added (two enabled
  * personalities, or a concurrent admin path), wrap the read-modify-write
- * sections in a portMUX critical section (gated for the host build). */
+ * sections in a portMUX critical section (gated for the host build).
+ *   - peek() is READ-ONLY and adds no writer. On the key board it runs from
+ *     hmi_task (a third context) purely to drive the LED. It performs no
+ *     read-modify-write, so the analysis above is unchanged: still exactly one
+ *     cross-task writer (authorize()). Do NOT let a display path call poll(). */
 
 static sec_confirm_state_t s_state    = SEC_CONFIRM_IDLE;
 static uint8_t             s_slot     = 0;
@@ -54,6 +58,18 @@ sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot)
         if (out_slot) *out_slot = s_slot;
         s_state = SEC_CONFIRM_IDLE;
         return SEC_CONFIRM_AUTHORIZED;
+    }
+    return s_state;
+}
+
+sec_confirm_state_t sec_confirm_peek(uint32_t now_ms)
+{
+    /* Meme expression d'echeance que poll(), volontairement dupliquee plutot
+     * que factorisee : les deux doivent rester d'accord, et une divergence se
+     * verrait immediatement a la lecture cote a cote. */
+    if (s_state == SEC_CONFIRM_PENDING &&
+        (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS) {
+        return SEC_CONFIRM_TIMEDOUT;
     }
     return s_state;
 }
