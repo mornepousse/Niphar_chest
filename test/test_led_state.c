@@ -114,15 +114,29 @@ static void test_mode_flash_colour_for_pgp(void)
 /* Comportement fige, pas change : une bascule vers un mode aberrant n'est
  * jamais emise en pratique (hmi.c n'appelle usb_mode_cycle_next() qu'apres
  * succes, et usb_mode_cycle_after() ne rend jamais que pgp ou otp), et la
- * spec ne demande pas d'indicateur "mode inconnu" dedie. Ce test fige donc le
- * flash noir resultant, pour qu'un futur changement de ce comportement soit
- * un choix delibere et non un accident silencieux. */
+ * spec ne demande pas d'indicateur "mode inconnu" dedie. Les deux assertions
+ * ci-dessous ne gelent pas la meme chose :
+ *
+ * - la premiere gele qu'un evenement flashe TOUJOURS, quel que soit le mode
+ *   - y compris un mode inconnu. C'est le garde-fou mecanique du refus
+ *   explicite d'ajouter un indicateur "mode inconnu" (qui aurait justement
+ *   consiste a NE PAS flasher normalement dans ce cas) : si quelqu'un
+ *   implemente un jour ce comportement, cette assertion rougit, et il faudra
+ *   que ce soit une decision deliberee, pas un accident silencieux ;
+ * - la seconde gele que la couleur de repli d'un mode inconnu est le noir,
+ *   c'est-a-dire le comportement de led_mode_colour() sur son cas `default`.
+ *
+ * Une mutation de couleur (STORAGE, PGP, OTP) ne peut faire rougir que la
+ * seconde : la premiere ne depend que de la presence d'un evenement, calculee
+ * avant tout appel a led_mode_colour(). Seule une mutation qui touche la
+ * condition posant LED_PATTERN_FLASH elle-meme peut l'eprouver. */
 static void test_mode_flash_for_aberrant_mode_is_black_but_defined(void)
 {
     led_view_t v = led_state_view((usb_mode_t)USB_MODE_COUNT, false, LED_EVENT_MODE);
-    TEST_ASSERT_EQ(v.pattern, LED_PATTERN_FLASH, "meme aberrant, le motif reste flash");
+    TEST_ASSERT_EQ(v.pattern, LED_PATTERN_FLASH,
+                   "un evenement flashe toujours, meme pour un mode inconnu (refus delibere d'un indicateur dedie)");
     TEST_ASSERT(rgb_eq(v.rgb, (led_rgb_t){0, 0, 0}),
-                "comportement fige : flash noir sur mode aberrant (delibere, cf commentaire)");
+                "et la couleur de repli d'un mode inconnu est le noir");
 }
 
 void test_led_state(void)
