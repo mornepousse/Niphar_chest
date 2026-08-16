@@ -20,6 +20,21 @@
 #include "driver/gpio.h"
 
 /* ------------------------------------------------------------------------- */
+/* Axes de carte — trois questions distinctes, trois drapeaux.                */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * BOARD_LINK_AVAILABLE répondait à deux questions à la fois : « y a-t-il un
+ * lien SPI ? » et « la béquille console est-elle permise ? ». La fusion tenait
+ * tant qu'il n'y avait que deux cartes. La carte-clé la casse : pas de lien,
+ * un bouton, et la console conservée. Séparer n'est pas du zèle — sans ça,
+ * elle est inexprimable.
+ */
+#define BOARD_CONFIRM_NONE    0   /* aucune source réelle de présence */
+#define BOARD_CONFIRM_LINK    1   /* le S3, par le lien SPI */
+#define BOARD_CONFIRM_BUTTON  2   /* un bouton en façade */
+
+/* ------------------------------------------------------------------------- */
 /* microSD — SDMMC_HOST_SLOT_0, pins IOMUX fixes.                             */
 /* ------------------------------------------------------------------------- */
 
@@ -81,6 +96,31 @@
  */
 #ifndef BOARD_LINK_AVAILABLE
 #error "boards/<nom>/board.h doit definir BOARD_LINK_AVAILABLE (0 ou 1)"
+#endif
+#ifndef BOARD_CONFIRM_SOURCE
+#error "boards/<nom>/board.h doit definir BOARD_CONFIRM_SOURCE"
+#endif
+#ifndef BOARD_CONSOLE_ACTIONS
+#error "boards/<nom>/board.h doit definir BOARD_CONSOLE_ACTIONS (0 ou 1)"
+#endif
+#ifndef BOARD_HAS_SD
+#error "boards/<nom>/board.h doit definir BOARD_HAS_SD (0 ou 1)"
+#endif
+
+_Static_assert(BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_NONE
+            || BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_LINK
+            || BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_BUTTON,
+               "BOARD_CONFIRM_SOURCE n'a pas une des trois valeurs connues");
+
+#if BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_LINK
+_Static_assert(BOARD_LINK_AVAILABLE,
+               "presence annoncee par le lien sur une carte qui n'en a pas");
+#endif
+
+/* `defined()` n'existe pas dans une expression C : ce contrôle-ci se fait au
+ * préprocesseur, pas en _Static_assert. */
+#if BOARD_CONFIRM_SOURCE != BOARD_CONFIRM_BUTTON && defined(BOARD_BTN_CONFIRM)
+#error "bouton de confirmation declare sur une carte dont ce n'est pas la source"
 #endif
 
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_SD_CLK),

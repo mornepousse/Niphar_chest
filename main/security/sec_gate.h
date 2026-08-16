@@ -26,7 +26,8 @@ esp_err_t sec_gate_init(void);
 const char *sec_gate_source(void);
 
 #include "board.h"
-#if !BOARD_LINK_AVAILABLE
-/* Béquille de développement — n'existe que sur une carte sans lien. */
+#if BOARD_CONSOLE_ACTIONS
+/* Béquille de développement — n'existe que sur une carte qui autorise la
+ * console à agir. */
 void sec_gate_console_confirm(void);
 #endif

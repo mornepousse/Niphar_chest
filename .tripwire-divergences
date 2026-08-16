@@ -1,0 +1,2 @@
+scripts/fast.sh	BOARD_CONSOLE_ACTIONS	garde-fou 4 : l'axe surveille le pouvoir de la console, plus la presence du lien
+main/board_common.h	BOARD_HAS_SD	le brochage microSD est conditionnel depuis la carte-cle

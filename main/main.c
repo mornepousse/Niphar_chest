@@ -55,11 +55,15 @@ void app_main(void)
      * Une carte absente n'est pas une erreur fatale : le coffre doit rester
      * flashable et interrogeable sans elle. On journalise et on continue.
      */
+#if BOARD_HAS_SD
     esp_err_t sd_err = sd_card_init();
     if (sd_err != ESP_OK) {
         ESP_LOGE(TAG, "verrou carte SD : %s", esp_err_to_name(sd_err));
     }
     (void)sd_probe();
+#else
+    ESP_LOGI(TAG, "pas de microSD sur cette carte — sondage sauté");
+#endif
 
     /*
      * NVS avant l'USB : c'est le socle flash dont les DO/PIN/clés OpenPGP

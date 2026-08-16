@@ -7,7 +7,7 @@
 
 static const char *TAG = "sec_gate";
 
-#if BOARD_LINK_AVAILABLE
+#if BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_LINK
 
 esp_err_t sec_gate_init(void)
 {
@@ -22,7 +22,7 @@ const char *sec_gate_source(void)
     return "lien S3 (non implémenté)";
 }
 
-#else /* !BOARD_LINK_AVAILABLE */
+#else
 
 esp_err_t sec_gate_init(void)
 {
@@ -36,11 +36,13 @@ const char *sec_gate_source(void)
     return "console (béquille de développement)";
 }
 
+#if BOARD_CONSOLE_ACTIONS
 /* Appelée par la commande console. Ne fait que relayer : c'est sec_confirm qui
  * décide, et il refuse hors d'une opération armée. */
 void sec_gate_console_confirm(void)
 {
     sec_confirm_authorize();
 }
+#endif
 
-#endif /* BOARD_LINK_AVAILABLE */
+#endif /* BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_LINK */
