@@ -47,6 +47,14 @@ static void test_storage_is_not_in_the_cycle(void)
         m = usb_mode_cycle_after(m);
         TEST_ASSERT(m != USB_MODE_STORAGE, "storage n'entre jamais dans le cycle");
     }
+
+    /* En entrée directe aussi : STORAGE est une valeur valide du domaine
+     * (contrairement à USB_MODE_COUNT ou 255), et sur la carte-clé,
+     * BOARD_CONSOLE_ACTIONS laisse `usb mode storage` disponible en console —
+     * s_mode peut donc réellement valoir STORAGE au moment où le bouton
+     * appelle le cycle. Elle doit rejoindre pgp, pas l'état muet. */
+    TEST_ASSERT_EQ(usb_mode_cycle_after(USB_MODE_STORAGE), USB_MODE_PGP,
+                   "depuis storage, le cycle rejoint pgp et non l'etat muet");
 }
 
 void test_usb_mode_cycle(void)
