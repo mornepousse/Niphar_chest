@@ -25,9 +25,9 @@ typedef struct { uint8_t r, g, b; } led_rgb_t;
 
 typedef enum {
     LED_PATTERN_OFF = 0,
-    LED_PATTERN_STEADY,   /* couleur fixe */
-    LED_PATTERN_PULSE,    /* 1 Hz — une operation attend un doigt */
-    LED_PATTERN_FLASH,    /* 120 ms, puis retour a l'etat courant */
+    LED_PATTERN_STEADY,      /* couleur fixe */
+    LED_PATTERN_ALTERNATE,   /* 1 Hz — une operation attend un doigt */
+    LED_PATTERN_FLASH,       /* 120 ms, puis retour a l'etat courant */
 } led_pattern_t;
 
 typedef enum {
@@ -38,7 +38,10 @@ typedef enum {
 } led_event_t;
 
 typedef struct {
-    led_rgb_t     rgb;
+    led_rgb_t     rgb;       /* couleur principale */
+    led_rgb_t     rgb_alt;   /* seconde couleur de l'alternance ; egale a
+                               * rgb hors attente, pour qu'un consommateur qui
+                               * ignorerait le motif ne clignote jamais. */
     led_pattern_t pattern;
 } led_view_t;
 
@@ -80,14 +83,33 @@ static inline led_view_t led_state_view(usb_mode_t mode,
             break;
         }
         }
+        v.rgb_alt = v.rgb;
         return v;
     }
 
     v.rgb = led_mode_colour(mode);
+    v.rgb_alt = v.rgb;
     if (v.rgb.r == 0 && v.rgb.g == 0 && v.rgb.b == 0) {
         v.pattern = LED_PATTERN_OFF;
         return v;
     }
-    v.pattern = confirm_pending ? LED_PATTERN_PULSE : LED_PATTERN_STEADY;
+
+    if (confirm_pending) {
+        /* Constat sur materiel : une pulsation de luminosite (0 a LED_DIM)
+         * est trop discrete, elle se rate si on ne fixe pas la LED. On
+         * alterne donc franchement entre la couleur du mode a pleine
+         * luminosite et le rouge, egalement a pleine luminosite. Le rouge
+         * porte deja le refus ailleurs (flash de 120 ms) ; c'est une reserve
+         * assumee, distinguee par la duree — 15 s d'attente contre 120 ms de
+         * refus. */
+        v.pattern = LED_PATTERN_ALTERNATE;
+        v.rgb     = (led_rgb_t){ v.rgb.r ? LED_BRIGHT : 0,
+                                 v.rgb.g ? LED_BRIGHT : 0,
+                                 v.rgb.b ? LED_BRIGHT : 0 };
+        v.rgb_alt = (led_rgb_t){ LED_BRIGHT, 0, 0 };
+        return v;
+    }
+
+    v.pattern = LED_PATTERN_STEADY;
     return v;
 }

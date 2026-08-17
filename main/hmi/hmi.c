@@ -21,9 +21,9 @@ static const char *TAG = "hmi";
 
 /* 5 ms : quatre echantillons par periode d'anti-rebond, assez pour que le
  * filtre voie une ligne qui se calme, et assez rare pour ne rien couter. */
-#define HMI_TICK_MS      5
-#define HMI_FLASH_MS   120
-#define HMI_PULSE_MS  1000   /* 1 Hz */
+#define HMI_TICK_MS         5
+#define HMI_FLASH_MS      120
+#define HMI_ALTERNATE_MS 1000   /* 1 Hz */
 
 static led_strip_handle_t s_strip;
 static btn_debounce_t     s_mode_btn;
@@ -47,15 +47,14 @@ static void paint(led_view_t v, uint32_t t)
 
     if (v.pattern == LED_PATTERN_OFF) {
         r = g = b = 0;
-    } else if (v.pattern == LED_PATTERN_PULSE) {
-        /* Triangle symetrique : monte sur la premiere moitie de la periode,
-         * descend sur la seconde. Pas de sinus — pas de flottant pour ca. */
-        const uint32_t phase = t % HMI_PULSE_MS;
-        const uint32_t half  = HMI_PULSE_MS / 2;
-        const uint32_t k = (phase < half) ? phase : (HMI_PULSE_MS - phase);
-        r = (uint8_t)((uint32_t)r * k / half);
-        g = (uint8_t)((uint32_t)g * k / half);
-        b = (uint8_t)((uint32_t)b * k / half);
+    } else if (v.pattern == LED_PATTERN_ALTERNATE) {
+        /* Bascule franche, pas un fondu : la premiere moitie de periode montre
+         * rgb, la seconde rgb_alt. Aucune couleur en dur ici — les deux
+         * viennent de led_state_view(), cette fonction ne fait que choisir
+         * laquelle regarder. */
+        const uint32_t phase = t % HMI_ALTERNATE_MS;
+        const led_rgb_t c = (phase < HMI_ALTERNATE_MS / 2) ? v.rgb : v.rgb_alt;
+        r = c.r; g = c.g; b = c.b;
     }
 
     /* Une LED muette ne doit jamais bloquer une operation : on journalise au

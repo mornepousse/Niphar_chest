@@ -49,24 +49,97 @@ static void test_pgp_and_otp_differ(void)
                 "storage est visible, pas confondu avec l'etat muet");
 }
 
-/* La pulsation ne doit signifier qu'une chose : « j'attends ton doigt ». */
-static void test_pulse_means_waiting_and_nothing_else(void)
+/* L'alternance ne doit signifier qu'une chose : « j'attends ton doigt ». */
+static void test_alternate_means_waiting_and_nothing_else(void)
 {
     TEST_ASSERT_EQ(led_state_view(USB_MODE_PGP, true, LED_EVENT_NONE).pattern,
-                   LED_PATTERN_PULSE, "attente en pgp -> pulsation");
+                   LED_PATTERN_ALTERNATE, "attente en pgp -> alternance");
     TEST_ASSERT_EQ(led_state_view(USB_MODE_OTP, true, LED_EVENT_NONE).pattern,
-                   LED_PATTERN_PULSE, "attente en otp -> pulsation");
+                   LED_PATTERN_ALTERNATE, "attente en otp -> alternance");
     TEST_ASSERT_EQ(led_state_view(USB_MODE_PGP, false, LED_EVENT_NONE).pattern,
                    LED_PATTERN_STEADY, "hors attente, la LED est fixe");
 }
 
-/* La pulsation garde la couleur du mode : sinon on perd l'info du mode au
- * moment precis ou on demande a l'utilisateur d'autoriser quelque chose. */
-static void test_pulse_keeps_the_mode_colour(void)
+/* Constat sur materiel (2026-08-17) : une pulsation 0->20/255 est trop
+ * discrete, elle se rate si on ne fixe pas la LED. L'attente garde la TEINTE
+ * du mode — le canal qui porte la couleur reste le meme — mais monte a pleine
+ * luminosite, et alterne desormais avec le rouge plutot que de moduler
+ * l'intensite. Ce test remplace l'ancien test_pulse_keeps_the_mode_colour,
+ * qui affirmait a tort que repos et attente etaient la MEME couleur : ce
+ * n'est plus vrai depuis ce changement, par decision explicite. */
+static void test_alternate_keeps_the_mode_hue_but_raises_brightness(void)
 {
     led_view_t idle = led_state_view(USB_MODE_PGP, false, LED_EVENT_NONE);
     led_view_t wait = led_state_view(USB_MODE_PGP, true,  LED_EVENT_NONE);
-    TEST_ASSERT(rgb_eq(idle.rgb, wait.rgb), "la pulsation garde la couleur du mode");
+
+    TEST_ASSERT_EQ(wait.pattern, LED_PATTERN_ALTERNATE, "l'attente alterne");
+    TEST_ASSERT((idle.rgb.r > 0) == (wait.rgb.r > 0), "meme canal rouge actif qu'au repos");
+    TEST_ASSERT((idle.rgb.g > 0) == (wait.rgb.g > 0), "meme canal vert actif qu'au repos");
+    TEST_ASSERT((idle.rgb.b > 0) == (wait.rgb.b > 0), "meme canal bleu actif qu'au repos");
+    TEST_ASSERT(!rgb_eq(idle.rgb, wait.rgb),
+                "mais l'attente n'est plus a la meme luminosite que le repos");
+    TEST_ASSERT(rgb_eq(wait.rgb, (led_rgb_t){0, 0, LED_BRIGHT}),
+                "l'attente en pgp est bleu a pleine luminosite");
+}
+
+/* L'alternance n'existe que si les deux couleurs different : sinon rien ne
+ * clignote, et c'est precisement le defaut qui viderait le changement de son
+ * sens (une pulsation ratee remplacee par une alternance tout aussi ratee). */
+static void test_alternate_colours_differ_and_are_both_visible(void)
+{
+    led_view_t pgp = led_state_view(USB_MODE_PGP, true, LED_EVENT_NONE);
+    led_view_t otp = led_state_view(USB_MODE_OTP, true, LED_EVENT_NONE);
+
+    TEST_ASSERT(!rgb_eq(pgp.rgb, pgp.rgb_alt), "pgp : les deux couleurs de l'alternance different");
+    TEST_ASSERT(!rgb_eq(pgp.rgb, (led_rgb_t){0, 0, 0}), "pgp : rgb est visible");
+    TEST_ASSERT(!rgb_eq(pgp.rgb_alt, (led_rgb_t){0, 0, 0}), "pgp : rgb_alt est visible");
+
+    TEST_ASSERT(!rgb_eq(otp.rgb, otp.rgb_alt), "otp : les deux couleurs de l'alternance different");
+    TEST_ASSERT(!rgb_eq(otp.rgb, (led_rgb_t){0, 0, 0}), "otp : rgb est visible");
+    TEST_ASSERT(!rgb_eq(otp.rgb_alt, (led_rgb_t){0, 0, 0}), "otp : rgb_alt est visible");
+}
+
+/* rgb_alt en attente est le rouge, a pleine luminosite : c'est le second
+ * terme de l'alternance demandee, quel que soit le mode. */
+static void test_alternate_alt_colour_is_bright_red(void)
+{
+    led_view_t pgp = led_state_view(USB_MODE_PGP, true, LED_EVENT_NONE);
+    led_view_t otp = led_state_view(USB_MODE_OTP, true, LED_EVENT_NONE);
+
+    TEST_ASSERT(rgb_eq(pgp.rgb_alt, (led_rgb_t){LED_BRIGHT, 0, 0}),
+                "attente pgp : rgb_alt est le rouge plein");
+    TEST_ASSERT(rgb_eq(otp.rgb_alt, (led_rgb_t){LED_BRIGHT, 0, 0}),
+                "attente otp : rgb_alt est le rouge plein");
+}
+
+/* Hors attente, rgb_alt doit valoir rgb : un consommateur qui ignorerait le
+ * motif ne doit jamais produire un clignotement fantome. */
+static void test_non_pending_rgb_alt_equals_rgb(void)
+{
+    led_view_t off    = led_state_view(USB_MODE_NONE, false, LED_EVENT_NONE);
+    led_view_t steady = led_state_view(USB_MODE_PGP,  false, LED_EVENT_NONE);
+    led_view_t granted = led_state_view(USB_MODE_PGP, true,  LED_EVENT_GRANTED);
+    led_view_t refused = led_state_view(USB_MODE_OTP, true,  LED_EVENT_REFUSED);
+    led_view_t mode_ev = led_state_view(USB_MODE_OTP, false, LED_EVENT_MODE);
+
+    TEST_ASSERT(rgb_eq(off.rgb, off.rgb_alt), "off : rgb_alt == rgb");
+    TEST_ASSERT(rgb_eq(steady.rgb, steady.rgb_alt), "steady : rgb_alt == rgb");
+    TEST_ASSERT(rgb_eq(granted.rgb, granted.rgb_alt), "flash accord : rgb_alt == rgb");
+    TEST_ASSERT(rgb_eq(refused.rgb, refused.rgb_alt), "flash refus : rgb_alt == rgb");
+    TEST_ASSERT(rgb_eq(mode_ev.rgb, mode_ev.rgb_alt), "flash bascule : rgb_alt == rgb");
+}
+
+/* L'attente en otp doit alterner vert/rouge, et se distinguer de l'attente en
+ * pgp (qui alterne bleu/rouge) : deux modes qui attendraient la meme paire de
+ * couleurs seraient aussi confondus qu'au repos. */
+static void test_otp_alternate_differs_from_pgp_alternate(void)
+{
+    led_view_t otp = led_state_view(USB_MODE_OTP, true, LED_EVENT_NONE);
+    led_view_t pgp = led_state_view(USB_MODE_PGP, true, LED_EVENT_NONE);
+
+    TEST_ASSERT(rgb_eq(otp.rgb, (led_rgb_t){0, LED_BRIGHT, 0}), "attente otp : vert plein");
+    TEST_ASSERT(rgb_eq(otp.rgb_alt, (led_rgb_t){LED_BRIGHT, 0, 0}), "attente otp : rouge plein");
+    TEST_ASSERT(!rgb_eq(otp.rgb, pgp.rgb), "otp et pgp n'attendent pas avec la meme couleur de mode");
 }
 
 /* Un verdict est fugace et doit primer : c'est la seule chose qui distingue un
@@ -145,8 +218,12 @@ void test_led_state(void)
     TEST_RUN(test_every_mode_has_a_view);
     TEST_RUN(test_none_is_dark);
     TEST_RUN(test_pgp_and_otp_differ);
-    TEST_RUN(test_pulse_means_waiting_and_nothing_else);
-    TEST_RUN(test_pulse_keeps_the_mode_colour);
+    TEST_RUN(test_alternate_means_waiting_and_nothing_else);
+    TEST_RUN(test_alternate_keeps_the_mode_hue_but_raises_brightness);
+    TEST_RUN(test_alternate_colours_differ_and_are_both_visible);
+    TEST_RUN(test_alternate_alt_colour_is_bright_red);
+    TEST_RUN(test_non_pending_rgb_alt_equals_rgb);
+    TEST_RUN(test_otp_alternate_differs_from_pgp_alternate);
     TEST_RUN(test_verdict_overrides_everything);
     TEST_RUN(test_granted_and_refused_differ);
     TEST_RUN(test_verdict_is_brighter_than_rest);

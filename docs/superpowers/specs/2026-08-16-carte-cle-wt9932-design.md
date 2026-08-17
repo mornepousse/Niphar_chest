@@ -165,7 +165,7 @@ l'hôte, ce qui touche au matériel est mince et non testé.
 | fichier | nature | responsabilité |
 |---|---|---|
 | `hmi/button_debounce.h` | **pur** | filtre un niveau brut en fronts stables |
-| `hmi/led_state.h` | **pur** | `(mode, attente, verdict) → (couleur, motif)` |
+| `hmi/led_state.h` | **pur** | `(mode, attente, verdict) → (couleur, couleur alt, motif)` |
 | `usb/usb_mode_cycle.h` | **pur** | `none → pgp`, puis `pgp ⇄ otp` |
 | `hmi/hmi.c` | matériel | GPIO d'entrée, `led_strip` en RMT, la tâche |
 
@@ -185,7 +185,7 @@ possède les modes.
 
 ### 4. `sec_confirm_peek()` — sans quoi la LED vole les signatures
 
-La LED doit pulser quand une opération est armée, donc la tâche IHM doit
+La LED doit signaler quand une opération est armée, donc la tâche IHM doit
 connaître l'état de `sec_confirm`. Or `sec_confirm_poll()` **consomme** la
 permission :
 
@@ -215,12 +215,29 @@ branchement ──▶ [none]  LED éteinte, rien sur le bus
                    ▼
               [pgp] ●bleu ◀── appui MODE ──▶ [otp] ●vert
 
-opération armée      ○●○● pulsation dans la couleur du mode, 1 Hz
+opération armée      ●bleu/●rouge (ou ●vert/●rouge en otp) — alternance
+                       pleine luminosité, 1 Hz, franche (pas de fondu)
 appui CONFIRM (IO33) ☀ flash blanc 120 ms — SEULEMENT si une opération
                        était armée → sec_confirm_authorize()
 refus / expiration   ☀ flash rouge 120 ms
 bascule de mode      ☀ flash de la nouvelle couleur, 120 ms
 ```
+
+**Révision 2026-08-17, après usage réel de la carte.** L'attente de
+confirmation pulsait à l'origine en luminosité (0 → `LED_DIM` sur la couleur du
+mode). Éprouvée sur matériel, cette pulsation s'est révélée trop discrète : on
+la rate si on ne fixe pas la LED, et une porte de présence physique qu'on ne
+voit pas s'ouvrir fait rater des signatures. L'attente alterne désormais
+franchement entre la couleur du mode et le rouge, toutes deux à `LED_BRIGHT` —
+`led_state_view()` expose ce second terme via `rgb_alt`, et `hmi.c` bascule
+entre `rgb` et `rgb_alt` sans jamais connaître leur signification.
+
+**Réserve assumée.** Le rouge porte maintenant deux sens opposés — « refusé »
+sur le flash de 120 ms, « en attente » sur l'alternance 1 Hz. Ce n'est pas une
+ambiguïté fortuite : c'est un compromis délibéré, où la durée est le seul signe
+distinctif (120 ms contre 15 s, `SEC_CONFIRM_TIMEOUT_MS`). Retenu malgré la
+mise en garde, parce que rater une fenêtre de confirmation coûte plus cher
+qu'une seconde de lecture attentive sur la durée du signal.
 
 Conforme au principe du projet : **rien n'est exposé au démarrage**. La clé
 arrive muette et le premier appui MODE l'arme. `none` n'est plus atteint ensuite
@@ -232,7 +249,8 @@ boutons de l'utilisateur n'ont pas de RC : le filtrage est entièrement logiciel
 contrairement à SW2 qui en a un.
 
 Luminosité basse au repos — 20/255 sur les trois canaux — et 120/255 sur les
-flashes de verdict, qui doivent se voir. C'est une clé, pas une lampe.
+flashes de verdict et sur l'alternance d'attente, qui doivent se voir. C'est
+une clé, pas une lampe.
 
 ## Gestion des absences
 
@@ -250,7 +268,9 @@ flashes de verdict, qui doivent se voir. C'est une clé, pas une lampe.
 - `test_button_debounce.c` — rebond au front, appuis enchaînés, maintien long
   (qui ne doit produire **qu'un** front), relâchement pendant le rebond.
 - `test_led_state.c` — totalité du mapping : aucun état sans couleur, aucune
-  couleur partagée par deux modes, la pulsation n'est produite que sur attente.
+  couleur partagée par deux modes, l'alternance n'est produite que sur attente,
+  ses deux couleurs diffèrent et sont visibles, `rgb_alt` vaut `rgb` hors
+  attente.
 - `test_usb_mode_cycle.c` — `none → pgp`, `pgp → otp`, `otp → pgp`, et `none`
   jamais rendu après le premier appel.
 - `test_sec_confirm.c` (existant, étendu) — `peek()` ne consomme pas : un `peek`
@@ -262,8 +282,8 @@ Chaque test doit mordre : bug transitoire introduit, rouge constaté, retour.
 
 - démarrage muet, aucun périphérique USB, LED éteinte ;
 - appui MODE → CCID énumère, `gpg --card-status` répond, LED bleue ;
-- `gpg --card-status` puis une signature → pulsation, appui CONFIRM, flash blanc,
-  signature produite ;
+- `gpg --card-status` puis une signature → alternance bleu/rouge, appui
+  CONFIRM, flash blanc, signature produite ;
 - ne pas appuyer → flash rouge à 15 s (`SEC_CONFIRM_TIMEOUT_MS`), `gpg` échoue ;
 - appui MODE → HID énumère, LED verte ;
 - temps du démarrage à la LED : **inférieur à une seconde** (contrôle du
