@@ -16,6 +16,7 @@ set(srcs
     "security/sec_confirm.c"
     "security/sec_store.c"
     "security/apdu.c"
+    "security/ctaphid.c"
     "security/otp_proto.c"
     "security/cr_hmac.c"
     "security/openpgp_do.c"

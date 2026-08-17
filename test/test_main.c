@@ -10,6 +10,7 @@ extern void test_cr_crc16(void);
 extern void test_sec_confirm(void);
 extern void test_sec_store(void);
 extern void test_apdu(void);
+extern void test_ctaphid(void);
 extern void test_otp_proto(void);
 extern void test_openpgp_do(void);
 extern void test_openpgp_card(void);
@@ -32,6 +33,7 @@ int main(void)
     test_sec_confirm();
     test_sec_store();
     test_apdu();
+    test_ctaphid();
     test_otp_proto();
     test_openpgp_do();
     test_openpgp_card();
