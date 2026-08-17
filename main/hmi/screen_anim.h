@@ -16,7 +16,6 @@
  * pas la geometrie de l'ecran, c'est screen.c qui la connait.
  */
 
-#include <stdbool.h>
 #include <stdint.h>
 
 #include "sec_confirm.h"

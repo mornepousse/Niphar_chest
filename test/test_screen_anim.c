@@ -18,11 +18,47 @@ static void test_bar_is_empty_at_deadline(void)
                    "vide a l'echeance");
 }
 
+/* Valeur exacte, pas une tolerance : 15000/2 = 7500, donc 7500*1000/15000 =
+ * 500 pile. Une tolerance de +-2% laisse passer un denominateur legerement
+ * faux (ex. SEC_CONFIRM_TIMEOUT_MS - 1 par coquille de refactor) — voir
+ * test_bar_matches_exact_fractions ci-dessous, qui verifie deux autres
+ * points exacts pour la meme raison. */
 static void test_bar_is_half_at_half_time(void)
 {
     const uint32_t half = SEC_CONFIRM_TIMEOUT_MS / 2u;
-    const uint16_t p = screen_bar_permille(1000, 1000 + half);
-    TEST_ASSERT(p > 480 && p < 520, "environ la moitie a mi-parcours");
+    TEST_ASSERT_EQ(screen_bar_permille(1000, 1000 + half), 500,
+                   "exactement la moitie a mi-parcours");
+}
+
+/* Deux points exacts de plus, au quart et aux trois quarts du temps ecoule.
+ * Avec un seul point intermediaire (le milieu), une erreur systematique sur
+ * le denominateur (par ex. SEC_CONFIRM_TIMEOUT_MS - 1) peut rester invisible
+ * si elle ne pousse jamais l'arrondi au-dela de l'entier attendu a CE point
+ * precis ; plusieurs points exacts a des fractions differentes du parcours
+ * reduisent cette marge. */
+static void test_bar_matches_exact_fractions(void)
+{
+    const uint32_t quarter = SEC_CONFIRM_TIMEOUT_MS / 4u;
+    const uint32_t three_quarters = (SEC_CONFIRM_TIMEOUT_MS * 3u) / 4u;
+    TEST_ASSERT_EQ(screen_bar_permille(1000, 1000 + quarter), 750,
+                   "trois quarts au quart du temps ecoule");
+    TEST_ASSERT_EQ(screen_bar_permille(1000, 1000 + three_quarters), 250,
+                   "un quart aux trois quarts du temps ecoule");
+}
+
+/* Un decompte qui remonte, meme brievement, est pire qu'une barre absente :
+ * il fait douter de ce qu'on lit, sur l'affichage dont tout l'interet est
+ * d'etre cru. Rien dans les tests precedents n'empeche une implementation
+ * qui oscille tant qu'elle touche les points echantillonnes et reste dans
+ * les bornes. */
+static void test_bar_is_monotonic_non_increasing(void)
+{
+    uint16_t prev = screen_bar_permille(1000, 1000);
+    for (uint32_t d = 1; d <= SEC_CONFIRM_TIMEOUT_MS; d += 50u) {
+        const uint16_t cur = screen_bar_permille(1000, 1000 + d);
+        TEST_ASSERT(cur <= prev, "la barre ne remonte jamais");
+        prev = cur;
+    }
 }
 
 /* Jamais hors bornes : une barre negative ou au-dela de 100 % se dessine
@@ -76,15 +112,32 @@ static void test_slide_runs_from_zero_to_full(void)
     }
 }
 
+/* screen_slide_permille() partage l'idiome de soustraction non signee de
+ * screen_bar_permille() (`now_ms - started_ms`), donc le meme repassage a
+ * zero du compteur de millisecondes s'applique. */
+static void test_slide_survives_millisecond_wraparound(void)
+{
+    const uint32_t started = 0xFFFFFFF0u;   /* a 16 ms du repassage a zero */
+    TEST_ASSERT_EQ(screen_slide_permille(started, started), 0,
+                   "commence a zero, a cheval sur le repassage a zero");
+    TEST_ASSERT_EQ(screen_slide_permille(started, started + SCREEN_SLIDE_MS), 1000,
+                   "finit au plein, a cheval sur le repassage a zero");
+    TEST_ASSERT_EQ(screen_slide_permille(started, started + SCREEN_SLIDE_MS / 2u), 500,
+                   "exactement la moitie, a cheval sur le repassage a zero");
+}
+
 void test_screen_anim(void)
 {
     TEST_SUITE("screen_anim");
     TEST_RUN(test_bar_is_full_at_arming);
     TEST_RUN(test_bar_is_empty_at_deadline);
     TEST_RUN(test_bar_is_half_at_half_time);
+    TEST_RUN(test_bar_matches_exact_fractions);
+    TEST_RUN(test_bar_is_monotonic_non_increasing);
     TEST_RUN(test_bar_never_leaves_its_bounds);
     TEST_RUN(test_bar_survives_millisecond_wraparound);
     TEST_RUN(test_shift_stays_within_bounds);
     TEST_RUN(test_shift_actually_moves);
     TEST_RUN(test_slide_runs_from_zero_to_full);
+    TEST_RUN(test_slide_survives_millisecond_wraparound);
 }
