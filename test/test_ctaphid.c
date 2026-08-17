@@ -128,6 +128,33 @@ static void test_max_payload_boundary(void)
     TEST_ASSERT(r_max != r_over, "les deux verdicts different (comparaison deux a deux)");
 }
 
+/* L'autre borne : BCNT=0 sur un paquet INIT. Rien ne l'exercait jusqu'ici.
+ * Le comportement attendu est un COMPLETE immediat avec len==0 (aucune
+ * continuation a attendre pour un message vide) — compare a un cas voisin
+ * DISTINCT (BCNT=1, len==1) pour que ce test ne puisse pas passer par
+ * accident si l'implementation ignorait BCNT et renvoyait toujours 0. */
+static void test_zero_length_message_completes_immediately(void)
+{
+    ctaphid_asm_t a; ctaphid_reset(&a);
+    uint8_t p_zero[64] = {0};
+    p_zero[0]=4; p_zero[4]=0x80u|CTAPHID_CMD_PING;
+    p_zero[5]=0x00; p_zero[6]=0x00;                 /* BCNT = 0 */
+    ctaphid_msg_t m;
+    ctaphid_result_t r_zero = ctaphid_feed(&a, p_zero, &m);
+    TEST_ASSERT_EQ(r_zero, CTAPHID_COMPLETE, "BCNT=0 termine immediatement, rien a attendre");
+    TEST_ASSERT_EQ(m.len, 0, "longueur annoncee (0) respectee");
+
+    ctaphid_asm_t b; ctaphid_reset(&b);
+    uint8_t p_one[64] = {0};
+    p_one[0]=4; p_one[4]=0x80u|CTAPHID_CMD_PING;
+    p_one[5]=0x00; p_one[6]=0x01;                   /* BCNT = 1 */
+    p_one[7]='z';
+    ctaphid_result_t r_one = ctaphid_feed(&b, p_one, &m);
+    TEST_ASSERT_EQ(r_one, CTAPHID_COMPLETE, "BCNT=1 termine aussi immediatement");
+    TEST_ASSERT_EQ(m.len, 1, "longueur annoncee (1) respectee, differente du cas BCNT=0");
+    TEST_ASSERT(r_zero == r_one, "meme verdict (COMPLETE) sur les deux tailles limites");
+}
+
 /* Reassemblage sur trois paquets (INIT + deux CONT), avec un dernier
  * paquet qui n'a besoin que d'une partie de sa charge utile : c'est
  * precisement le paquet ou le bornage got+n<=expected doit agir, sinon des
@@ -262,6 +289,7 @@ void test_ctaphid(void)
     TEST_RUN(test_cid_allocation_skips_reserved);
     TEST_RUN(test_cid_allocation_from_broadcast_never_wraps_to_zero);
     TEST_RUN(test_max_payload_boundary);
+    TEST_RUN(test_zero_length_message_completes_immediately);
     TEST_RUN(test_multi_packet_reassembly);
     TEST_RUN(test_continuation_without_init_is_refused);
     TEST_RUN(test_other_channel_continuation_during_transaction_is_busy);

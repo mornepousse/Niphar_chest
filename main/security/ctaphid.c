@@ -42,13 +42,20 @@ static ctaphid_result_t deliver(ctaphid_asm_t *a, ctaphid_msg_t *out)
 ctaphid_result_t ctaphid_feed(ctaphid_asm_t *a, const uint8_t pkt[CTAPHID_PKT_SIZE],
                                ctaphid_msg_t *out)
 {
-    if (!a || !pkt || !out) return CTAPHID_ERROR;
-
-    /* Comme apdu_parse : `out` part a zero avant toute autre chose. Un appel
-     * qui ne termine ni ne refuse (CTAPHID_IN_PROGRESS) ne touche a aucun de
-     * ces champs — sans ce memset, ils porteraient les octets laisses par
-     * l'appelant sur sa pile, y compris un `data` non initialise. */
+    /* `out` d'abord : c'est le seul pointeur qu'on ne peut pas se permettre
+     * de dereferencer avant de savoir qu'il est valide, donc son controle
+     * passe avant le memset. Une fois `out` sur, il part a zero AVANT tout
+     * autre chemin de sortie (y compris le refus pour `a`/`pkt` NULL) —
+     * comme apdu_parse. Un appel qui ne termine ni ne refuse
+     * (CTAPHID_IN_PROGRESS) ne touche a aucun de ces champs ; sans ce
+     * memset place ici, un appelant qui lirait err_code/err_cid apres un
+     * refus pour pointeur NULL lirait de la memoire non initialisee — la
+     * meme classe de bug qui a fait planter le binaire de tests pendant le
+     * mutation testing de ce module (voir le rapport de la tache 2). */
+    if (!out) return CTAPHID_ERROR;
     memset(out, 0, sizeof(*out));
+
+    if (!a || !pkt) return CTAPHID_ERROR;
 
     uint32_t cid = ((uint32_t)pkt[0] << 24) | ((uint32_t)pkt[1] << 16)
                  | ((uint32_t)pkt[2] << 8)  |  (uint32_t)pkt[3];
@@ -93,7 +100,12 @@ ctaphid_result_t ctaphid_feed(ctaphid_asm_t *a, const uint8_t pkt[CTAPHID_PKT_SI
 
     /* Une continuation sans initialisation prealable n'a pas de contexte :
      * aucune sequence n'est valide dans ce cas, c'est donc une sequence
-     * refusee, sur le canal du paquet lui-meme puisqu'aucun autre n'existe. */
+     * refusee, sur le canal du paquet lui-meme puisqu'aucun autre n'existe.
+     * A CONFIRMER : rien dans le cahier des charges ne dicte ce code precis
+     * pour ce cas (aucun code dedie a « pas de message en cours du tout »
+     * dans la liste fournie) ; la vraie spec CTAP-HID pourrait exiger
+     * d'ignorer silencieusement ce paquet plutot que de le refuser. Ruling :
+     * garde tel quel, a trancher a la tache 5 si libfido2 le contredit. */
     if (a->cmd == 0) {
         return refuse(out, CTAPHID_ERR_INVALID_SEQ, cid);
     }
