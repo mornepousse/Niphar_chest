@@ -17,8 +17,16 @@ Matériel : voir [`docs/HARDWARE.md`](docs/HARDWARE.md) — contrat vérifié à
 
 ## État
 
-- [x] Matériel conçu, revu, parti en fabrication (panneau Niphargus)
-- [ ] Bring-up : boot, USB-Serial-JTAG, microSD
+Trois cartes, un seul firmware (voir [`docs/HARDWARE.md`](docs/HARDWARE.md)) :
+
+- [x] **JC-ESP32P4-M3-DEV** (kit de dev) — matériel de développement, la carte
+      qui tourne au quotidien.
+- [x] **wt9932_key** (module WT9932P4-TINY) — clé de sécurité OpenPGP autonome,
+      deux boutons et une LED en façade, validée sur matériel le 2026-08-17 par
+      appui physique réel (voir [`docs/HARDWARE.md`](docs/HARDWARE.md)).
+- [ ] **niphar_chest** (le coffre) — **non fabriqué**. Le firmware compile pour
+      cette carte mais n'a jamais tourné sur sa cible.
+
 - [ ] MSC multi-ISO
 - [x] Intégration OpenPGP CCID + CR-HMAC OTP-HID (specs KeSp) — PGP validé bout
       en bout sur matériel le 2026-08-07 (`gpg --card-status`, génération de

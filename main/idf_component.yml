@@ -13,3 +13,8 @@ dependencies:
   # Le prix payé ici est le PHY, la tâche et les descripteurs, écrits dans
   # main/usb/usb_device.c et main/tusb_config.h.
   espressif/tinyusb: ">=0.17.0~2"
+  # LED adressable de la carte-cle (WS2812 sur RMT). Presente uniquement pour
+  # wt9932_key, mais le manifeste du composant n'est pas conditionnable par
+  # carte : le surcout sur les deux autres est le telechargement, pas du code
+  # embarque — hmi.c n'est compile que si la carte a une LED.
+  espressif/led_strip: "^3.0.0"

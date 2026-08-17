@@ -15,6 +15,7 @@
 
 #include "board.h"
 #include "console/console.h"
+#include "hmi/hmi.h"
 #include "sec_gate.h"
 #include "storage/sd_card.h"
 #include "usb/usb_mode.h"
@@ -39,10 +40,12 @@ void app_main(void)
              chip.revision / 100, chip.revision % 100,
              chip.cores, flash_size / (1024 * 1024));
     ESP_LOGI(TAG, "heap libre : %" PRIu32 " o", esp_get_free_heap_size());
+#if BOARD_HAS_SD
     ESP_LOGI(TAG, "microSD attendue sur CLK=%d CMD=%d D0-D3=%d,%d,%d,%d (slot 0, %d-bit)",
              BOARD_SD_CLK, BOARD_SD_CMD,
              BOARD_SD_D0, BOARD_SD_D1, BOARD_SD_D2, BOARD_SD_D3,
              BOARD_SD_BUS_WIDTH);
+#endif
 #if BOARD_LINK_AVAILABLE
     ESP_LOGI(TAG, "lien S3 sur CS=%d MOSI=%d SCK=%d MISO=%d IRQ=%d",
              BOARD_LINK_CS, BOARD_LINK_MOSI, BOARD_LINK_SCK,
@@ -55,11 +58,15 @@ void app_main(void)
      * Une carte absente n'est pas une erreur fatale : le coffre doit rester
      * flashable et interrogeable sans elle. On journalise et on continue.
      */
+#if BOARD_HAS_SD
     esp_err_t sd_err = sd_card_init();
     if (sd_err != ESP_OK) {
         ESP_LOGE(TAG, "verrou carte SD : %s", esp_err_to_name(sd_err));
     }
     (void)sd_probe();
+#else
+    ESP_LOGI(TAG, "pas de microSD sur cette carte — sondage sauté");
+#endif
 
     /*
      * NVS avant l'USB : c'est le socle flash dont les DO/PIN/clés OpenPGP
@@ -105,6 +112,18 @@ void app_main(void)
     esp_err_t gate_err = sec_gate_init();
     if (gate_err != ESP_OK) {
         ESP_LOGE(TAG, "sec_gate indisponible : %s", esp_err_to_name(gate_err));
+    }
+
+    /*
+     * L'IHM (boutons + LED) après usb_mode_init() et sec_gate_init() : le
+     * premier appui MODE bascule le mode, et le bouton de confirmation relaie
+     * vers sec_gate — les deux sélecteurs doivent déjà exister. No-op sur une
+     * carte sans bouton (voir main/hmi/hmi.c).
+     */
+    esp_err_t hmi_err = hmi_init();
+    if (hmi_err != ESP_OK) {
+        ESP_LOGW(TAG, "IHM indisponible : %s — pilotage par la console seulement",
+                 esp_err_to_name(hmi_err));
     }
 
     /*

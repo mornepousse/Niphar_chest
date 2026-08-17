@@ -260,3 +260,232 @@ correctifs suivants sont apparus en essayant de faire fonctionner
 - Straps P4 (GPIO34-38) : tous NC ; GPIO35 a un pull-up interne → SPI boot par défaut.
 - 9 pins GND du module câblés ; DSI/CSI/LDO_VO4 non câblés (assumé).
 - Lien direct S3↔P4 : AUCUN (abandonné) — le P4 parle à l'hôte par l'USB, point.
+
+## Carte-clé WT9932P4-TINY
+
+Troisième carte du projet — une clé de sécurité autonome, sans microSD, sans
+lien vers un clavier : deux boutons et une LED adressable en façade en tiennent
+lieu. Brochage lu sur le schéma constructeur (`WT9932P4-TINY_1v2`, JLCEDA,
+révisé 2025-08-07).
+
+**⚠️ Brochage non vérifié au matériel.** Le schéma a été lu sur un rendu
+d'image du fabricant (1920 px), pas sur le PCB ni sur une netlist exportée —
+contrairement au tableau du coffre en tête de ce document, qui lui est vérifié
+pin par pin. Les boutons IO32/IO33 ne sont pas encore soudés sur l'exemplaire
+de Mae. **À recouper avec la sérigraphie du module avant tout câblage** —
+seul le port USB-Serial-JTAG a été réellement exercé (tâche 6, voir plus bas) :
+`chip_id` puis un flash complet y sont passés avec succès. L'OTG HS (J4) n'a
+transporté aucun trafic — le firmware est resté en `USB_MODE_NONE` tout du
+long — et le strap de boot n'a pas été testé en pratique (aucun appui sur le
+bouton BOOT, la mise en mode download utilisée pour flasher passe par
+RTS/DTR logiciel sur l'USB-Serial-JTAG, pas par IO35).
+
+| Élément | Pin(s) | Détail |
+|---|---|---|
+| LED adressable WS2812 | IO51 (DIN) | Alimentée en 5 V, données en 3,3 V — sous le seuil VIH strict (0,7×VDD = 3,5 V). Voir avertissement matériel ci-dessous. |
+| LED témoin d'alimentation | R13 (1 kΩ) | Non pilotable, câblée en direct. |
+| Boutons utilisateur | IO32 (MODE), IO33 (CONFIRM) | Vers la masse, pull-up interne, aucun composant externe. Pas encore soudés — à câbler par Mae. |
+| Bouton BOOT | IO35 | Strap de boot du P4 — **non exposé au firmware**, voir ci-dessous. |
+| RESET | CHIP_PU | RC de mise sous tension, pas de bouton reset dédié (comme le coffre). |
+| J4 | OTG HS | PHY USB 2.0 haute vitesse — le port produit (MSC/CCID/HID). |
+| J3 | USB-Serial-JTAG | Seul chemin de flash/debug (GPIO24/25) — mêmes règles que le coffre. |
+| microSD | — | Aucun connecteur au schéma : `BOARD_HAS_SD 0`. |
+
+### Pourquoi GPIO35 (bouton BOOT) reste hors du firmware
+
+GPIO35 est l'un des cinq straps de boot de l'ESP32-P4 : « ESP32-P4 has five
+strapping pins: GPIO34, GPIO35, GPIO36, GPIO37, GPIO38 » — *ESP32-P4 TRM*,
+chap. 11.2, p. 795. Son niveau au reset décide seul entre boot applicatif et
+mode download : table 11.2-2, p. 796 — `GPIO35 = 1` (défaut, pull-up interne)
+sélectionne le SPI Boot mode, `GPIO35 = 0` sélectionne le Joint Download Boot,
+indépendamment de GPIO36/37/38.
+
+Le silicium autoriserait pourtant sa réutilisation après coup : « After the
+reset is released, the strapping pins work as normal-function pins » (même
+page, §11.2.1 / 11.2.2). La carte-clé s'en prive quand même — trois raisons :
+
+1. Un appui pendant la mise sous tension forcerait le mode download au lieu de
+   démarrer l'application : la clé disparaîtrait du bus au lieu de s'annoncer.
+2. Un reset accidentel bouton enfoncé (CHIP_PU repasse bas puis haut) produit
+   le même effet en cours d'usage.
+3. `scripts/fast.sh` (garde-fou n°1) exclut déjà les en-têtes de carte de son
+   grep sur `GPIO_NUM_(24|25|35)` — un usage de GPIO35 dans `boards/wt9932_key/
+   board.h` resterait donc vert pendant que le sens de la broche s'y
+   inverserait, de « réservée » à « bouton utilisateur ». Le firmware ne doit
+   pas dépendre d'un garde qui ne le verrait pas.
+
+IO32 et IO33 ont été choisies à la place parce que ce sont, avec IO26 à IO31,
+les seules broches du P4 dont les trois colonnes de la table GPIO sont vides —
+ni fonction analogique, ni LP GPIO, ni restriction de commentaire (*ESP-IDF
+Programming Guide*, « GPIO & RTC GPIO — ESP32-P4 », § GPIO Summary). Elles
+sortent sur J7 et n'empiètent sur aucun bloc occupé par les cartes sœurs
+(microSD sur GPIO39-48, lien S3 sur GPIO7-11).
+
+### Cette carte ne résiste pas au dump de flash
+
+Contrairement au coffre de production (jumpers JP1/JP2 retirés, voir plus
+haut), **rien n'isole physiquement l'USB-Serial-JTAG de l'hôte sur la
+carte-clé** : le bouton BOOT est en façade, et déclencher le mode download
+logiciel par RTS/DTR reste également ouvert (TRM chap. 53, table 53.3-2, p.
+2715, cf. « L'hôte peut forcer le mode download » ci-dessus). Un hôte — ou
+quiconque manipule physiquement la clé — peut dumper la flash entière.
+
+C'est significatif ici parce que la flash contient les clés privées OpenPGP en
+clair (mode PGP, `usb/mode_pgp.c`) : un dump complet les expose. La parade
+retenue pour le coffre (retirer les jumpers en production) ne s'applique pas à
+cette carte — elle n'a pas de jumpers équivalents à retirer, et son propos
+(clé transportable, boutons + LED en façade) suppose justement un boîtier
+accessible. Aucune mitigation n'est proposée ici ; c'est un écart de sécurité
+connu, à traiter séparément (Secure Boot / Flash Encryption, hors-scope des
+`sdkconfig.defaults*` partagés par garde-fou n°3 de `fast.sh`).
+
+### Validé sur matériel — 2026-08-16
+
+Tâche 6 de `.superpowers/sdd/2026-08-16-carte-cle-wt9932/`, module WT9932P4-TINY
+réel (MAC `30:ed:a0:e0:bc:5f`), en écrasant le firmware `jc_devkit` qui y était
+précédemment flashé.
+
+- `chip_id` confirme la puce avant tout flash : ESP32-P4 rev v1.0, MAC
+  `30:ed:a0:e0:bc:5f` — donc le port `by-id …-30:ED:A0:E0:BC:5F-if00` désigne
+  bien ce module, pas une autre carte de la machine de dev.
+- Boot mesuré par reset RTS seul (DTR haut, jamais de strap en mode download)
+  et lecture brute du port, sans TTY : `main_task: Calling app_main()` à
+  t=832 ms, tous les logs de `app_main()` (carte, microSD sautée, `sec_gate`)
+  au même tick, prompt `niphar>` atteint. Avec un terminal qui répond à la
+  sonde ANSI de linenoise (`ESC[5n`, comme le ferait tout terminal
+  interactif), `main_task: Returned from app_main()` tombe à t=919 ms — un
+  gain net face aux ~11 s d'avant (sondage SD absent qui timeoutait). Voir
+  « écart de mesure » ci-dessous.
+- `lsusb` : aucun `303a:4021` (le VID:PID composite MSC/CCID/HID) — seul
+  `303a:1001` (USB-Serial-JTAG) apparaît, confirmant `USB_MODE_NONE` au
+  démarrage sur cette carte aussi.
+
+**Écart de mesure, pour qui reproduit avec `boot_capture.py` tel quel** : ce
+script ne répond jamais à la requête de statut ANSI (`ESC[5n`) que
+`esp_console_setup_prompt()` envoie pour détecter un terminal capable
+(`linenoiseProbe()`, `components/console/linenoise/linenoise.c`, budget
+500 ms). Sans réponse, la sonde épuise son budget et le prompt bascule en
+mode « dumb » — mesuré à un delta constant et reproductible de 1000 ms entre
+`Calling app_main()` et `Returned from app_main()` sur trois essais (832→1832,
+819→1819, 832→1832). C'est un artefact du script de capture non interactif,
+pas une régression du firmware : dès qu'un répondant existe côté hôte (testé
+en renvoyant `ESC[0n` sur réception de la sonde), le même boot tombe à 100 ms
+(819→919). Les deux nombres sont sous la barre du sondage SD à 11 s ; le
+second est la mesure fidèle à ce que verrait un utilisateur sur un vrai
+terminal.
+
+### Validation sec_confirm par bouton réel — 2026-08-17
+
+Tâche 8 de `.superpowers/sdd/2026-08-16-carte-cle-wt9932/`, sur la carte-clé
+WT9932P4-TINY, boutons IO32 (MODE)/IO33 (CONFIRM) fraîchement câblés par Mae.
+Première fois que ce projet éprouve sa chaîne de présence physique : jusque-là
+`sec_confirm` n'avait qu'une commande console, sans valeur de sécurité puisque
+déclenchable par du logiciel, et le lien clavier qui portera la vraie
+confirmation intégrée n'existe pas.
+
+**Prouvé, par appui réel sur le bouton — pas par la console** :
+
+- Appui MODE (IO32) → LED bleue, `303a:4021` énumère en **haute vitesse**,
+  `gpg --card-status` répond.
+- **Génération de clés sur la carte** : `gpg` effectue **trois** signatures
+  (auto-signature de l'identité, puis une signature de liaison par sous-clé),
+  chacune soumise à `UIF Sign=on`.
+- **Sans appui** : expiration à 15 s (`SEC_CONFIRM_TIMEOUT_MS`), la carte
+  renvoie le mot d'état **`6985`** (« Conditions of use not satisfied »),
+  `gpg` abandonne. **Observé deux fois.**
+- **Avec appui** pendant l'alternance : l'opération passe. **Observé deux
+  fois**, puis trois fois d'affilée pour mener une génération complète à son
+  terme.
+- **Une confirmation par opération, pas par session** — établi par les preuves
+  directes ci-dessus, pas par le compteur de signatures (voir plus bas
+  pourquoi ce compteur ne se lit pas comme « n appuis ⇒ +n ») : sans appui,
+  `6985` observé deux fois ; avec appui pendant l'alternance, l'opération est
+  accordée. Rien n'indique une confirmation qui vaudrait pour toute une
+  session — chaque appui ne couvre que l'opération pour laquelle il a été
+  demandé.
+- Génération complète aboutie : `pub nistp256
+  3DEF9F107CB7FE6F02D5351E2F49F54486F3560C [SC]`, sous-clés `[A]` nistp256 et
+  `[E]` cv25519, identité « mae (coucou) ».
+- Compteurs de PIN : un PIN admin erroné décrémente le compteur (3 → 2), et
+  une vérification réussie le **réarme** (→ 3). Comportement conforme à la
+  spécification OpenPGP.
+- **Cycle complet vers le mode OTP et retour**, appui MODE réel : en mode PGP,
+  le noyau journalise une **vraie déconnexion** du périphérique CCID
+  (`usb 3-3: USB disconnect, device number 76`) **avant** l'arrivée du
+  suivant (`new high-speed USB device number 79`), puis
+  `bInterfaceClass 3 Human Interface Device` et
+  `hid-generic … hidraw9: USB HID v1.11 Keyboard [Mae PUGIN Coffre Niphar]`.
+  Nouvel appui MODE → retour à `bInterfaceClass 11 Chip/SmartCard`,
+  `wMaxPacketSize 0x0200` (512 o) sur les deux endpoints. Ce n'est pas
+  l'apparition du HID qui compte, c'est la déconnexion préalable : la carte
+  n'est pas un périphérique composite qui exposerait ses deux fonctions en
+  permanence, elle quitte réellement le bus avant que le clavier n'arrive.
+  C'est le principe fondateur du projet — « plein de choses, une à la fois,
+  jamais deux en même temps » — constaté sur le fil et non déduit du code : un
+  hôte ne peut pas dialoguer avec la carte OpenPGP pendant que la clé OTP est
+  exposée, elle n'existe plus.
+- **Appui CONFIRM hors opération armée : aucun flash**, vérifié à l'œil.
+  Délibéré : flasher signalerait qu'il s'est passé quelque chose alors que
+  l'appui n'a rien autorisé.
+- **Signature de message réelle**, pas seulement des certificats de clé :
+  `echo "test alternance" | gpg --sign --armor` → alternance observée, appui
+  CONFIRM, et la signature vérifie :
+  ```
+  gpg: Signature made lun. 17 août 2026 14:10:37 CEST
+  gpg:       using ECDSA key 3DEF9F107CB7FE6F02D5351E2F49F54486F3560C
+  gpg: Good signature from "mae (coucou) <mae.protonmail.com>" [ultimate]
+  ```
+  Le compteur de signatures de la carte est passé de 4 à 5, confirmant que
+  l'opération a bien traversé la carte. C'est le cas d'usage ordinaire, celui
+  de tous les jours — les points précédents ne validaient que des signatures
+  internes à la génération de clés.
+
+Le protocole de validation à huit points (`.superpowers/sdd/2026-08-16-carte-cle-wt9932/tache-8-brief.md`)
+est désormais **complet : huit points sur huit**, tous obtenus par appui réel
+sur le bouton et aucun par la commande console.
+
+**Deux constats d'usage, à consigner ici plutôt que dans la spec** :
+
+1. `gpg` ne prévient nulle part qu'une génération de clés demandera **trois**
+   confirmations, et n'affiche rien entre elles. Quelqu'un qui ne surveille
+   pas la LED croira à un échec sans comprendre pourquoi.
+2. La pulsation d'attente initiale (fondu de luminosité à 20/255 sur la
+   couleur du mode) s'est révélée **trop discrète en usage réel**. Remplacée
+   le même jour par une **alternance couleur du mode ↔ rouge à pleine
+   luminosité**, jugée « beaucoup plus visible » par Mae. Réserve assumée : le
+   rouge porte alors deux sens — « j'attends » et « refusé » — distingués par
+   la durée (15 s d'alternance contre un flash de 120 ms) ; documentée dans la
+   spec.
+
+**Le compteur de signatures n'avance pas de un par appui, et c'est voulu** :
+pendant la génération de clés complète ci-dessus (trois opérations soumises à
+l'UIF), le compteur de signatures de la carte est passé de 2 à 4, soit +2 et
+non +3. Ce n'est pas une anomalie — le code explique les deux mécanismes en
+jeu dans `main/security/openpgp_card.c` :
+
+- `INTERNAL AUTHENTICATE` (INS=0x88, lignes 1143-1163) est bien gardé par
+  l'UIF, mais ne fait délibérément pas avancer le compteur DS : le
+  commentaire y cite OpenPGP 3.4 §7.2.10/§7.2.13, la progression du compteur
+  étant une sémantique propre à `PSO:CDS`, pas à `INTERNAL AUTHENTICATE` ;
+- `GENERATE KEY` et `IMPORT` sur le slot signature (lignes 1030 et 1223)
+  appellent `ds_counter_reset()` — le compteur repart à zéro en pleine
+  session, il n'incrémente pas.
+
+Donc « n appuis ⇒ +n au compteur » est faux par conception, pas par anomalie :
+selon l'instruction qui a demandé l'UIF, un appui accordé peut laisser le
+compteur inchangé (INTERNAL AUTHENTICATE) ou même le remettre à zéro
+(GENERATE KEY/IMPORT sur le slot signature). La propriété « une confirmation
+par opération » reste vraie ; elle ne se lit simplement pas sur ce compteur.
+
+**Pas prouvé** :
+
+- Le **lien S3** — absent des trois cartes, la variante intégrée au clavier
+  reste non éprouvée.
+- L'**échange CR-HMAC** du mode OTP — pas d'outillage HID sur cette machine ;
+  le mode n'est vérifié que jusqu'à la liaison par le noyau, jamais un
+  défi/réponse.
+- La **résistance au dump de flash** — le bouton BOOT est en façade, rien
+  n'isole l'USB-Serial-JTAG, et les clés privées vivent dans la flash. La
+  parade prévue pour le coffre de production (jumpers JP1/JP2 retirés en
+  fabrication) ne s'applique pas à cette carte, voir « Cette carte ne résiste
+  pas au dump de flash » ci-dessus.

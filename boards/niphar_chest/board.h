@@ -56,5 +56,14 @@
 #define BOARD_LINK_IRQ      GPIO_NUM_11
 #define BOARD_LINK_IRQ_ACTIVE_HIGH 1
 
+/*
+ * La présence vient du clavier, par le lien. La console n'a AUCUN pouvoir sur
+ * cette carte : c'est ce zéro que le garde-fou 4 de fast.sh vérifie dans le
+ * binaire, pas seulement dans le source.
+ */
+#define BOARD_CONFIRM_SOURCE  BOARD_CONFIRM_LINK
+#define BOARD_CONSOLE_ACTIONS 0
+#define BOARD_HAS_SD          1
+
 /* En dernier : il valide tout ce qui précède. */
 #include "board_common.h"

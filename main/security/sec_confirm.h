@@ -9,7 +9,7 @@ typedef enum {
     SEC_CONFIRM_IDLE = 0,
     SEC_CONFIRM_PENDING,
     SEC_CONFIRM_AUTHORIZED,
-    SEC_CONFIRM_TIMEDOUT, /* return-only signal from poll(); s_state never holds this value */
+    SEC_CONFIRM_TIMEDOUT, /* return-only signal from poll() and peek(); s_state never holds this value */
 } sec_confirm_state_t;
 
 void sec_confirm_reset(void);
@@ -20,3 +20,8 @@ void sec_confirm_authorize(void);
 /* Poll at now_ms. PENDING past timeout -> returns TIMEDOUT once (then IDLE).
  * AUTHORIZED -> writes slot to *out_slot, consumes (-> IDLE), returns AUTHORIZED. */
 sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot);
+/* Lit l'etat sans rien consommer ni faire avancer la machine. Pour l'affichage
+ * SEULEMENT : seul poll() consomme une autorisation ou acte une expiration.
+ * `now_ms` sert a signaler une echeance deja depassee sans la consommer — la
+ * LED doit pouvoir montrer le refus. */
+sec_confirm_state_t sec_confirm_peek(uint32_t now_ms);

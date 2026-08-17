@@ -18,6 +18,7 @@
 
 static const char *TAG = "console";
 
+#if BOARD_HAS_SD
 static const char *pwr_path_str(sd_pwr_path_t p)
 {
     switch (p) {
@@ -114,13 +115,14 @@ static int cmd_sd(int argc, char **argv)
     printf("sous-commande inconnue : %s\n", argv[1]);
     return 1;
 }
+#endif /* BOARD_HAS_SD */
 
 static int cmd_usb(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
 
-#if !BOARD_LINK_AVAILABLE
+#if BOARD_CONSOLE_ACTIONS
     /*
      * Béquille de développement : sur une carte avec lien, le sélecteur de
      * mode viendra du clavier via le S3, pas de la console. Verrouillée
@@ -179,7 +181,7 @@ static int cmd_sec(int argc, char **argv)
         return 0;
     }
 
-#if !BOARD_LINK_AVAILABLE
+#if BOARD_CONSOLE_ACTIONS
     if (strcmp(argv[1], "confirm") == 0) {
         sec_gate_console_confirm();
         printf("appui simulé — sans effet s'il n'y a pas d'opération armée.\n");
@@ -214,6 +216,7 @@ esp_err_t console_start(void)
         return err;
     }
 
+#if BOARD_HAS_SD
     const esp_console_cmd_t sd_cmd = {
         .command = "sd",
         .help = "Carte microSD : « sd info », « sd probe », « sd bench » (débit brut, lecture seule)",
@@ -225,12 +228,13 @@ esp_err_t console_start(void)
         ESP_LOGE(TAG, "commande sd : %s", esp_err_to_name(err));
         return err;
     }
+#endif /* BOARD_HAS_SD */
 
     const esp_console_cmd_t usb_cmd = {
         .command = "usb",
         .help = "État USB, compteurs du chemin MSC (rapide vs rebond)"
-#if !BOARD_LINK_AVAILABLE
-                ", et « usb mode none|storage|pgp|otp » (béquille de dev, sans lien)"
+#if BOARD_CONSOLE_ACTIONS
+                ", et « usb mode none|storage|pgp|otp » (béquille de dev, console habilitée)"
 #endif
                 ,
         .hint = NULL,
@@ -244,7 +248,7 @@ esp_err_t console_start(void)
 
     const esp_console_cmd_t sec_cmd = {
         .command = "sec",
-        .help = "Sécurité : « sec source », et « sec confirm » sur carte sans lien",
+        .help = "Sécurité : « sec source », et « sec confirm » sur carte où la console a le pouvoir",
         .hint = "confirm|source",
         .func = &cmd_sec,
     };

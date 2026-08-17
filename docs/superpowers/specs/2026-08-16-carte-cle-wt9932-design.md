@@ -150,12 +150,23 @@ W (10891) sd: aucune carte (ESP_ERR_TIMEOUT) — le coffre reste utilisable, la 
 ```
 
 Onze secondes avant qu'une clé de sécurité ne réponde à son premier appui, pour
-chercher un composant qui n'est pas soudé. `BOARD_HAS_SD 0` supprime le brochage,
-l'appel, et le mode `storage` du cycle.
+chercher un composant qui n'est pas soudé. `BOARD_HAS_SD 0` supprime le
+sondage au démarrage et la commande console `sd` — pas le brochage.
 
-Corollaire : les blocs SD de `board_common.h` passent sous `#if BOARD_HAS_SD`, et
-`console.c` conditionne la commande `sd`. `sd_card.c` n'est pas modifié — il
-n'est simplement plus appelé.
+**Décidé autrement en cours de branche, et c'est le code livré qui fait foi
+ici** : `main/usb/msc_disk.c` appelle `sd_present()`/`sd_read_sectors()` sans
+condition, sur les trois cartes — c'est ce qui sert le mode `storage` du
+cycle USB. Pour que ça compile, `sd_card.c` doit compiler sur les trois
+cartes, donc le brochage microSD de `board_common.h` (six `_Static_assert`)
+reste **inconditionnel** : ni ces blocs, ni `sd_card.c`, ne passent sous
+`#if BOARD_HAS_SD`. Ce drapeau ne gouverne que deux choses, toutes deux dans
+des fichiers autres que `board_common.h` : le sondage au démarrage
+(`main.c`) et la commande console `sd` (`console.c`). Le mode `storage` du
+cycle de la carte-clé, lui, ne dépend pas de `BOARD_HAS_SD` — il est de toute
+façon absent du cycle par construction (`usb/usb_mode_cycle.h` : la clé n'a
+que deux crans, `pgp` et `otp`), indépendamment de la présence d'un
+connecteur microSD. Voir `.tripwire-divergences` pour la divergence
+correspondante déjà déclarée.
 
 ### 3. Sous-système `main/hmi/`
 
@@ -165,7 +176,7 @@ l'hôte, ce qui touche au matériel est mince et non testé.
 | fichier | nature | responsabilité |
 |---|---|---|
 | `hmi/button_debounce.h` | **pur** | filtre un niveau brut en fronts stables |
-| `hmi/led_state.h` | **pur** | `(mode, attente, verdict) → (couleur, motif)` |
+| `hmi/led_state.h` | **pur** | `(mode, attente, verdict) → (couleur, couleur alt, motif)` |
 | `usb/usb_mode_cycle.h` | **pur** | `none → pgp`, puis `pgp ⇄ otp` |
 | `hmi/hmi.c` | matériel | GPIO d'entrée, `led_strip` en RMT, la tâche |
 
@@ -185,7 +196,7 @@ possède les modes.
 
 ### 4. `sec_confirm_peek()` — sans quoi la LED vole les signatures
 
-La LED doit pulser quand une opération est armée, donc la tâche IHM doit
+La LED doit signaler quand une opération est armée, donc la tâche IHM doit
 connaître l'état de `sec_confirm`. Or `sec_confirm_poll()` **consomme** la
 permission :
 
@@ -215,12 +226,29 @@ branchement ──▶ [none]  LED éteinte, rien sur le bus
                    ▼
               [pgp] ●bleu ◀── appui MODE ──▶ [otp] ●vert
 
-opération armée      ○●○● pulsation dans la couleur du mode, 1 Hz
+opération armée      ●bleu/●rouge (ou ●vert/●rouge en otp) — alternance
+                       pleine luminosité, 1 Hz, franche (pas de fondu)
 appui CONFIRM (IO33) ☀ flash blanc 120 ms — SEULEMENT si une opération
                        était armée → sec_confirm_authorize()
 refus / expiration   ☀ flash rouge 120 ms
 bascule de mode      ☀ flash de la nouvelle couleur, 120 ms
 ```
+
+**Révision 2026-08-17, après usage réel de la carte.** L'attente de
+confirmation pulsait à l'origine en luminosité (0 → `LED_DIM` sur la couleur du
+mode). Éprouvée sur matériel, cette pulsation s'est révélée trop discrète : on
+la rate si on ne fixe pas la LED, et une porte de présence physique qu'on ne
+voit pas s'ouvrir fait rater des signatures. L'attente alterne désormais
+franchement entre la couleur du mode et le rouge, toutes deux à `LED_BRIGHT` —
+`led_state_view()` expose ce second terme via `rgb_alt`, et `hmi.c` bascule
+entre `rgb` et `rgb_alt` sans jamais connaître leur signification.
+
+**Réserve assumée.** Le rouge porte maintenant deux sens opposés — « refusé »
+sur le flash de 120 ms, « en attente » sur l'alternance 1 Hz. Ce n'est pas une
+ambiguïté fortuite : c'est un compromis délibéré, où la durée est le seul signe
+distinctif (120 ms contre 15 s, `SEC_CONFIRM_TIMEOUT_MS`). Retenu malgré la
+mise en garde, parce que rater une fenêtre de confirmation coûte plus cher
+qu'une seconde de lecture attentive sur la durée du signal.
 
 Conforme au principe du projet : **rien n'est exposé au démarrage**. La clé
 arrive muette et le premier appui MODE l'arme. `none` n'est plus atteint ensuite
@@ -232,7 +260,8 @@ boutons de l'utilisateur n'ont pas de RC : le filtrage est entièrement logiciel
 contrairement à SW2 qui en a un.
 
 Luminosité basse au repos — 20/255 sur les trois canaux — et 120/255 sur les
-flashes de verdict, qui doivent se voir. C'est une clé, pas une lampe.
+flashes de verdict et sur l'alternance d'attente, qui doivent se voir. C'est
+une clé, pas une lampe.
 
 ## Gestion des absences
 
@@ -250,7 +279,9 @@ flashes de verdict, qui doivent se voir. C'est une clé, pas une lampe.
 - `test_button_debounce.c` — rebond au front, appuis enchaînés, maintien long
   (qui ne doit produire **qu'un** front), relâchement pendant le rebond.
 - `test_led_state.c` — totalité du mapping : aucun état sans couleur, aucune
-  couleur partagée par deux modes, la pulsation n'est produite que sur attente.
+  couleur partagée par deux modes, l'alternance n'est produite que sur attente,
+  ses deux couleurs diffèrent et sont visibles, `rgb_alt` vaut `rgb` hors
+  attente.
 - `test_usb_mode_cycle.c` — `none → pgp`, `pgp → otp`, `otp → pgp`, et `none`
   jamais rendu après le premier appel.
 - `test_sec_confirm.c` (existant, étendu) — `peek()` ne consomme pas : un `peek`
@@ -262,8 +293,8 @@ Chaque test doit mordre : bug transitoire introduit, rouge constaté, retour.
 
 - démarrage muet, aucun périphérique USB, LED éteinte ;
 - appui MODE → CCID énumère, `gpg --card-status` répond, LED bleue ;
-- `gpg --card-status` puis une signature → pulsation, appui CONFIRM, flash blanc,
-  signature produite ;
+- `gpg --card-status` puis une signature → alternance bleu/rouge, appui
+  CONFIRM, flash blanc, signature produite ;
 - ne pas appuyer → flash rouge à 15 s (`SEC_CONFIRM_TIMEOUT_MS`), `gpg` échoue ;
 - appui MODE → HID énumère, LED verte ;
 - temps du démarrage à la LED : **inférieur à une seconde** (contrôle du
@@ -295,7 +326,7 @@ Il faut l'écrire, sinon on se persuadera d'avoir validé plus que ça.
 |---|---|---|
 | LED en 5 V pilotée par une donnée 3,3 V | un WS2812 strict exige VIH ≥ 0,7 × VDD = 3,5 V ; on est dessous | à constater au banc. Couleurs fausses ou scintillement = cause matérielle, pas logicielle. Parade si besoin : alimenter la LED en 3,3 V |
 | Broches lues sur un rendu du schéma | J7 et le brochage des boutons | à recouper avec la sérigraphie avant de souder |
-| `BOARD_HAS_SD` traverse `board_common.h` | touche les trois cartes | les deux cartes existantes gardent `1` ; non-régression couverte par `check.sh` complet |
+| `BOARD_HAS_SD` gouverne le sondage au démarrage et la commande console `sd` | touche les trois cartes (le brochage, lui, reste inconditionnel dans `board_common.h`) | les deux cartes existantes gardent `1` ; non-régression couverte par `check.sh` complet |
 | Le remaniement des drapeaux touche `fast.sh` | garde-fou n°4 | garde réécrit sur `BOARD_CONSOLE_ACTIONS`, et son efficacité re-prouvée par mutation |
 
 ## Divergences à déclarer
@@ -304,5 +335,10 @@ Il faut l'écrire, sinon on se persuadera d'avoir validé plus que ça.
 
 1. `fast.sh` — garde-fou n°4 sur `BOARD_CONSOLE_ACTIONS` et non plus
    `BOARD_LINK_AVAILABLE` : le motif surveillé change de nom.
-2. `board_common.h` — le brochage SD devient conditionnel ; le motif
-   `BOARD_SD_CLK` n'est plus inconditionnellement présent.
+2. `board_common.h` — le brochage SD reste **inconditionnel** malgré
+   l'arrivée de `BOARD_HAS_SD` : `main/usb/msc_disk.c` appelle
+   `sd_present()`/`sd_read_sectors()` sans condition sur les trois cartes,
+   donc `sd_card.c` doit compiler partout, donc le brochage (six
+   `_Static_assert`) ne peut pas passer sous `#if BOARD_HAS_SD`. Seuls le
+   sondage au démarrage (`main.c`) et la commande console `sd` (`console.c`)
+   en dépendent.

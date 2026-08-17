@@ -33,5 +33,13 @@
  */
 #define BOARD_LINK_AVAILABLE 0
 
+/*
+ * Pas de contact sur ce kit : la seule confirmation possible vient de la
+ * console, et elle n'a aucune valeur de sécurité — voir sec_gate.h.
+ */
+#define BOARD_CONFIRM_SOURCE  BOARD_CONFIRM_NONE
+#define BOARD_CONSOLE_ACTIONS 1
+#define BOARD_HAS_SD          1
+
 /* En dernier : il valide tout ce qui précède. */
 #include "board_common.h"
