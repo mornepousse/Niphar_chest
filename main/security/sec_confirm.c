@@ -1,10 +1,16 @@
 #include "sec_confirm.h"
 
 /* CONCURRENCY MODEL (Phase-2 pentest, 2026-06-11 ; relu et corrige a l'arrivee
- * de hmi_task, 2026-08-16 ; etendu a s_op, 2026-08-17 ; corrige apres revue
- * sur le meme jour — deux lectures separees de l'etat et de l'operation
- * n'etaient PAS couvertes par le raisonnement ci-dessous, voir le bullet
- * sec_confirm_peek_labeled()) — why no lock is needed.
+ * de hmi_task, 2026-08-16 ; etendu a s_op, 2026-08-17 ; corrige deux fois en
+ * revue le meme jour — d'abord parce que deux lectures separees de l'etat et
+ * de l'operation n'etaient PAS couvertes par le raisonnement ci-dessous
+ * (voir le bullet sec_confirm_peek_labeled()), ensuite parce que ce bullet
+ * lui-meme sur-affirmait : sa premisse invoquait un point de cession
+ * cooperatif alors qu'ESP-IDF ordonnance en preemptif, et sa conclusion
+ * rangeait le residuel de s_op dans la meme classe "benigne" que celui de
+ * s_armed_ms alors que les deux n'appartiennent pas a la meme categorie de
+ * risque — les deux corrections sont dans ce meme bullet) — why no lock is
+ * needed.
  * sec_confirm is a pure module (host-tested, no FreeRTOS). Entry points run
  * from at most THREE contexts, and the security personalities are mutually
  * exclusive at build (OpenPGP CCID xor OTP-HID), so per build:
@@ -87,23 +93,45 @@
  *     attack the screen exists to close, so it may not reopen it through the
  *     accessor design. Bundling into one function does not make the read
  *     atomic — s_op and s_state are still two separate loads inside
- *     peek_labeled() — but it bounds the window to the width of this
- *     function body (a few instructions, no call or yield point between the
- *     two loads) instead of the width of two independent API calls with
- *     arbitrary caller-scheduled work between them. s_op is read FIRST, on
- *     entry, before the timeout check: this keeps the two loads adjacent in
- *     the source (mirroring peek()'s existing state-then-timestamp shape) so
- *     there is no unrelated computation between them for a task switch to
- *     land in. A residual tear is still possible in principle (arm()
- *     interleaving exactly between the two loads) and falls in the SAME
- *     benign, self-correcting class already accepted for s_armed_ms above:
- *     transient (the very next peek_labeled() call, once arm() has finished,
- *     reads the fresh pair), and never a security decision on its own — it
- *     CANNOT fabricate or misattribute AUTHORIZED, because that still
- *     depends only on s_state via poll(), which peek_labeled() never
- *     touches. What changed from the torn-store framing above is the SCALE
- *     of the window the caller must not reopen, not the mechanism: hence a
- *     contract on the accessor, not a critical section.
+ *     peek_labeled() — but it shrinks the window from "arbitrary
+ *     caller-scheduled work between two API calls" to "a few CPU cycles
+ *     between two adjacent instructions". This is a PROBABILITY argument,
+ *     not an ordering guarantee: FreeRTOS on this target runs preemptive
+ *     (configUSE_PREEMPTION=1), so a tick interrupt can land between ANY two
+ *     instructions, including these two loads — there is no such thing as a
+ *     cooperative gap to avoid landing in. What changed is not whether
+ *     preemption can happen here, but how much CPU time the window spans:
+ *     a handful of cycles inside one function body versus however long the
+ *     scheduler leaves hmi_task off-core between two separate calls (which
+ *     can be milliseconds). s_op is read FIRST, on entry, before the timeout
+ *     check, purely to keep the two loads textually adjacent and minimise
+ *     that cycle count — it does not close the window, only narrows it.
+ *     A residual tear is still possible in principle (arm() interleaving
+ *     exactly between the two loads, during a live tick) and is transient
+ *     and self-correcting the same way as the s_armed_ms tear above (the
+ *     very next peek_labeled() call, once arm() has finished, reads the
+ *     fresh pair) — but it is NOT in the same risk CATEGORY, and must not be
+ *     filed under the same "benign" label without that caveat: the
+ *     s_armed_ms tear is fail-safe by construction (it can only make peek()
+ *     report TIMEDOUT too early — refuse sooner, never grant later or grant
+ *     wrong), whereas a residual s_op tear can display operation A's label
+ *     while the state shown actually belongs to operation B — the exact
+ *     mis-attribution this whole feature exists to prevent, reproduced at
+ *     vanishing probability instead of eliminated. It still CANNOT fabricate
+ *     or misattribute AUTHORIZED itself — that continues to depend only on
+ *     s_state via poll(), which peek_labeled() never touches, so no wrong
+ *     GRANT can result, only a wrong LABEL for the width of one tick — but a
+ *     wrong label is exactly the surface this feature is built to close, so
+ *     "probability comparable to an already-accepted tear" is not the same
+ *     claim as "equally safe by construction". Deliberately NOT closed with
+ *     a portMUX critical section: sec_confirm stays a pure, host-tested
+ *     module with no FreeRTOS dependency, which is what makes its state
+ *     machine testable without hardware, and the residual requires a tick
+ *     interrupt to land inside a two-instruction window WHILE a concurrent
+ *     reset()+arm() is in flight — improbable, and not something an
+ *     attacker can force from outside (they do not control ESP-IDF's tick
+ *     scheduling). Revisit only if this residual is ever shown to be
+ *     steerable, not just theoretically present.
  *   - sec_confirm_reset() writes the same four fields, in the same order, as
  *     arm() (s_state, then s_slot, then s_op, then s_armed_ms — see above).
  *     It's safe for the same reason peek()-vs-arm() is bounded, plus one

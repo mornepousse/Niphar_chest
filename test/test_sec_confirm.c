@@ -177,6 +177,18 @@ static void test_poll_clears_the_op_on_consume_or_timeout(void)
     TEST_ASSERT_EQ(op, SEC_OP_UNKNOWN, "poll() expiree efface aussi l'operation");
 }
 
+/* out_op == NULL est documente dans l'en-tete comme supporte : l'appelant qui
+ * ne veut que l'etat (le meme role que peek()) ne doit pas etre force a
+ * fournir un pointeur. Sans ce test, retirer le garde `if (out_op)` ne
+ * ferait rougir aucun test existant — ils passent tous un pointeur valide. */
+static void test_peek_labeled_tolerates_null_out_op(void)
+{
+    sec_confirm_reset();
+    sec_confirm_arm(0xF0u, SEC_OP_SIGN, 1000);
+    TEST_ASSERT_EQ(sec_confirm_peek_labeled(1000, NULL), SEC_CONFIRM_PENDING,
+                   "out_op NULL : l'etat est quand meme rendu, rien ne deref NULL");
+}
+
 void test_sec_confirm(void)
 {
     TEST_SUITE("sec_confirm state machine");
@@ -194,4 +206,5 @@ void test_sec_confirm(void)
     TEST_RUN(test_reset_clears_the_op);
     TEST_RUN(test_rearm_replaces_the_op);
     TEST_RUN(test_poll_clears_the_op_on_consume_or_timeout);
+    TEST_RUN(test_peek_labeled_tolerates_null_out_op);
 }
