@@ -592,7 +592,32 @@ Ce qui est établi :
   drapeau d'occupation le permet**, donc la ligne est vue active pendant toute
   la rafale.
 
-**Non diagnostiqué.** L'hypothèse d'un couplage depuis le bus I²C n'a pas encore
-été testée proprement : il faut une fenêtre d'observation où le bus se tait
-vraiment, ce qui n'arrive qu'au bout de trente minutes d'inactivité, ou un build
-jetable désactivant l'écran.
+**Diagnostiqué le 2026-08-17 : le bouton MODE est électriquement ouvert.**
+
+Une sonde jetable — ISR sur les deux fronts de IO32, plus une lecture de niveau
+toutes les 5 s — a mesuré, carte au repos :
+
+```
+niveau IO32=1  IO33=1  (fronts vus: 0)
+```
+
+Les deux broches lisent 1, tirées au repos par les pull-ups internes. La sonde
+est donc vivante : `hmi_task` tourne, la lecture fonctionne, et l'ISR n'a rien
+vu parce qu'il n'y avait rien à voir. **Un appui physique sur MODE n'a produit ni
+front ni bascule** — la broche n'est jamais descendue.
+
+Ce n'est donc pas un défaut de firmware, et l'hypothèse d'un couplage depuis le
+bus I²C que je poursuivais était fausse. Un **contact intermittent** explique
+chaque observation, mieux qu'elle : un fil qui tressaute sur son point de
+contact donne exactement deux ou trois bascules en moins de deux secondes puis
+des minutes de silence, là où un couplage I²C produirait un rythme régulier
+calé sur les 50 ms de la tâche d'affichage.
+
+**Réparation au fer à souder.** Deux mécanismes indépendants — l'interruption et
+la lecture périodique, qui ne partagent rien — sont d'accord sur l'absence : ce
+n'est pas l'instrument.
+
+Conséquence à connaître : tant que ce contact n'est pas repris, **la porte de
+présence physique ne peut pas être actionnée**, donc aucune opération OpenPGP
+exigeant une confirmation ne peut aboutir sur cette carte. L'état de IO33
+(bouton CONFIRM) n'a pas été éprouvé par un appui réel.
