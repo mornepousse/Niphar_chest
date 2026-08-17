@@ -212,6 +212,78 @@ static void test_mode_flash_for_aberrant_mode_is_black_but_defined(void)
                 "et la couleur de repli d'un mode inconnu est le noir");
 }
 
+/*
+ * led_wait_phase() — la phase de l'alternance est RELATIVE a l'instant
+ * d'armement, jamais absolue. Avant cette fonction, hmi.c calculait
+ * `t % HMI_ALTERNATE_MS` sur l'horloge murale : une attente qui s'armait
+ * dans la seconde moitie d'une periode demarrait donc sur rgb_alt (le
+ * rouge) — exactement le cas que la spec voulait eviter, puisque le rouge
+ * signifie deja "refuse" ailleurs (le flash de 120 ms). La garantie que ces
+ * tests protegent : la PREMIERE phase vue par l'utilisateur, quel que soit
+ * l'instant d'armement, est toujours celle du mode (rgb, primary).
+ */
+
+/* A l'instant meme de l'armement, sans aucun ecart : toujours primary. */
+static void test_wait_phase_starts_on_primary_at_arming(void)
+{
+    TEST_ASSERT_EQ(led_wait_phase(0, 0), LED_WAIT_PHASE_PRIMARY,
+                   "phase a l'armement (t=0) : primary");
+    TEST_ASSERT_EQ(led_wait_phase(12345, 12345), LED_WAIT_PHASE_PRIMARY,
+                   "phase a l'armement, quel que soit l'instant absolu : primary");
+}
+
+/* Toute la premiere moitie de periode doit rester primary — pas un instant
+ * isole, toute la fenetre. */
+static void test_wait_phase_stays_primary_through_first_half(void)
+{
+    const uint32_t armed = 7000;
+    for (uint32_t dt = 0; dt < LED_ALTERNATE_MS / 2; dt += 37) {
+        TEST_ASSERT_EQ(led_wait_phase(armed, armed + dt), LED_WAIT_PHASE_PRIMARY,
+                       "premiere demi-periode : toujours primary");
+    }
+}
+
+/* Bascule pile a la moitie, et reste alt jusqu'a la fin de la periode. */
+static void test_wait_phase_switches_to_alt_at_half_period(void)
+{
+    const uint32_t armed = 7000;
+    TEST_ASSERT_EQ(led_wait_phase(armed, armed + LED_ALTERNATE_MS / 2), LED_WAIT_PHASE_ALT,
+                   "pile a la moitie de periode : bascule vers alt");
+    for (uint32_t dt = LED_ALTERNATE_MS / 2; dt < LED_ALTERNATE_MS; dt += 41) {
+        TEST_ASSERT_EQ(led_wait_phase(armed, armed + dt), LED_WAIT_PHASE_ALT,
+                       "seconde demi-periode : toujours alt");
+    }
+}
+
+/* La periode se repete : la phase a armed+LED_ALTERNATE_MS doit redevenir
+ * primary, exactement comme a l'armement. */
+static void test_wait_phase_repeats_every_period(void)
+{
+    const uint32_t armed = 500;
+    TEST_ASSERT_EQ(led_wait_phase(armed, armed + LED_ALTERNATE_MS), LED_WAIT_PHASE_PRIMARY,
+                   "une periode plus tard : de nouveau primary");
+    TEST_ASSERT_EQ(led_wait_phase(armed, armed + LED_ALTERNATE_MS + LED_ALTERNATE_MS / 2),
+                   LED_WAIT_PHASE_ALT, "une periode et demie plus tard : alt");
+}
+
+/* Le compteur de millisecondes d'ESP-IDF repasse par zero apres ~49 jours
+ * (uint32_t). Une cle peut rester branchee, et une attente peut s'armer,
+ * plus longtemps que ca. Meme construction que
+ * test_survives_millisecond_wraparound dans test_button_debounce.c. */
+static void test_wait_phase_survives_millisecond_wraparound(void)
+{
+    const uint32_t armed = 0xFFFFFFF0u;   /* arme 16 ms avant le repassage a zero */
+    TEST_ASSERT_EQ(led_wait_phase(armed, armed), LED_WAIT_PHASE_PRIMARY,
+                   "arme juste avant le repassage a zero : primary");
+    /* +100 ms depuis l'armement, en traversant le repassage a zero : toujours
+     * dans la premiere demi-periode (100 < LED_ALTERNATE_MS / 2). */
+    TEST_ASSERT_EQ(led_wait_phase(armed, armed + 100), LED_WAIT_PHASE_PRIMARY,
+                   "premiere demi-periode a cheval sur le repassage a zero : primary");
+    /* +600 ms : dans la seconde demi-periode (LED_ALTERNATE_MS/2 = 500). */
+    TEST_ASSERT_EQ(led_wait_phase(armed, armed + 600), LED_WAIT_PHASE_ALT,
+                   "seconde demi-periode a cheval sur le repassage a zero : alt");
+}
+
 void test_led_state(void)
 {
     TEST_SUITE("led_state");
@@ -229,4 +301,9 @@ void test_led_state(void)
     TEST_RUN(test_verdict_is_brighter_than_rest);
     TEST_RUN(test_mode_flash_colour_for_pgp);
     TEST_RUN(test_mode_flash_for_aberrant_mode_is_black_but_defined);
+    TEST_RUN(test_wait_phase_starts_on_primary_at_arming);
+    TEST_RUN(test_wait_phase_stays_primary_through_first_half);
+    TEST_RUN(test_wait_phase_switches_to_alt_at_half_period);
+    TEST_RUN(test_wait_phase_repeats_every_period);
+    TEST_RUN(test_wait_phase_survives_millisecond_wraparound);
 }

@@ -45,6 +45,38 @@ typedef struct {
     led_pattern_t pattern;
 } led_view_t;
 
+/* 1 Hz : periode de l'alternance de la LED pendant une attente. */
+#define LED_ALTERNATE_MS 1000u
+
+typedef enum {
+    LED_WAIT_PHASE_PRIMARY = 0,   /* montrer rgb — la couleur du mode */
+    LED_WAIT_PHASE_ALT,           /* montrer rgb_alt — le rouge de l'attente */
+} led_wait_phase_t;
+
+/*
+ * Quelle couleur de l'alternance montrer, a partir de l'instant d'ARMEMENT
+ * de l'attente (pas de l'horloge murale).
+ *
+ * Avant cette fonction, hmi.c dérivait la phase de `t % LED_ALTERNATE_MS`
+ * directement sur l'horloge murale. C'est faux : une attente qui s'arme
+ * dans la seconde moitie d'une periode demarre alors sur rgb_alt (le
+ * rouge) — exactement le cas a eviter, puisque le rouge porte deja le sens
+ * « refuse » ailleurs (le flash de verdict). La garantie que cette fonction
+ * porte : la premiere phase vue par l'utilisateur, quel que soit l'instant
+ * d'armement, est TOUJOURS LED_WAIT_PHASE_PRIMARY.
+ *
+ * `now_ms` doit avoir ete observe apres (ou au meme instant que) `armed_at_ms` ;
+ * la soustraction est faite en uint32_t non signe, ce qui reste juste meme au
+ * repassage a zero du compteur de millisecondes (~49 jours), sur le meme
+ * principe que hmi/button_debounce.h.
+ */
+static inline led_wait_phase_t led_wait_phase(uint32_t armed_at_ms, uint32_t now_ms)
+{
+    const uint32_t elapsed = now_ms - armed_at_ms;
+    return (elapsed % LED_ALTERNATE_MS < LED_ALTERNATE_MS / 2)
+               ? LED_WAIT_PHASE_PRIMARY : LED_WAIT_PHASE_ALT;
+}
+
 static inline led_rgb_t led_mode_colour(usb_mode_t mode)
 {
     switch (mode) {

@@ -23,7 +23,10 @@ static const char *TAG = "hmi";
  * filtre voie une ligne qui se calme, et assez rare pour ne rien couter. */
 #define HMI_TICK_MS         5
 #define HMI_FLASH_MS      120
-#define HMI_ALTERNATE_MS 1000   /* 1 Hz */
+/* La periode de l'alternance (LED_ALTERNATE_MS) vit dans hmi/led_state.h,
+ * avec la fonction pure led_wait_phase() qui en decoule : c'est elle qui
+ * decide la phase, ce fichier ne fait plus que lui fournir l'instant
+ * d'armement. */
 
 static led_strip_handle_t s_strip;
 static btn_debounce_t     s_mode_btn;
@@ -41,19 +44,22 @@ static bool read_btn(gpio_num_t pin)
     return BOARD_BTN_ACTIVE_LOW ? (level == 0) : (level != 0);
 }
 
-static void paint(led_view_t v, uint32_t t)
+static void paint(led_view_t v, uint32_t t, uint32_t wait_armed_at)
 {
     uint8_t r = v.rgb.r, g = v.rgb.g, b = v.rgb.b;
 
     if (v.pattern == LED_PATTERN_OFF) {
         r = g = b = 0;
     } else if (v.pattern == LED_PATTERN_ALTERNATE) {
-        /* Bascule franche, pas un fondu : la premiere moitie de periode montre
-         * rgb, la seconde rgb_alt. Aucune couleur en dur ici — les deux
-         * viennent de led_state_view(), cette fonction ne fait que choisir
-         * laquelle regarder. */
-        const uint32_t phase = t % HMI_ALTERNATE_MS;
-        const led_rgb_t c = (phase < HMI_ALTERNATE_MS / 2) ? v.rgb : v.rgb_alt;
+        /* Bascule franche, pas un fondu. La phase vient de led_wait_phase()
+         * (hmi/led_state.h), relative a wait_armed_at et non a l'horloge
+         * murale : c'est ce qui garantit que la toute premiere phase vue par
+         * l'utilisateur est celle du mode, quel que soit l'instant
+         * d'armement. Aucune couleur en dur ici — les deux viennent de
+         * led_state_view(), cette fonction ne fait que choisir laquelle
+         * regarder. */
+        const led_rgb_t c = (led_wait_phase(wait_armed_at, t) == LED_WAIT_PHASE_PRIMARY)
+                                 ? v.rgb : v.rgb_alt;
         r = c.r; g = c.g; b = c.b;
     }
 
@@ -67,9 +73,11 @@ static void paint(led_view_t v, uint32_t t)
 static void hmi_task(void *arg)
 {
     (void)arg;
-    led_event_t         event        = LED_EVENT_NONE;
-    uint32_t            event_until  = 0;
-    sec_confirm_state_t last_state   = SEC_CONFIRM_IDLE;
+    led_event_t         event         = LED_EVENT_NONE;
+    uint32_t            event_until   = 0;
+    sec_confirm_state_t last_state    = SEC_CONFIRM_IDLE;
+    bool                was_pending   = false;
+    uint32_t            wait_armed_at = 0;
 
     for (;;) {
         const uint32_t t = now_ms();
@@ -107,6 +115,16 @@ static void hmi_task(void *arg)
         const sec_confirm_state_t st = sec_confirm_peek(t);
         const bool pending = (st == SEC_CONFIRM_PENDING);
 
+        /* Sur la TRANSITION vers l'attente : c'est l'instant que
+         * led_wait_phase() doit voir comme origine de la phase. Le memoriser
+         * SEULEMENT au moment ou l'attente s'arme — pas a chaque tick — pour
+         * que la phase ne re-parte jamais de zero pendant qu'on attend
+         * encore. */
+        if (pending && !was_pending) {
+            wait_armed_at = t;
+        }
+        was_pending = pending;
+
         /* Sur la TRANSITION vers l'expiration, jamais sur l'etat. peek() ne
          * consomme rien — c'est tout son interet — donc TIMEDOUT reste vrai
          * tant que personne n'appelle poll(). Declencher sur l'etat ferait
@@ -117,7 +135,7 @@ static void hmi_task(void *arg)
         }
         last_state = st;
 
-        paint(led_state_view(usb_mode_get(), pending, event), t);
+        paint(led_state_view(usb_mode_get(), pending, event), t, wait_armed_at);
         vTaskDelay(pdMS_TO_TICKS(HMI_TICK_MS));
     }
 }
