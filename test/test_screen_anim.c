@@ -149,6 +149,44 @@ static void test_slide_survives_millisecond_wraparound(void)
                    "exactement la moitie, a cheval sur le repassage a zero");
 }
 
+/* Ecran d'accueil : actif juste apres le demarrage de la tache d'affichage,
+ * plus du tout apres SCREEN_SPLASH_MS. */
+static void test_splash_active_at_start(void)
+{
+    TEST_ASSERT(screen_splash_active(1000, 1000), "actif a l'instant du demarrage");
+}
+
+static void test_splash_active_just_before_deadline(void)
+{
+    TEST_ASSERT(screen_splash_active(1000, 1000 + SCREEN_SPLASH_MS - 1),
+                "encore actif juste avant l'echeance");
+}
+
+static void test_splash_inactive_at_deadline(void)
+{
+    TEST_ASSERT(!screen_splash_active(1000, 1000 + SCREEN_SPLASH_MS),
+                "plus actif pile a l'echeance");
+}
+
+static void test_splash_inactive_long_after(void)
+{
+    TEST_ASSERT(!screen_splash_active(1000, 1000 + SCREEN_SPLASH_MS + 60u * 1000u),
+                "reste inactif longtemps apres");
+}
+
+/* Meme repassage a zero du compteur de millisecondes que la barre et le
+ * glissement : une cle branchee en permanence l'atteint apres ~49 jours. */
+static void test_splash_survives_millisecond_wraparound(void)
+{
+    const uint32_t started = 0xFFFFFFF0u;   /* a 16 ms du repassage a zero */
+    TEST_ASSERT(screen_splash_active(started, started),
+                "actif a l'instant du demarrage, a cheval sur le repassage a zero");
+    TEST_ASSERT(screen_splash_active(started, started + SCREEN_SPLASH_MS - 1),
+                "encore actif juste avant l'echeance, a cheval sur le repassage a zero");
+    TEST_ASSERT(!screen_splash_active(started, started + SCREEN_SPLASH_MS),
+                "plus actif pile a l'echeance, a cheval sur le repassage a zero");
+}
+
 void test_screen_anim(void)
 {
     TEST_SUITE("screen_anim");
@@ -164,4 +202,9 @@ void test_screen_anim(void)
     TEST_RUN(test_shift_actually_moves);
     TEST_RUN(test_slide_runs_from_zero_to_full);
     TEST_RUN(test_slide_survives_millisecond_wraparound);
+    TEST_RUN(test_splash_active_at_start);
+    TEST_RUN(test_splash_active_just_before_deadline);
+    TEST_RUN(test_splash_inactive_at_deadline);
+    TEST_RUN(test_splash_inactive_long_after);
+    TEST_RUN(test_splash_survives_millisecond_wraparound);
 }
