@@ -1,5 +1,6 @@
 #include "usb/mode_fido.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "tusb.h"
@@ -178,6 +179,84 @@ typedef struct {
 static fido_tx_t s_tx;
 
 /*
+ * Vrai tant qu'il reste au moins un paquet de continuation à émettre pour la
+ * réponse en cours (voir send_response()/fido_report_complete()). Toute
+ * NOUVELLE requête reçue pendant ce temps est refusée avec
+ * CTAPHID_ERR_CHANNEL_BUSY, sur SON PROPRE canal — jamais celui de
+ * l'émission en cours — plutôt que de laisser send_response() écraser s_tx
+ * en plein vol. Ruling du coordinateur (2026-08-17) : « un hôte bien élevé
+ * attend, un hôte hostile n'attend pas » — sur une clé de sécurité, une
+ * réponse tronquée ou mélangée entre deux canaux est une confusion de
+ * contexte dans le transport qui portera bientôt des signatures.
+ * CTAPHID_ERR_CHANNEL_BUSY existe exactement pour cet usage dans la
+ * spécification ; rien n'est inventé ici.
+ *
+ * Libéré sur TOUS les chemins de sortie de l'émission — y compris un échec
+ * de tud_hid_report(), premier paquet ou continuation — jamais seulement au
+ * dernier paquet réussi : un drapeau occupé qui resterait coincé
+ * transformerait un défaut d'endpoint passager en clé définitivement
+ * muette, jusqu'au débranchement.
+ */
+static bool s_tx_busy;
+
+/*
+ * CID en attente de refus CTAPHID_ERR_CHANNEL_BUSY : posé quand send_
+ * busy_refusal() ne peut pas partir tout de suite (endpoint occupé — voir
+ * plus bas), consommé par fido_report_complete() dès que l'endpoint se
+ * libère. Un seul CID mémorisé : une deuxième collision pendant que la
+ * première attend déjà son tour écrase le premier CID, celui-ci n'obtenant
+ * alors aucun refus explicite — l'hôte le découvre par timeout, comme tout
+ * message auquel ce périphérique ne répond jamais. Suffisant pour l'usage
+ * visé (une clé de sécurité ne parle qu'à un client à la fois) et cohérent
+ * avec Ruling 4 (un seul message CTAP-HID vraiment « en cours » ici).
+ */
+static bool     s_refusal_pending;
+static uint32_t s_refusal_cid;
+
+/* Construit un paquet ERROR isolé (jamais suivi de continuation) pour
+ * `cid`/`err_code`, et tente de l'envoyer immédiatement. Rend vrai si le
+ * paquet est réellement parti. */
+static bool try_send_error_now(uint32_t cid, uint8_t err_code)
+{
+    uint8_t pkt[CTAPHID_PKT_SIZE];
+    memset(pkt, 0, sizeof(pkt));
+    pkt[0] = (uint8_t)(cid >> 24);
+    pkt[1] = (uint8_t)(cid >> 16);
+    pkt[2] = (uint8_t)(cid >> 8);
+    pkt[3] = (uint8_t)cid;
+    pkt[4] = (uint8_t)(0x80u | CTAPHID_CMD_ERROR);
+    pkt[5] = 0;
+    pkt[6] = 1;
+    pkt[7] = err_code;
+    return tud_hid_ready() && tud_hid_report(0, pkt, sizeof(pkt));
+}
+
+/*
+ * Refuse une nouvelle requête reçue pendant qu'une réponse précédente est
+ * encore en vol, SANS toucher à s_tx : passer par send_response() pour ce
+ * refus écraserait s_tx.buf/len/cid en plein envoi, corrompant les paquets
+ * de continuation qui restent à partir pour CETTE réponse.
+ *
+ * L'endpoint IN est très souvent occupé PAR CETTE MÊME réponse au moment où
+ * le refus voudrait partir (constaté sur matériel, wt9932_key, 2026-08-17 :
+ * une collision au milieu d'une réponse de 300 octets tombait quasi
+ * systématiquement dans cette fenêtre). Un simple abandon silencieux dans
+ * ce cas perdrait le refus la plupart du temps, pas seulement dans un cas
+ * limite — inacceptable pour ce que ce mécanisme doit prouver. Le refus est
+ * donc mis en ATTENTE (s_refusal_pending/s_refusal_cid) si l'envoi immédiat
+ * échoue ; fido_report_complete() le prend en charge en priorité dès que
+ * l'endpoint se libère, avant de reprendre la continuation de s_tx.
+ */
+static void send_busy_refusal(uint32_t cid)
+{
+    if (try_send_error_now(cid, CTAPHID_ERR_CHANNEL_BUSY)) {
+        return;
+    }
+    s_refusal_pending = true;
+    s_refusal_cid     = cid;
+}
+
+/*
  * Empaquette et envoie une réponse CTAP-HID, fragmentée si nécessaire sur
  * plusieurs paquets — l'image miroir exacte de ce que ctaphid_feed() sait
  * défaire côté réception : un paquet d'initialisation (CID, CMD|0x80, BCNT
@@ -190,7 +269,10 @@ static fido_tx_t s_tx;
  * ici (rien n'est envoyé) plutôt que tronqué en silence : un appelant qui
  * produit une réponse plus grande a un bug, mieux vaut un message absent
  * qu'un message mal formé sur le fil, que l'hôte prendrait pour argent
- * comptant.
+ * comptant. Cette garde n'est atteignable par aucune requête externe
+ * aujourd'hui (ctaphid_feed() borne déjà tout message REÇU à 7609 octets),
+ * c'est une défense contre un futur appelant fautif (CBOR) — coût nul,
+ * gardée telle quelle.
  *
  * Le premier paquet part directement d'ici, dans tud_hid_set_report_cb (via
  * handle_message()) — chemin vérifié sur matériel par 30 PING consécutifs
@@ -205,18 +287,16 @@ static fido_tx_t s_tx;
  * exactement le patron que hid_device.c attend de tud_hid_report_
  * complete_cb — c'est là, et seulement là, qu'un nouvel appel à
  * tud_hid_report() est sûr après le premier.
- *
- * Limite connue, non fermée par cette tâche : rien n'empêche un nouveau
- * message CTAP-HID d'arriver (et donc un nouvel appel à send_response())
- * avant que toutes les continuations d'une réponse précédente n'aient été
- * émises — s_tx serait alors écrasé en cours d'envoi. ctaphid_feed() ne
- * connaît que l'état de RÉCEPTION (s_asm), jamais l'état d'ÉMISSION ; un
- * hôte CTAP-HID correct attend la réponse complète avant d'émettre la
- * requête suivante, ce que cette tâche ne vérifie pas. À rouvrir si un test
- * d'intégration révèle qu'un client réel ne respecte pas cet ordre.
  */
 static void send_response(uint32_t cid, uint8_t cmd, const uint8_t *data, uint16_t len)
 {
+    if (s_tx_busy) {
+        /* Une réponse précédente est encore en cours d'émission : refuser
+         * ce nouveau message plutôt que d'écraser s_tx — voir s_tx_busy. */
+        send_busy_refusal(cid);
+        return;
+    }
+
     if (len > CTAPHID_MAX_PAYLOAD) {
         return;   /* refus explicite — voir le commentaire ci-dessus */
     }
@@ -251,23 +331,36 @@ static void send_response(uint32_t cid, uint8_t cmd, const uint8_t *data, uint16
     }
     s_tx.sent = n;
 
-    /* Abandon silencieux si l'endpoint n'est pas prêt, jamais d'attente
-     * bloquante — même raison que ci-dessus. Rien n'est en vol avant ce
-     * premier paquet (Ruling 4), donc l'endpoint est toujours libre à ce
-     * point en pratique. */
-    if (tud_hid_ready()) {
-        tud_hid_report(0, pkt, sizeof(pkt));
+    /* Rien n'est en vol avant ce premier paquet (Ruling 4 + s_tx_busy tout
+     * juste vérifié faux), donc l'endpoint est attendu libre. Un échec ici
+     * (non prêt, ou tud_hid_report() refuse la mise en file) abandonne
+     * l'émission au lieu de poser s_tx_busy : jamais d'occupation posée sur
+     * un paquet qui n'est pas réellement parti — voir s_tx_busy. */
+    if (!tud_hid_ready() || !tud_hid_report(0, pkt, sizeof(pkt))) {
+        return;
     }
+
+    s_tx_busy = (s_tx.sent < s_tx.len);
 }
 
 /*
  * Suite de send_response() : émet le prochain paquet de continuation, s'il
  * en reste — appelée par le répartiteur HID (usb/hid_dispatch.c) à chaque
  * fois qu'un rapport IN part effectivement sur le fil (tud_hid_report_
- * complete_cb). Ne rien faire si s_tx est déjà épuisé (réponse tenue dans
- * l'unique paquet d'initialisation, cas le plus fréquent — INIT, PING
- * usuel) : c'est le report_complete du DERNIER paquet d'une telle réponse
- * qui arrive ici sans qu'il reste rien à envoyer, comportement normal et
+ * complete_cb).
+ *
+ * PRIORITÉ absolue à un refus CTAPHID_ERR_CHANNEL_BUSY resté en attente
+ * (voir send_busy_refusal()) : l'endpoint vient tout juste de se libérer,
+ * c'est le moment le plus fiable pour le faire enfin partir. La continuation
+ * de s_tx, elle, attendra le PROCHAIN report_complete — celui que ce paquet
+ * de refus va lui-même déclencher une fois parti. Aucune donnée de s_tx
+ * n'est touchée par ce détour : la réponse en cours reprend exactement là
+ * où elle en était.
+ *
+ * s_tx_busy faux (et rien en attente) signifie qu'aucune suite n'est
+ * attendue pour s_tx (réponse tenue dans l'unique paquet d'initialisation,
+ * cas le plus fréquent — INIT, PING usuel) : c'est le report_complete du
+ * DERNIER paquet d'une telle réponse qui arrive ici, comportement normal et
  * silencieux.
  */
 static void fido_report_complete(const uint8_t *report, uint16_t len)
@@ -275,7 +368,20 @@ static void fido_report_complete(const uint8_t *report, uint16_t len)
     (void)report;
     (void)len;
 
+    if (s_refusal_pending) {
+        s_refusal_pending = false;
+        /* Échec possible ici aussi (improbable juste après une libération,
+         * mais pas impossible) : abandonné sans réessai — un deuxième essai
+         * bloquerait la reprise de s_tx qui suit. */
+        try_send_error_now(s_refusal_cid, CTAPHID_ERR_CHANNEL_BUSY);
+        return;
+    }
+
+    if (!s_tx_busy) {
+        return;
+    }
     if (s_tx.sent >= s_tx.len) {
+        s_tx_busy = false;   /* ne devrait pas arriver si s_tx_busy est correct, mais ferme la boucle */
         return;
     }
 
@@ -296,10 +402,17 @@ static void fido_report_complete(const uint8_t *report, uint16_t len)
     s_tx.next_seq++;
 
     /* Le transfert précédent vient juste de se terminer (c'est ce qui
-     * déclenche cet appel) : l'endpoint est donc prêt. Gardé quand même,
-     * défensivement, sur le même principe qu'au premier paquet. */
-    if (tud_hid_ready()) {
-        tud_hid_report(0, pkt, sizeof(pkt));
+     * déclenche cet appel) : l'endpoint est donc attendu prêt. Un échec ici
+     * abandonne l'émission (libère s_tx_busy) plutôt que de rester coincé —
+     * l'hôte verra un message incomplet et devra réessayer, ce que CTAP-HID
+     * gère déjà par timeout côté hôte. */
+    if (!tud_hid_ready() || !tud_hid_report(0, pkt, sizeof(pkt))) {
+        s_tx_busy = false;
+        return;
+    }
+
+    if (s_tx.sent >= s_tx.len) {
+        s_tx_busy = false;   /* dernier paquet parti */
     }
 }
 
@@ -436,12 +549,11 @@ static const hid_handlers_t s_fido_handlers = {
 
 /*
  * Réarme l'assembleur CTAP-HID (Ruling 4), le dernier CID alloué et l'état
- * d'émission à chaque entrée dans le mode — sur le modèle exact de
- * otp_hid_init() dans mode_otp.c : l'ordre d'évaluation des arguments de
- * usb_device_install() n'étant pas spécifié en C, mode_fido_hs_config() peut
- * être appelé avant mode_fido_fs_config(), donc les deux réarment.
- * s_tx.sent = s_tx.len == 0 suffit à marquer « rien en cours d'émission » :
- * fido_report_complete() n'y regarde que la comparaison des deux.
+ * d'émission (y compris s_tx_busy) à chaque entrée dans le mode — sur le
+ * modèle exact de otp_hid_init() dans mode_otp.c : l'ordre d'évaluation des
+ * arguments de usb_device_install() n'étant pas spécifié en C,
+ * mode_fido_hs_config() peut être appelé avant mode_fido_fs_config(), donc
+ * les deux réarment.
  */
 const uint8_t *mode_fido_fs_config(void)
 {
@@ -449,6 +561,8 @@ const uint8_t *mode_fido_fs_config(void)
     s_last_cid   = 0;
     s_tx.len     = 0;
     s_tx.sent    = 0;
+    s_tx_busy    = false;
+    s_refusal_pending = false;
     return s_fs_config;
 }
 
@@ -458,6 +572,8 @@ const uint8_t *mode_fido_hs_config(void)
     s_last_cid   = 0;
     s_tx.len     = 0;
     s_tx.sent    = 0;
+    s_tx_busy    = false;
+    s_refusal_pending = false;
     return s_hs_config;
 }
 
