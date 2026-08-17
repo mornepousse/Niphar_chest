@@ -98,11 +98,13 @@ static inline uint16_t screen_center_x(uint16_t width_px, uint16_t text_px)
     return (uint16_t)((width_px - text_px) / 2u);
 }
 
-/* Nombre de points de cycle dessines. Les quatre modes que le firmware
- * connait, dans l'ordre de usb_mode_t. */
+/* Nombre de points de cycle dessines. Les cinq modes que le firmware
+ * connait, dans l'ordre de usb_mode_t. Cinq points tiennent toujours dans
+ * 128 px de large : 5 x 5 px de diametre + 4 x 7 px d'espacement = 53 px,
+ * loin de la limite. */
 static inline uint8_t screen_mode_count(void)
 {
-    return 4u;
+    return 5u;
 }
 
 /*
@@ -121,6 +123,7 @@ static inline uint8_t screen_mode_index(usb_mode_t mode)
     case USB_MODE_STORAGE: return 1u;
     case USB_MODE_PGP:     return 2u;
     case USB_MODE_OTP:     return 3u;
+    case USB_MODE_FIDO:    return 4u;
     default:               return screen_mode_count();
     }
 }

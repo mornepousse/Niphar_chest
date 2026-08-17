@@ -98,24 +98,28 @@ static void test_center_x_never_wraps_when_text_is_wider(void)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Les quatre points de cycle.                                                */
+/* Les cinq points de cycle.                                                  */
 /* ------------------------------------------------------------------------- */
 
 /* Valeur en dur et non USB_MODE_COUNT : ce test epingle une DECISION de
- * disposition (quatre points tiennent dans 128 px de large), pas l'enum. */
-static void test_mode_count_is_four(void)
+ * disposition (cinq points tiennent dans 128 px de large — 5x5 px + 4x7 px
+ * = 53 px, large), pas l'enum. Il DOIT rougir quand USB_MODE_FIDO s'ajoute :
+ * c'est le signal que la disposition a ete revue, pas une simple
+ * enumeration qui suivrait l'enum toute seule. */
+static void test_mode_count_is_five(void)
 {
-    TEST_ASSERT_EQ(screen_mode_count(), 4, "quatre points de cycle");
+    TEST_ASSERT_EQ(screen_mode_count(), 5, "cinq points de cycle");
 }
 
 /* Chaque mode a SON point, et deux modes n'en partagent jamais un : sinon le
  * point plein designerait deux modes a la fois et ne dirait plus ou l'on est.
- * Les quatre valeurs sont comparees deux a deux — six paires — et non chacune
+ * Les cinq valeurs sont comparees deux a deux — dix paires — et non chacune
  * a elle-meme : une mutation faisant rendre l'indice de PGP par STORAGE
  * passerait n'importe quelle formulation plus faible. */
 static void test_each_mode_has_its_own_dot(void)
 {
-    const usb_mode_t modes[] = { USB_MODE_NONE, USB_MODE_STORAGE, USB_MODE_PGP, USB_MODE_OTP };
+    const usb_mode_t modes[] = { USB_MODE_NONE, USB_MODE_STORAGE, USB_MODE_PGP,
+                                  USB_MODE_OTP, USB_MODE_FIDO };
     const unsigned n = sizeof(modes) / sizeof(modes[0]);
     for (unsigned i = 0; i < n; i++) {
         const uint8_t a = screen_mode_index(modes[i]);
@@ -133,13 +137,14 @@ static void test_each_mode_has_its_own_dot(void)
  * pour « rien expose ». */
 static void test_unknown_mode_lights_no_dot(void)
 {
-    const usb_mode_t modes[] = { USB_MODE_NONE, USB_MODE_STORAGE, USB_MODE_PGP, USB_MODE_OTP };
+    const usb_mode_t modes[] = { USB_MODE_NONE, USB_MODE_STORAGE, USB_MODE_PGP,
+                                  USB_MODE_OTP, USB_MODE_FIDO };
     const uint8_t out_of_enum = screen_mode_index(USB_MODE_COUNT);
     const uint8_t nonsense    = screen_mode_index((usb_mode_t)99);
 
     TEST_ASSERT_EQ(out_of_enum, screen_mode_count(), "hors enum : aucun point");
     TEST_ASSERT_EQ(nonsense, screen_mode_count(), "valeur absurde : aucun point");
-    for (unsigned i = 0; i < 4u; i++) {
+    for (unsigned i = 0; i < 5u; i++) {
         TEST_ASSERT(out_of_enum != screen_mode_index(modes[i]),
                     "l'inconnu ne prend pas le point d'un mode connu");
     }
@@ -543,7 +548,7 @@ void test_screen_layout(void)
     TEST_RUN(test_text_px_saturates_instead_of_wrapping);
     TEST_RUN(test_center_x_centers);
     TEST_RUN(test_center_x_never_wraps_when_text_is_wider);
-    TEST_RUN(test_mode_count_is_four);
+    TEST_RUN(test_mode_count_is_five);
     TEST_RUN(test_each_mode_has_its_own_dot);
     TEST_RUN(test_unknown_mode_lights_no_dot);
     TEST_RUN(test_seconds_left_rounds_up);

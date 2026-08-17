@@ -135,6 +135,7 @@ static int cmd_usb(int argc, char **argv)
         else if (strcmp(argv[2], "storage") == 0) m = USB_MODE_STORAGE;
         else if (strcmp(argv[2], "pgp")     == 0) m = USB_MODE_PGP;
         else if (strcmp(argv[2], "otp")     == 0) m = USB_MODE_OTP;
+        else if (strcmp(argv[2], "fido")    == 0) m = USB_MODE_FIDO;
         else { printf("mode inconnu : %s\n", argv[2]); return 1; }
         esp_err_t err = usb_mode_set(m);
         printf("mode %s : %s\n", usb_mode_name(m), esp_err_to_name(err));
@@ -234,7 +235,7 @@ esp_err_t console_start(void)
         .command = "usb",
         .help = "État USB, compteurs du chemin MSC (rapide vs rebond)"
 #if BOARD_CONSOLE_ACTIONS
-                ", et « usb mode none|storage|pgp|otp » (béquille de dev, console habilitée)"
+                ", et « usb mode none|storage|pgp|otp|fido » (béquille de dev, console habilitée)"
 #endif
                 ,
         .hint = NULL,

@@ -10,6 +10,7 @@ set(srcs
     "usb/mode_storage.c"
     "usb/mode_pgp.c"
     "usb/mode_otp.c"
+    "usb/mode_fido.c"
     "usb/msc_disk.c"
     "usb/msc_lba.c"
     "console/console.c"

@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#include "usb/mode_fido.h"
 #include "usb/mode_otp.h"
 #include "usb/mode_pgp.h"
 #include "usb/mode_storage.h"
@@ -157,6 +158,12 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         mode_otp_stop();
     }
 
+    /* Même raison côté FIDO : retirer la table FIDO du répartiteur unique
+     * avant que la pile ne se démonte, sur le modèle exact du OTP ci-dessus. */
+    if (s_mode == USB_MODE_FIDO) {
+        mode_fido_stop();
+    }
+
     /* À partir d'ici la pile est démontée ou en train de l'être : plus rien
      * n'est garanti tant qu'une installation n'a pas réussi. */
     s_mode_known = false;
@@ -239,13 +246,21 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         strings = mode_pgp_strings(&string_count);
         fs_cfg = mode_pgp_fs_config();
         hs_cfg = mode_pgp_hs_config();
-    } else {
+    } else if (mode == USB_MODE_OTP) {
         /* USB_MODE_OTP : la clé CR-HMAC sur HID (tâche 11). Rien à
          * initialiser ici non plus — mode_otp_fs_config()/hs_config() câble
          * les hooks otp_proto au passage, voir mode_otp.c. */
         strings = mode_otp_strings(&string_count);
         fs_cfg = mode_otp_fs_config();
         hs_cfg = mode_otp_hs_config();
+    } else {
+        /* USB_MODE_FIDO : l'authentificateur U2F/CTAP-HID (plan FIDO2,
+         * tâche 3). Rien à initialiser ici non plus — mode_fido_fs_config()/
+         * hs_config() réarme l'assembleur CTAP-HID au passage, voir
+         * mode_fido.c. */
+        strings = mode_fido_strings(&string_count);
+        fs_cfg = mode_fido_fs_config();
+        hs_cfg = mode_fido_hs_config();
     }
 
     err = usb_device_install(fs_cfg, hs_cfg, strings, string_count);
@@ -278,6 +293,12 @@ esp_err_t usb_mode_set(usb_mode_t mode)
          * hid_dispatch.h) ferait répondre un mode qu'aucun hôte n'a encore
          * en face. Voir mode_otp_start() dans mode_otp.c. */
         mode_otp_start();
+    }
+
+    if (mode == USB_MODE_FIDO) {
+        /* Après coup, jamais avant : sur le modèle exact du OTP ci-dessus.
+         * Voir mode_fido_start() dans mode_fido.c. */
+        mode_fido_start();
     }
 
     s_mode = mode;

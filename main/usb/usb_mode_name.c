@@ -13,6 +13,7 @@ const char *usb_mode_name(usb_mode_t mode)
     case USB_MODE_STORAGE: return "stockage";
     case USB_MODE_PGP:     return "carte OpenPGP";
     case USB_MODE_OTP:     return "clé CR-HMAC";
+    case USB_MODE_FIDO:    return "clé FIDO2";
     default:               return "inconnu";
     }
 }

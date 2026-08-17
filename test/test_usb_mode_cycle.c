@@ -1,5 +1,6 @@
-/* Le cycle de la carte-clé : deux crans, et « rien d'exposé » n'y revient
- * jamais. C'est pur, donc c'est ici que ça se prouve. */
+/* Le cycle de la carte-clé : trois crans (pgp, otp, fido), et « rien
+ * d'exposé » n'y revient jamais. C'est pur, donc c'est ici que ça se
+ * prouve. */
 #include "test_framework.h"
 
 #include "usb/usb_mode.h"
@@ -12,10 +13,30 @@ static void test_none_arms_pgp(void)
                    "depuis l'etat muet, le premier appui arme PGP");
 }
 
-static void test_pgp_otp_alternate(void)
+/* Les trois crans, dans l'ordre, et refermes sur eux-memes : chaque
+ * transition verifiee explicitement, pas seulement « ca boucle », pour que
+ * mordre une mutation qui echangerait deux destinations (ex. otp -> pgp,
+ * fido -> otp) ne reste pas invisible. */
+static void test_pgp_otp_fido_cycle(void)
 {
     TEST_ASSERT_EQ(usb_mode_cycle_after(USB_MODE_PGP), USB_MODE_OTP, "pgp -> otp");
-    TEST_ASSERT_EQ(usb_mode_cycle_after(USB_MODE_OTP), USB_MODE_PGP, "otp -> pgp");
+    TEST_ASSERT_EQ(usb_mode_cycle_after(USB_MODE_OTP), USB_MODE_FIDO, "otp -> fido");
+    TEST_ASSERT_EQ(usb_mode_cycle_after(USB_MODE_FIDO), USB_MODE_PGP, "fido -> pgp");
+}
+
+/* Les trois destinations comparees deux a deux — pas chacune a elle-meme :
+ * le piege recurrent de ce projet est un test qui croit couvrir plusieurs
+ * cas alors qu'il ne compare qu'une valeur a une constante attendue,
+ * laissant passer deux enumerateurs qui se vaudraient. */
+static void test_the_three_steps_are_pairwise_distinct(void)
+{
+    const usb_mode_t after_pgp  = usb_mode_cycle_after(USB_MODE_PGP);
+    const usb_mode_t after_otp  = usb_mode_cycle_after(USB_MODE_OTP);
+    const usb_mode_t after_fido = usb_mode_cycle_after(USB_MODE_FIDO);
+
+    TEST_ASSERT(after_pgp != after_otp, "pgp et otp ne menent pas au meme cran");
+    TEST_ASSERT(after_pgp != after_fido, "pgp et fido ne menent pas au meme cran");
+    TEST_ASSERT(after_otp != after_fido, "otp et fido ne menent pas au meme cran");
 }
 
 /* Le point qui compte : une clé ne doit pas retomber muette toute seule.
@@ -61,7 +82,8 @@ void test_usb_mode_cycle(void)
 {
     TEST_SUITE("usb_mode_cycle");
     TEST_RUN(test_none_arms_pgp);
-    TEST_RUN(test_pgp_otp_alternate);
+    TEST_RUN(test_pgp_otp_fido_cycle);
+    TEST_RUN(test_the_three_steps_are_pairwise_distinct);
     TEST_RUN(test_never_returns_to_none);
     TEST_RUN(test_aberrant_input_lands_on_pgp);
     TEST_RUN(test_storage_is_not_in_the_cycle);

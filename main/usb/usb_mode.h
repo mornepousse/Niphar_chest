@@ -28,6 +28,7 @@ typedef enum {
     USB_MODE_STORAGE,    /* le disque (MSC) */
     USB_MODE_PGP,        /* la carte OpenPGP (CCID) — tâche 10 */
     USB_MODE_OTP,        /* la clé CR-HMAC (HID) — tâche 11 */
+    USB_MODE_FIDO,       /* l'authentificateur U2F/CTAP-HID (HID) — plan FIDO2, tâche 3 */
     USB_MODE_COUNT,
 } usb_mode_t;
 
@@ -37,8 +38,8 @@ esp_err_t usb_mode_init(void);
 
 /*
  * Bascule vers `mode`, avec ré-énumération côté hôte. Si `mode` est déjà le
- * mode courant, ne fait rien et renvoie ESP_OK. Les quatre modes (NONE,
- * STORAGE, PGP, OTP) sont tous branchés depuis la tâche 11.
+ * mode courant, ne fait rien et renvoie ESP_OK. NONE, STORAGE, PGP et OTP
+ * sont branchés depuis la tâche 11 ; FIDO depuis la tâche 3 du plan FIDO2.
  *
  * Peut être appelée depuis deux tâches sur wt9932_key (bouton MODE et
  * console). Ce n'est PAS réentrant en interne — voir le commentaire de
