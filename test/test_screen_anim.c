@@ -46,6 +46,29 @@ static void test_bar_matches_exact_fractions(void)
                    "un quart aux trois quarts du temps ecoule");
 }
 
+/* Les points "ronds" ci-dessus (moitie, quart, trois quarts) ne suffisent
+ * PAS a attraper un denominateur legerement faux : verifie a la main sur les
+ * 15001 valeurs entieres de elapsed, un denominateur SEC_CONFIRM_TIMEOUT_MS -
+ * 1 ne diverge du bon calcul qu'a UNE seule milliseconde (elapsed=1, 999 au
+ * lieu de 1000) — 14999 et 15000 sont si proches que la troncature entiere
+ * absorbe l'erreur presque partout ailleurs, y compris a chaque fraction
+ * ronde. Seul un balayage exhaustif contre la formule de reference l'attrape
+ * de facon fiable. Cette formule est deliberement la meme que celle du header
+ * : c'est la specification (le brief l'a fixee telle quelle), pas une copie
+ * d'implementation — ce test n'attraperait pas une erreur commise
+ * identiquement aux deux endroits, mais c'est le seul defaut qu'on lui
+ * connaisse. */
+static void test_bar_matches_reference_formula_exhaustively(void)
+{
+    for (uint32_t d = 0; d <= SEC_CONFIRM_TIMEOUT_MS; d++) {
+        const uint32_t remaining = SEC_CONFIRM_TIMEOUT_MS - d;
+        const uint16_t expected = (uint16_t)(((uint64_t)remaining * 1000u)
+                                             / SEC_CONFIRM_TIMEOUT_MS);
+        TEST_ASSERT_EQ(screen_bar_permille(1000, 1000 + d), expected,
+                       "correspond a la formule de reference, milliseconde par milliseconde");
+    }
+}
+
 /* Un decompte qui remonte, meme brievement, est pire qu'une barre absente :
  * il fait douter de ce qu'on lit, sur l'affichage dont tout l'interet est
  * d'etre cru. Rien dans les tests precedents n'empeche une implementation
@@ -133,6 +156,7 @@ void test_screen_anim(void)
     TEST_RUN(test_bar_is_empty_at_deadline);
     TEST_RUN(test_bar_is_half_at_half_time);
     TEST_RUN(test_bar_matches_exact_fractions);
+    TEST_RUN(test_bar_matches_reference_formula_exhaustively);
     TEST_RUN(test_bar_is_monotonic_non_increasing);
     TEST_RUN(test_bar_never_leaves_its_bounds);
     TEST_RUN(test_bar_survives_millisecond_wraparound);
