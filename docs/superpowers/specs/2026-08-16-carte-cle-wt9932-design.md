@@ -150,12 +150,23 @@ W (10891) sd: aucune carte (ESP_ERR_TIMEOUT) — le coffre reste utilisable, la 
 ```
 
 Onze secondes avant qu'une clé de sécurité ne réponde à son premier appui, pour
-chercher un composant qui n'est pas soudé. `BOARD_HAS_SD 0` supprime le brochage,
-l'appel, et le mode `storage` du cycle.
+chercher un composant qui n'est pas soudé. `BOARD_HAS_SD 0` supprime le
+sondage au démarrage et la commande console `sd` — pas le brochage.
 
-Corollaire : les blocs SD de `board_common.h` passent sous `#if BOARD_HAS_SD`, et
-`console.c` conditionne la commande `sd`. `sd_card.c` n'est pas modifié — il
-n'est simplement plus appelé.
+**Décidé autrement en cours de branche, et c'est le code livré qui fait foi
+ici** : `main/usb/msc_disk.c` appelle `sd_present()`/`sd_read_sectors()` sans
+condition, sur les trois cartes — c'est ce qui sert le mode `storage` du
+cycle USB. Pour que ça compile, `sd_card.c` doit compiler sur les trois
+cartes, donc le brochage microSD de `board_common.h` (six `_Static_assert`)
+reste **inconditionnel** : ni ces blocs, ni `sd_card.c`, ne passent sous
+`#if BOARD_HAS_SD`. Ce drapeau ne gouverne que deux choses, toutes deux dans
+des fichiers autres que `board_common.h` : le sondage au démarrage
+(`main.c`) et la commande console `sd` (`console.c`). Le mode `storage` du
+cycle de la carte-clé, lui, ne dépend pas de `BOARD_HAS_SD` — il est de toute
+façon absent du cycle par construction (`usb/usb_mode_cycle.h` : la clé n'a
+que deux crans, `pgp` et `otp`), indépendamment de la présence d'un
+connecteur microSD. Voir `.tripwire-divergences` pour la divergence
+correspondante déjà déclarée.
 
 ### 3. Sous-système `main/hmi/`
 
@@ -315,7 +326,7 @@ Il faut l'écrire, sinon on se persuadera d'avoir validé plus que ça.
 |---|---|---|
 | LED en 5 V pilotée par une donnée 3,3 V | un WS2812 strict exige VIH ≥ 0,7 × VDD = 3,5 V ; on est dessous | à constater au banc. Couleurs fausses ou scintillement = cause matérielle, pas logicielle. Parade si besoin : alimenter la LED en 3,3 V |
 | Broches lues sur un rendu du schéma | J7 et le brochage des boutons | à recouper avec la sérigraphie avant de souder |
-| `BOARD_HAS_SD` traverse `board_common.h` | touche les trois cartes | les deux cartes existantes gardent `1` ; non-régression couverte par `check.sh` complet |
+| `BOARD_HAS_SD` gouverne le sondage au démarrage et la commande console `sd` | touche les trois cartes (le brochage, lui, reste inconditionnel dans `board_common.h`) | les deux cartes existantes gardent `1` ; non-régression couverte par `check.sh` complet |
 | Le remaniement des drapeaux touche `fast.sh` | garde-fou n°4 | garde réécrit sur `BOARD_CONSOLE_ACTIONS`, et son efficacité re-prouvée par mutation |
 
 ## Divergences à déclarer
@@ -324,5 +335,10 @@ Il faut l'écrire, sinon on se persuadera d'avoir validé plus que ça.
 
 1. `fast.sh` — garde-fou n°4 sur `BOARD_CONSOLE_ACTIONS` et non plus
    `BOARD_LINK_AVAILABLE` : le motif surveillé change de nom.
-2. `board_common.h` — le brochage SD devient conditionnel ; le motif
-   `BOARD_SD_CLK` n'est plus inconditionnellement présent.
+2. `board_common.h` — le brochage SD reste **inconditionnel** malgré
+   l'arrivée de `BOARD_HAS_SD` : `main/usb/msc_disk.c` appelle
+   `sd_present()`/`sd_read_sectors()` sans condition sur les trois cartes,
+   donc `sd_card.c` doit compiler partout, donc le brochage (six
+   `_Static_assert`) ne peut pas passer sous `#if BOARD_HAS_SD`. Seuls le
+   sondage au démarrage (`main.c`) et la commande console `sd` (`console.c`)
+   en dépendent.

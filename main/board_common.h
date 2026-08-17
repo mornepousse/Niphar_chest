@@ -132,11 +132,38 @@ _Static_assert(BOARD_LINK_AVAILABLE,
  * BOARD_CONFIRM_BUTTON : sur une carte a bouton (la cle), garder la console
  * est un compromis assume — voir sec_gate.h — parce que rien n'y isole de
  * toute facon l'USB-Serial-JTAG de l'hote. Avant cette regle, la garantie ne
- * tenait que parce que niphar_chest/board.h ecrit BOARD_CONSOLE_ACTIONS=0 ;
- * elle est maintenant imposee par construction, pas par convention.
+ * tenait que parce que niphar_chest/board.h ecrit BOARD_CONSOLE_ACTIONS=0.
+ *
+ * Ce garde seul ne suffit pourtant pas : il s'accroche a BOARD_CONFIRM_SOURCE,
+ * une declaration de politique que board.h fait librement — rien n'empeche
+ * une carte a lien de se declarer BOARD_CONFIRM_NONE tout en gardant la
+ * console. C'est le second garde plus bas, sur BOARD_LINK_AVAILABLE (un fait
+ * de cablage, pas une politique), qui ferme vraiment cette porte pour toute
+ * la famille coffre. Les deux ensemble : la garantie tient par construction.
  */
 #if BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_LINK && BOARD_CONSOLE_ACTIONS
 #error "la bequille console est interdite sur une carte dont la presence vient du lien : c'est le firmware du coffre"
+#endif
+
+/*
+ * Le garde ci-dessus s'accroche à BOARD_CONFIRM_SOURCE, une déclaration de
+ * politique que board.h fait librement — rien n'oblige une carte à lien à
+ * choisir BOARD_CONFIRM_LINK. Une carte de la famille coffre pourrait passer
+ * à BOARD_CONFIRM_NONE tout en gardant BOARD_CONSOLE_ACTIONS 1 : le garde du
+ * dessus se tairait, et le garde-fou n°4 de scripts/fast.sh, qui lit
+ * BOARD_CONSOLE_ACTIONS, basculerait alors dans sa branche « témoin positif »
+ * et EXIGERAIT la béquille dans le binaire du coffre. La garantie tiendrait
+ * par une déclaration de politique, pas par le fait matériel qu'elle est
+ * censée refléter.
+ *
+ * BOARD_LINK_AVAILABLE, lui, est un fait : le lien SPI existe ou n'existe
+ * pas sur le schéma, aucune carte ne peut le déclarer par convenance sans
+ * mentir sur son propre câblage. C'est donc lui, et pas
+ * BOARD_CONFIRM_SOURCE, qui doit fermer la porte à la béquille console sur
+ * toute la famille coffre — link disponible implique absence de console.
+ */
+#if BOARD_LINK_AVAILABLE && BOARD_CONSOLE_ACTIONS
+#error "carte a lien (famille coffre) : la bequille console est interdite"
 #endif
 
 /* `defined()` n'existe pas dans une expression C : ce contrôle-ci se fait au

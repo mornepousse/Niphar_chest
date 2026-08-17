@@ -1,6 +1,8 @@
 #include "usb/usb_mode.h"
 
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include "usb/mode_otp.h"
 #include "usb/mode_pgp.h"
@@ -29,13 +31,68 @@ static usb_mode_t s_mode;
  */
 static bool s_mode_known;
 
+/*
+ * Drapeau « occupé » — PAS un mutex qui couvrirait toute la bascule.
+ *
+ * Sur wt9932_key, deux tâches peuvent atteindre l'appelant unique de ce
+ * fichier : hmi_task (bouton MODE) et la tâche REPL (commande console, sur
+ * une carte où BOARD_CONSOLE_ACTIONS le permet). Avant cette branche il n'y
+ * avait qu'un seul appelant ; c'est la somme des deux qui crée le défaut.
+ *
+ * usb_device.c documente que usbd n'est pas réentrant : tud_disconnect() et
+ * tusb_deinit() touchent les mêmes registres DWC2 que tud_task_ext(), donc
+ * deux bascules en vol en même temps corromprait cet état partagé. Il faut
+ * donc un exclusion mutuelle — mais PAS une attente bloquante sur toute la
+ * durée de la bascule (jusqu'à 15 s, le temps que le worker CCID sorte).
+ * hmi_task est aussi ce qui fait vivre la LED ; la bloquer sur ce mutex
+ * figerait l'affichage precisement pendant l'attente qu'elle doit signaler.
+ * Le choix retenu est donc un refus immédiat : si une bascule est déjà en
+ * cours, la nouvelle demande échoue tout de suite avec
+ * ESP_ERR_INVALID_STATE plutôt que d'attendre son tour. Le mutex ci-dessous
+ * ne protège QUE la lecture/écriture de s_busy, jamais l'opération entière.
+ *
+ * Statique, comme s_lock dans storage/sd_card.c : une création qui échoue
+ * laisserait un verrou nul, donc exactement le bug qu'on ferme.
+ */
+static StaticSemaphore_t s_busy_lock_buf;
+static SemaphoreHandle_t s_busy_lock;
+static bool s_busy;
+
+/* Rend true et pose s_busy si aucune bascule n'est en cours ; sinon rend
+ * false sans rien changer. Section critique courte : elle ne fait que lire
+ * et écrire le drapeau, jamais attendre après usb_device_uninstall() ou
+ * l'installation d'un mode. */
+static bool busy_try_acquire(void)
+{
+    xSemaphoreTake(s_busy_lock, portMAX_DELAY);
+    const bool was_busy = s_busy;
+    if (!was_busy) {
+        s_busy = true;
+    }
+    xSemaphoreGive(s_busy_lock);
+    return !was_busy;
+}
+
+/* À appeler sur TOUS les chemins de sortie de usb_mode_set() une fois
+ * l'acquisition réussie — y compris les retours d'erreur. Un oubli sur un
+ * seul chemin laisserait s_busy posé pour toujours, et la carte-clé
+ * refuserait indéfiniment toute bascule suivante. */
+static void busy_release(void)
+{
+    xSemaphoreTake(s_busy_lock, portMAX_DELAY);
+    s_busy = false;
+    xSemaphoreGive(s_busy_lock);
+}
+
 esp_err_t usb_mode_init(void)
 {
     /* Rien à installer : au démarrage rien n'est encore branché côté
      * matériel, donc il n'y a rien à désinstaller non plus. */
     s_mode = USB_MODE_NONE;
     s_mode_known = true;
-    return ESP_OK;
+    s_busy_lock = xSemaphoreCreateMutexStatic(&s_busy_lock_buf);
+    s_busy = false;
+    return s_busy_lock != NULL ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 usb_mode_t usb_mode_get(void)
@@ -50,11 +107,23 @@ bool usb_mode_is_known(void)
 
 esp_err_t usb_mode_set(usb_mode_t mode)
 {
+    /*
+     * Refus immédiat, pas une file d'attente : voir le commentaire de
+     * s_busy plus haut. Deux tâches peuvent appeler cette fonction sur
+     * wt9932_key ; laisser la seconde attendre bloquerait celle des deux qui
+     * fait vivre la LED pendant toute la durée d'une bascule.
+     */
+    if (!busy_try_acquire()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (mode == s_mode && s_mode_known) {
+        busy_release();
         return ESP_OK;
     }
 
     if (mode >= USB_MODE_COUNT) {
+        busy_release();
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -113,12 +182,14 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         const usb_mode_state_t st = usb_mode_state_on_failure(s_mode, USB_MODE_FAIL_UNINSTALL);
         s_mode = st.mode;
         s_mode_known = st.known;
+        busy_release();
         return err;
     }
 
     if (mode == USB_MODE_NONE) {
         s_mode = USB_MODE_NONE;
         s_mode_known = true;
+        busy_release();
         return ESP_OK;
     }
 
@@ -139,6 +210,7 @@ esp_err_t usb_mode_set(usb_mode_t mode)
                 usb_mode_state_on_failure(s_mode, USB_MODE_FAIL_AFTER_UNINSTALL);
             s_mode = st.mode;
             s_mode_known = st.known;
+            busy_release();
             return err;
         }
         strings = mode_storage_strings(&string_count);
@@ -169,6 +241,7 @@ esp_err_t usb_mode_set(usb_mode_t mode)
             usb_mode_state_on_failure(s_mode, USB_MODE_FAIL_AFTER_UNINSTALL);
         s_mode = st.mode;
         s_mode_known = st.known;
+        busy_release();
         return err;
     }
 
@@ -185,6 +258,7 @@ esp_err_t usb_mode_set(usb_mode_t mode)
 
     s_mode = mode;
     s_mode_known = true;
+    busy_release();
     return ESP_OK;
 }
 

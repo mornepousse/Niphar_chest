@@ -396,9 +396,13 @@ confirmation intégrée n'existe pas.
 - **Avec appui** pendant l'alternance : l'opération passe. **Observé deux
   fois**, puis trois fois d'affilée pour mener une génération complète à son
   terme.
-- **Une confirmation par opération, pas par session** — mesuré et non déduit :
-  le compteur de signatures de la carte est passé de 0 à 2 pour exactement
-  deux appuis.
+- **Une confirmation par opération, pas par session** — établi par les preuves
+  directes ci-dessus, pas par le compteur de signatures (voir plus bas
+  pourquoi ce compteur ne se lit pas comme « n appuis ⇒ +n ») : sans appui,
+  `6985` observé deux fois ; avec appui pendant l'alternance, l'opération est
+  accordée. Rien n'indique une confirmation qui vaudrait pour toute une
+  session — chaque appui ne couvre que l'opération pour laquelle il a été
+  demandé.
 - Génération complète aboutie : `pub nistp256
   3DEF9F107CB7FE6F02D5351E2F49F54486F3560C [SC]`, sous-clés `[A]` nistp256 et
   `[E]` cv25519, identité « mae (coucou) ».
@@ -453,11 +457,25 @@ sur le bouton et aucun par la commande console.
    la durée (15 s d'alternance contre un flash de 120 ms) ; documentée dans la
    spec.
 
-**Un fait non expliqué, consigné tel quel** : pendant la génération de clés
-complète ci-dessus (trois signatures requises), le compteur de signatures de
-la carte est passé de 2 à 4, soit +2 et non +3. L'écart n'est pas expliqué —
-à vérifier dans `main/security/openpgp_card.c`. Aucun mécanisme n'est supposé
-ici.
+**Le compteur de signatures n'avance pas de un par appui, et c'est voulu** :
+pendant la génération de clés complète ci-dessus (trois opérations soumises à
+l'UIF), le compteur de signatures de la carte est passé de 2 à 4, soit +2 et
+non +3. Ce n'est pas une anomalie — le code explique les deux mécanismes en
+jeu dans `main/security/openpgp_card.c` :
+
+- `INTERNAL AUTHENTICATE` (INS=0x88, lignes 1143-1163) est bien gardé par
+  l'UIF, mais ne fait délibérément pas avancer le compteur DS : le
+  commentaire y cite OpenPGP 3.4 §7.2.10/§7.2.13, la progression du compteur
+  étant une sémantique propre à `PSO:CDS`, pas à `INTERNAL AUTHENTICATE` ;
+- `GENERATE KEY` et `IMPORT` sur le slot signature (lignes 1030 et 1223)
+  appellent `ds_counter_reset()` — le compteur repart à zéro en pleine
+  session, il n'incrémente pas.
+
+Donc « n appuis ⇒ +n au compteur » est faux par conception, pas par anomalie :
+selon l'instruction qui a demandé l'UIF, un appui accordé peut laisser le
+compteur inchangé (INTERNAL AUTHENTICATE) ou même le remettre à zéro
+(GENERATE KEY/IMPORT sur le slot signature). La propriété « une confirmation
+par opération » reste vraie ; elle ne se lit simplement pas sur ce compteur.
 
 **Pas prouvé** :
 
