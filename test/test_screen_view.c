@@ -93,12 +93,26 @@ static void test_granted_and_refused_read_differently(void)
     TEST_ASSERT(strcmp(g, r) != 0, "accord et refus ne s'ecrivent pas pareil");
 }
 
-/* Au repos, l'ecran nomme le mode — c'est ce qui leve l'ambiguite du rouge. */
-static void test_idle_names_the_mode(void)
+/* Au repos, l'ecran nomme le mode — c'est ce qui leve l'ambiguite du rouge.
+ * Et deux modes quelconques n'en partagent jamais un, meme trou que pour les
+ * libelles d'operation transpose au nom de mode : une seule paire (PGP vs
+ * OTP) ne voit pas une mutation qui ferait fuiter le nom d'un mode connu
+ * vers un autre, ou vers le hors-enum jamais compare a rien. Le tableau
+ * couvre les cinq valeurs — NONE, STORAGE, PGP, OTP, et USB_MODE_COUNT
+ * (hors enum) — et compare chaque paire. */
+static void test_every_mode_has_a_distinct_name(void)
 {
-    const char *p = screen_view_of(USB_MODE_PGP, false, SEC_OP_UNKNOWN, LED_EVENT_NONE).title;
-    const char *o = screen_view_of(USB_MODE_OTP, false, SEC_OP_UNKNOWN, LED_EVENT_NONE).title;
-    TEST_ASSERT(strcmp(p, o) != 0, "deux modes ne portent pas le meme nom");
+    const usb_mode_t modes[] = { USB_MODE_NONE, USB_MODE_STORAGE, USB_MODE_PGP,
+                                  USB_MODE_OTP, USB_MODE_COUNT };
+    const unsigned n = sizeof(modes) / sizeof(modes[0]);
+    for (unsigned i = 0; i < n; i++) {
+        const char *a = screen_view_of(modes[i], false, SEC_OP_UNKNOWN, LED_EVENT_NONE).title;
+        TEST_ASSERT(a != NULL && a[0] != '\0', "chaque mode a un nom non vide");
+        for (unsigned j = i + 1; j < n; j++) {
+            const char *b = screen_view_of(modes[j], false, SEC_OP_UNKNOWN, LED_EVENT_NONE).title;
+            TEST_ASSERT(strcmp(a, b) != 0, "deux modes ne partagent pas un nom");
+        }
+    }
 }
 
 void test_screen_view(void)
@@ -111,5 +125,5 @@ void test_screen_view(void)
     TEST_RUN(test_verdict_beats_switch);
     TEST_RUN(test_wait_beats_pending_verdict);
     TEST_RUN(test_granted_and_refused_read_differently);
-    TEST_RUN(test_idle_names_the_mode);
+    TEST_RUN(test_every_mode_has_a_distinct_name);
 }
