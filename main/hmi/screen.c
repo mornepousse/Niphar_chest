@@ -14,6 +14,7 @@
 
 #include "hmi/hmi.h"
 #include "hmi/screen_anim.h"
+#include "hmi/screen_logo.h"
 #include "hmi/screen_view.h"
 
 static const char *TAG = "screen";
@@ -241,6 +242,37 @@ static void render_frame(const hmi_snapshot_t *snap, uint32_t now)
     }
 }
 
+/* Logo Niphargus, 64x64, en hmi/screen_logo.h (genere par
+ * tools/svg2bitmap.py depuis assets/nephar_logo_y.svg). MSB en tete de
+ * chaque octet, ligne par ligne — voir le commentaire de tete du fichier
+ * genere pour le format exact. */
+static void draw_logo(int x0, int y0)
+{
+    for (int y = 0; y < (int)SCREEN_LOGO_HEIGHT; y++) {
+        for (int x = 0; x < (int)SCREEN_LOGO_WIDTH; x++) {
+            const uint32_t byte_idx = (uint32_t)y * (SCREEN_LOGO_WIDTH / 8u) + (uint32_t)x / 8u;
+            const bool on = (screen_logo_bits[byte_idx] & (0x80u >> (x % 8))) != 0;
+            fb_set_pixel(x0 + x, y0 + y, on);
+        }
+    }
+}
+
+/*
+ * Ecran d'accueil : logo a gauche (pleine hauteur de l'ecran), nom et version
+ * a droite. Duree et bascule vers l'ecran normal decidees par
+ * screen_splash_active() (hmi/screen_anim.h, pur, teste sur l'hote) — rien
+ * de decidable ici, juste la disposition des pixels, comme render_frame().
+ * N'affiche ni mode ni instantane IHM : au tout premier appel de la tache,
+ * rien de tout cela n'est encore une information a montrer.
+ */
+static void render_splash(void)
+{
+    fb_clear();
+    draw_logo(0, 0);
+    draw_text(SCREEN_LOGO_WIDTH + 4, 20, "NIPHARGUS");
+    draw_text(SCREEN_LOGO_WIDTH + 4, 32, NIPHAR_VERSION);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Pilote SSD1306.                                                            */
 /* ------------------------------------------------------------------------- */
@@ -322,12 +354,23 @@ static esp_err_t ssd1306_flush(void)
 static void screen_task(void *arg)
 {
     (void)arg;
+    /* Ancre de l'ecran d'accueil : le demarrage de CETTE tache, pas la mise
+     * sous tension — screen_init() est deja appele apres hmi_init() (voir
+     * main.c), donc "au demarrage de la tache d'affichage" est la seule
+     * definition que ce fichier puisse honorer sans connaitre l'instant de
+     * boot. */
+    const uint32_t splash_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
+
     for (;;) {
         hmi_snapshot_t snap;
         hmi_snapshot(&snap);
 
         const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-        render_frame(&snap, now);
+        if (screen_splash_active(splash_start_ms, now)) {
+            render_splash();
+        } else {
+            render_frame(&snap, now);
+        }
 
         /* Erreur I2C : on journalise et on saute cette image, jamais de
          * blocage — la tache IHM ne doit jamais attendre apres celle-ci. */
