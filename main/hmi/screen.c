@@ -503,28 +503,103 @@ static void draw_logo(int x0, int y0)
  * N'affiche ni mode ni instantane IHM : au tout premier appel de la tache,
  * rien de tout cela n'est encore une information a montrer.
  */
+/*
+ * Le meme logo a la moitie de l'echelle : 32x32 au lieu de 64x64, par
+ * REDUCTION OR de blocs de 2x2 — un pave de quatre pixels source donne un pixel
+ * allume si l'un des quatre l'etait.
+ *
+ * L'union plutot que la majorite : sur une silhouette de trait fin, exiger deux
+ * pixels sur quatre effacerait les traits d'un pixel de large et troueraient le
+ * dessin. L'union epaissit legerement, ce qui est le bon sens de l'erreur a
+ * cette taille.
+ *
+ * Deux usages, tous deux nes de remarques de Mae : l'ecran d'accueil, ou le logo
+ * pleine taille chevauchait le texte (« le splash ne correspond pas du tout a ce
+ * tu m'avais montre, le texte chevauche le logo »), et la veille, ou il se
+ * promene.
+ */
+static void draw_logo_half(int x0, int y0)
+{
+    for (int y = 0; y < (int)SCREEN_LOGO_HEIGHT / 2; y++) {
+        for (int x = 0; x < (int)SCREEN_LOGO_WIDTH / 2; x++) {
+            bool on = false;
+            for (int dy = 0; dy < 2 && !on; dy++) {
+                for (int dx = 0; dx < 2 && !on; dx++) {
+                    const int sx = x * 2 + dx, sy = y * 2 + dy;
+                    const uint32_t idx =
+                        (uint32_t)sy * (SCREEN_LOGO_WIDTH / 8u) + (uint32_t)sx / 8u;
+                    on = (screen_logo_bits[idx] & (0x80u >> (sx % 8))) != 0;
+                }
+            }
+            if (on) {
+                fb_set_pixel(x0 + x, y0 + y, true);
+            }
+        }
+    }
+}
+
+#define SCREEN_LOGO_HALF_W ((int)SCREEN_LOGO_WIDTH / 2)
+#define SCREEN_LOGO_HALF_H ((int)SCREEN_LOGO_HEIGHT / 2)
+
 static void render_splash(void)
 {
     fb_clear();
 
     /*
-     * Logo centre en haut, nom et version centres en dessous.
+     * Logo a demi-echelle en haut, nom et version centres en dessous.
      *
-     * L'ancienne disposition posait le texte a x = SCREEN_LOGO_WIDTH + 4, soit
-     * 68, ou il ne restait que 60 px — dix caracteres. Or il n'y a AUCUN tag
-     * dans ce depot : « git describe --tags --always --dirty » rend un hash
-     * (« 6da0d70-dirty », treize caracteres), et la version etait donc coupee a
-     * l'ecran. Sans risque memoire — fb_set_pixel() borne les quatre cotes —
-     * mais un affichage tronque est un affichage faux.
+     * Deux defauts corriges ici, dans l'ordre ou ils ont ete trouves :
+     *
+     * 1. Le texte etait pose a x = SCREEN_LOGO_WIDTH + 4, soit 68, ou il ne
+     *    restait que 60 px — dix caracteres. Or il n'y a AUCUN tag dans ce
+     *    depot : « git describe --tags --always --dirty » rend un hash de treize
+     *    caracteres, et la version etait donc coupee. Sans risque memoire
+     *    (fb_set_pixel() borne les quatre cotes) mais un affichage tronque est
+     *    un affichage faux.
+     * 2. Ma premiere correction remontait le logo pleine taille de 8 px : il
+     *    occupait encore y=0..55 et CHEVAUCHAIT le texte pose a y=47. Mae l'a vu
+     *    tout de suite. A demi-echelle le logo tient dans 32 lignes et il reste
+     *    de la place franche.
      *
      * En pleine largeur, vingt-un caracteres passent : de quoi tenir un
      * « v0.3.1-12-gdeadbee » entier le jour ou un tag existera.
      */
-    const int logo_x = (int)screen_center_x(BOARD_OLED_WIDTH, SCREEN_LOGO_WIDTH);
-    draw_logo(logo_x, -8);   /* remonte : les 8 dernieres lignes cedent la place au texte */
+    draw_logo_half((int)screen_center_x(BOARD_OLED_WIDTH, SCREEN_LOGO_HALF_W), 2);
+    draw_text_centered(SCREEN_LOGO_HALF_H + 8,  "NIPHARGUS",     true);
+    draw_text_centered(SCREEN_LOGO_HALF_H + 19, NIPHAR_VERSION, true);
+}
 
-    draw_text_centered((int)BOARD_OLED_HEIGHT - 17, "NIPHARGUS", true);
-    draw_text_centered((int)BOARD_OLED_HEIGHT - 8, NIPHAR_VERSION, true);
+/*
+ * Veille : le logo se PROMENE, au lieu que la dalle s'eteigne.
+ *
+ * Mae voulait le logo en veille (« en veille sa serai cool d'avoir le logo en
+ * waiting ») plutot qu'un ecran noir. Un logo fixe se graverait dans la dalle ;
+ * a demi-echelle et en mouvement, il couvre 1024 pixels sur 8192 et chaque pixel
+ * n'est donc allume qu'une fraction du temps. On y gagne des deux cotes.
+ *
+ * Le mode voyage AVEC le logo quand quelque chose est expose : le taire pendant
+ * la veille tairait la seule information dont l'absence peut surprendre — qu'une
+ * carte OpenPGP est branchee. Et il voyage plutot que d'etre fixe en bas, sinon
+ * c'est lui qui marquerait la dalle.
+ */
+static void render_standby(usb_mode_t mode, uint32_t now)
+{
+    fb_clear();
+
+    const char *label   = (mode == USB_MODE_NONE) ? NULL : screen_mode_name(mode);
+    const int   label_w = (label != NULL) ? (int)screen_text_px(label) : 0;
+    const int   group_w = (label_w > SCREEN_LOGO_HALF_W) ? label_w : SCREEN_LOGO_HALF_W;
+    const int   group_h = SCREEN_LOGO_HALF_H + ((label != NULL) ? 10 : 0);
+
+    const uint16_t span_x = (uint16_t)((int)BOARD_OLED_WIDTH  - group_w);
+    const uint16_t span_y = (uint16_t)((int)BOARD_OLED_HEIGHT - group_h);
+    const int x = (int)screen_wander(now, SCREEN_WANDER_X_MS, span_x);
+    const int y = (int)screen_wander(now, SCREEN_WANDER_Y_MS, span_y);
+
+    draw_logo_half(x + (group_w - SCREEN_LOGO_HALF_W) / 2, y);
+    if (label != NULL) {
+        draw_text(x + (group_w - label_w) / 2, y + SCREEN_LOGO_HALF_H + 2, label, true);
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -663,19 +738,22 @@ static void screen_task(void *arg)
         }
 
         /*
-         * Extinction anti-remanence. Un OLED qui affiche les 1425 pixels du logo
-         * en continu les garde en trace permanente ; le decalage de
-         * screen_shift_px() ne fait que repartir la brulure sur quelques pixels
-         * de plus, il ne la supprime pas.
+         * Veille anti-remanence. Un OLED qui affiche le meme contenu en continu
+         * le garde en trace permanente.
          *
-         * Jamais pendant l'accueil (l'ecran vient de s'allumer), et jamais tant
-         * qu'une confirmation est en attente : eteindre la dalle sous le nez de
-         * quelqu'un a qui on demande d'appuyer serait exactement le contraire du
-         * but de cet ecran.
+         * La veille PROMENE le logo au lieu d'eteindre : c'est ce que Mae voulait
+         * voir, et c'est aussi une meilleure protection qu'un logo fixe. Mais elle
+         * ne suffit pas seule pour une cle branchee des annees, d'ou l'extinction
+         * franche au bout de SCREEN_SLEEP_AFTER_MS.
+         *
+         * Jamais de veille pendant l'accueil (la dalle vient de s'allumer), ni
+         * tant qu'une confirmation attend : eteindre — ou meme animer — l'ecran
+         * sous le nez de quelqu'un a qui on demande d'appuyer serait exactement
+         * le contraire du but de cet ecran.
          */
-        const bool want_on = splash
-                          || snap.confirm_pending
-                          || !screen_blank_after_ms(last_activity_ms, now);
+        const bool busy     = splash || snap.confirm_pending;
+        const bool standby  = !busy && screen_blank_after_ms(last_activity_ms, now);
+        const bool want_on  = busy || !screen_sleep_after_ms(last_activity_ms, now);
 
         if (want_on != display_on) {
             const esp_err_t derr = ssd1306_display(want_on);
@@ -696,6 +774,8 @@ static void screen_task(void *arg)
 
         if (splash) {
             render_splash();
+        } else if (standby) {
+            render_standby(snap.mode, now);
         } else {
             render_frame(&snap, now);
         }

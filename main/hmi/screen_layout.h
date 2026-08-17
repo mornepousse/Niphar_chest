@@ -40,6 +40,12 @@
  * plus — sans extinction, il ne la supprime pas. */
 #define SCREEN_BLANK_AFTER_MS (60u * 1000u)
 
+/* Extinction franche de la dalle, apres la veille. Le logo errant repartit la
+ * brulure mais ne l'annule pas : sur une cle branchee des annees, il finit par
+ * marquer. Une demi-heure laisse tout le temps de voir l'animation, et coupe
+ * avant que ca compte. */
+#define SCREEN_SLEEP_AFTER_MS (30u * 60u * 1000u)
+
 typedef enum {
     SCREEN_VERDICT_NONE = 0,   /* rien a dessiner */
     SCREEN_VERDICT_CHECK,      /* la coche : accorde */
@@ -189,4 +195,63 @@ static inline const char *screen_op_short(sec_op_t op)
     case SEC_OP_UNKNOWN: return "INCONNU";
     default:             return "INCONNU";
     }
+}
+
+/*
+ * Logo errant de la veille : deux periodes, une par axe.
+ *
+ * Volontairement premieres entre elles et non multiples l'une de l'autre. Si les
+ * deux axes avancaient du meme pas, le logo suivrait une diagonale et ne
+ * visiterait qu'une bande de la dalle — la brulure se concentrerait sur cette
+ * bande au lieu de se repartir, ce qui annulerait tout l'interet de le promener.
+ * Avec 37 s et 23 s, le trajet ne se referme qu'au bout de 37 x 23 = 851 s.
+ */
+#define SCREEN_WANDER_X_MS 37000u
+#define SCREEN_WANDER_Y_MS 23000u
+
+/*
+ * Coordonnee en dents de scie dans [0, span], de periode 2 x period_ms.
+ *
+ * Une dent de scie et non un modulo : un modulo ferait SAUTER le logo d'un bord
+ * a l'autre a chaque cycle, ce qui se voit et ressemble a un defaut. La rampe
+ * monte, atteint span a la demi-periode, et redescend.
+ *
+ * period_ms == 0 rend 0 sans diviser. Inatteignable avec les constantes
+ * ci-dessus, et c'est justement pourquoi rien d'autre qu'un test ne le protege :
+ * une division par zero sur un P4 ne leve pas d'exception, elle rend un
+ * resultat indefini — donc un logo pose n'importe ou, y compris hors cadre.
+ */
+static inline uint16_t screen_wander(uint32_t now_ms, uint32_t period_ms, uint16_t span)
+{
+    if (period_ms == 0u) {
+        return 0;
+    }
+    /* Pas de garde sur span == 0 : le produit ci-dessous rend deja 0, et une
+     * mutation retirant une telle garde reste verte — signe qu'elle etait du
+     * code mort plutot qu'une protection. test_wander_zero_span_is_immobile()
+     * tient tout de meme le comportement, par le chemin arithmetique. */
+    const uint32_t phase = now_ms % (2u * period_ms);
+    const uint32_t up    = (phase < period_ms) ? phase : (2u * period_ms - phase);
+    /* span <= 128 et up <= period_ms : le produit tient largement dans 32 bits
+     * pour les periodes du projet (128 x 37000 = 4,7 M). */
+    return (uint16_t)((up * (uint32_t)span) / period_ms);
+}
+
+/*
+ * La dalle doit-elle etre franchement ETEINTE ?
+ *
+ * Deux seuils et non un. screen_blank_after_ms() fait entrer en veille — le logo
+ * se promene, ce que Mae voulait voir plutot qu'un ecran noir. Celui-ci coupe
+ * pour de bon bien plus tard : le logo errant repartit la brulure sur huit fois
+ * plus de surface mais ne l'annule pas, et une cle reste branchee des annees.
+ *
+ * L'ordre entre les deux seuils est ce qui compte, et rien dans le compilateur
+ * ne le garantit : si l'extinction arrivait la premiere, l'animation ne serait
+ * jamais visible une seule image. C'est
+ * test_sleep_comes_strictly_after_standby() qui tient cette relation.
+ */
+static inline bool screen_sleep_after_ms(uint32_t last_activity_ms, uint32_t now_ms)
+{
+    const uint32_t idle = now_ms - last_activity_ms;   /* juste au repassage a zero */
+    return idle >= SCREEN_SLEEP_AFTER_MS;
 }

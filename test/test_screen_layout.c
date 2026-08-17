@@ -343,6 +343,145 @@ static void test_op_short_out_of_range_says_unknown(void)
                 "une valeur aberrante ne se dit PAS comme signer");
 }
 
+/* ------------------------------------------------------------------------- */
+/* Logo errant de la veille.                                                  */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * Mae voulait le logo en veille plutot qu'un ecran noir. Un logo FIXE se
+ * graverait dans la dalle ; en le promenant, chaque pixel n'est allume qu'une
+ * fraction du temps. screen_wander() rend une coordonnee en dents de scie, et
+ * ce qui doit etre garanti n'est pas une valeur precise mais une BORNE : jamais
+ * au-dela de `span`, sinon le logo sort du cadre et se fait couper.
+ */
+static void test_wander_stays_within_bounds(void)
+{
+    /* Balayage large, avec un pas qui n'est un diviseur d'aucune des deux
+     * periodes : un pas de 1000 ms tomberait toujours sur des instants ronds et
+     * ne verrait jamais l'interieur des rampes. */
+    for (uint32_t t = 0; t < 400000u; t += 137u) {
+        TEST_ASSERT(screen_wander(t, SCREEN_WANDER_X_MS, 96u) <= 96u,
+                    "l'abscisse errante reste dans la dalle");
+        TEST_ASSERT(screen_wander(t, SCREEN_WANDER_Y_MS, 23u) <= 23u,
+                    "l'ordonnee errante reste dans la dalle");
+    }
+}
+
+/* Les deux extremes sont ATTEINTS : une fonction qui rendrait toujours 0
+ * passerait le test de bornes ci-dessus sans rien promener. */
+static void test_wander_reaches_both_ends(void)
+{
+    TEST_ASSERT_EQ(screen_wander(0u, 1000u, 96u), 0, "depart a l'origine");
+    TEST_ASSERT_EQ(screen_wander(1000u, 1000u, 96u), 96, "extreme atteint a la demi-periode");
+    TEST_ASSERT_EQ(screen_wander(2000u, 1000u, 96u), 0, "retour a l'origine a la periode pleine");
+    TEST_ASSERT_EQ(screen_wander(500u, 1000u, 96u), 48, "milieu de la rampe montante");
+    TEST_ASSERT_EQ(screen_wander(1500u, 1000u, 96u), 48, "milieu de la rampe descendante");
+}
+
+/* Symetrie de la dent de scie : l'aller et le retour passent par les memes
+ * points. Une mutation qui casserait la rampe descendante (en la faisant monter
+ * aussi) laisserait les bornes intactes mais briserait ceci. */
+static void test_wander_is_symmetric(void)
+{
+    const uint32_t p = 1000u;
+    for (uint32_t i = 0; i <= p; i += 7u) {
+        TEST_ASSERT_EQ(screen_wander(i, p, 96u), screen_wander(2u * p - i, p, 96u),
+                       "l'aller et le retour se superposent");
+    }
+}
+
+/*
+ * Une periode nulle ne divise pas par zero.
+ *
+ * Inatteignable avec les constantes du projet — et c'est exactement pourquoi
+ * rien d'autre que ce test ne le protege. Une division par zero sur un P4 ne
+ * lance pas d'exception : elle rend un resultat indefini, donc un logo place
+ * n'importe ou, y compris hors cadre.
+ */
+static void test_wander_survives_zero_period(void)
+{
+    TEST_ASSERT_EQ(screen_wander(12345u, 0u, 96u), 0, "periode nulle : pas de division");
+    TEST_ASSERT_EQ(screen_wander(0u, 0u, 96u), 0, "periode nulle a l'instant zero");
+}
+
+static void test_wander_zero_span_is_immobile(void)
+{
+    for (uint32_t t = 0; t < 5000u; t += 311u) {
+        TEST_ASSERT_EQ(screen_wander(t, 1000u, 0u), 0, "aucune place : aucun deplacement");
+    }
+}
+
+/* Les deux axes ne doivent pas avancer du meme pas, sinon le logo suit une
+ * diagonale et ne visite qu'une bande de la dalle — la brulure se concentrerait
+ * sur cette bande au lieu de se repartir. */
+static void test_wander_axes_have_different_periods(void)
+{
+    TEST_ASSERT(SCREEN_WANDER_X_MS != SCREEN_WANDER_Y_MS,
+                "les deux axes ont des periodes distinctes");
+    /* Et pas un simple multiple l'un de l'autre, ce qui refermerait le trajet
+     * sur lui-meme au bout de deux periodes. */
+    TEST_ASSERT(SCREEN_WANDER_X_MS % SCREEN_WANDER_Y_MS != 0u,
+                "l'une n'est pas un multiple de l'autre");
+    TEST_ASSERT(SCREEN_WANDER_Y_MS % SCREEN_WANDER_X_MS != 0u,
+                "ni l'inverse");
+}
+
+static void test_wander_survives_millisecond_wraparound(void)
+{
+    const uint32_t p = 1000u;
+    /* A cheval sur le repassage a zero : la dent de scie doit rester continue,
+     * donc bornee, sans saut hors cadre. */
+    for (uint32_t i = 0; i < 4000u; i += 13u) {
+        const uint32_t t = 0xFFFFFF00u + i;   /* repasse par zero en cours de route */
+        TEST_ASSERT(screen_wander(t, p, 96u) <= 96u,
+                    "borne tenue a cheval sur le repassage a zero");
+    }
+}
+
+
+/*
+ * Extinction franche, APRES la veille.
+ *
+ * Le test qui compte n'est pas le seuil mais son ORDRE. Si l'extinction
+ * arrivait avant ou en meme temps que la veille, le logo errant que Mae a
+ * demande ne serait jamais visible une seule image — et rien dans le
+ * compilateur ne relie ces deux constantes.
+ */
+static void test_sleep_comes_strictly_after_standby(void)
+{
+    TEST_ASSERT(SCREEN_SLEEP_AFTER_MS > SCREEN_BLANK_AFTER_MS,
+                "l'extinction arrive apres la veille, jamais avant");
+
+    /* Et il existe bien un intervalle ou l'on est en veille SANS etre eteint :
+     * c'est la fenetre pendant laquelle le logo se promene. */
+    const uint32_t t0 = 500u;
+    const uint32_t mid = t0 + SCREEN_BLANK_AFTER_MS
+                       + (SCREEN_SLEEP_AFTER_MS - SCREEN_BLANK_AFTER_MS) / 2u;
+    TEST_ASSERT(screen_blank_after_ms(t0, mid), "en veille au milieu de la fenetre");
+    TEST_ASSERT(!screen_sleep_after_ms(t0, mid), "mais pas encore eteint");
+}
+
+static void test_sleep_bounds_are_exact(void)
+{
+    const uint32_t t0 = 1234u;
+    TEST_ASSERT(!screen_sleep_after_ms(t0, t0), "allume a l'instant zero");
+    TEST_ASSERT(!screen_sleep_after_ms(t0, t0 + SCREEN_SLEEP_AFTER_MS - 1u),
+                "encore allume une milliseconde avant");
+    TEST_ASSERT(screen_sleep_after_ms(t0, t0 + SCREEN_SLEEP_AFTER_MS),
+                "eteint pile au seuil");
+    TEST_ASSERT(screen_sleep_after_ms(t0, t0 + SCREEN_SLEEP_AFTER_MS + 60000u),
+                "toujours eteint bien apres");
+}
+
+static void test_sleep_survives_millisecond_wraparound(void)
+{
+    const uint32_t t0 = 0xFFFFFFFFu - (SCREEN_SLEEP_AFTER_MS / 2u);
+    TEST_ASSERT(!screen_sleep_after_ms(t0, t0 + SCREEN_SLEEP_AFTER_MS - 1u),
+                "allume juste avant le seuil, a cheval sur le repassage a zero");
+    TEST_ASSERT(screen_sleep_after_ms(t0, t0 + SCREEN_SLEEP_AFTER_MS),
+                "eteint au seuil, a cheval sur le repassage a zero");
+}
+
 void test_screen_layout(void)
 {
     TEST_SUITE("screen_layout");
@@ -364,4 +503,14 @@ void test_screen_layout(void)
     TEST_RUN(test_op_short_fits_the_double_height_font);
     TEST_RUN(test_op_short_maps_each_operation);
     TEST_RUN(test_op_short_out_of_range_says_unknown);
+    TEST_RUN(test_wander_stays_within_bounds);
+    TEST_RUN(test_wander_reaches_both_ends);
+    TEST_RUN(test_wander_is_symmetric);
+    TEST_RUN(test_wander_survives_zero_period);
+    TEST_RUN(test_wander_zero_span_is_immobile);
+    TEST_RUN(test_wander_axes_have_different_periods);
+    TEST_RUN(test_wander_survives_millisecond_wraparound);
+    TEST_RUN(test_sleep_comes_strictly_after_standby);
+    TEST_RUN(test_sleep_bounds_are_exact);
+    TEST_RUN(test_sleep_survives_millisecond_wraparound);
 }
