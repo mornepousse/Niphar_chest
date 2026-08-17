@@ -150,6 +150,13 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         mode_pgp_stop();
     }
 
+    /* Même raison côté HID : retirer la table OTP du répartiteur unique
+     * (usb/hid_dispatch.h) avant que la pile ne se démonte, sur le modèle
+     * exact du CCID ci-dessus. */
+    if (s_mode == USB_MODE_OTP) {
+        mode_otp_stop();
+    }
+
     /* À partir d'ici la pile est démontée ou en train de l'être : plus rien
      * n'est garanti tant qu'une installation n'a pas réussi. */
     s_mode_known = false;
@@ -263,6 +270,14 @@ esp_err_t usb_mode_set(usb_mode_t mode)
          * « à l'entrée du mode » plutôt qu'au démarrage (tâche 12).
          */
         mode_pgp_data_load();
+    }
+
+    if (mode == USB_MODE_OTP) {
+        /* Après coup, jamais avant : tant que l'installation n'a pas
+         * réussi, poser la table OTP au répartiteur HID (usb/
+         * hid_dispatch.h) ferait répondre un mode qu'aucun hôte n'a encore
+         * en face. Voir mode_otp_start() dans mode_otp.c. */
+        mode_otp_start();
     }
 
     s_mode = mode;

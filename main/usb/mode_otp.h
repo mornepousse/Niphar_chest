@@ -34,3 +34,18 @@ const uint8_t *mode_otp_hs_config(void);
  * usb_device_serial() à chaque appel — bon marché, celui-ci met en cache.
  */
 const char **mode_otp_strings(int *out_count);
+
+/*
+ * Pose la table de handlers HID du mode OTP au répartiteur unique (usb/
+ * hid_dispatch.h). À appeler par usb_mode.c juste après un
+ * usb_device_install() réussi vers le mode OTP — jamais avant. Voir le
+ * commentaire en tête de la définition dans mode_otp.c.
+ */
+void mode_otp_start(void);
+
+/*
+ * Retire la table de handlers HID du mode OTP du répartiteur (NULL). À
+ * appeler par usb_mode.c juste AVANT usb_device_uninstall() quand on quitte
+ * le mode OTP — jamais après. Sur le modèle exact de mode_pgp_stop().
+ */
+void mode_otp_stop(void);

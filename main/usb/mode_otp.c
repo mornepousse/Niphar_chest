@@ -4,6 +4,7 @@
 
 #include "otp_hid.h"
 #include "otp_proto.h"
+#include "usb/hid_dispatch.h"
 #include "usb/usb_device.h"
 
 /*
@@ -115,11 +116,14 @@ static const char *s_strings[STRID_COUNT] = {
 /* ------------------------------------------------------------------------ */
 
 /*
- * Contrairement au CCID, HID est une vraie classe TinyUSB : ces callbacks
- * sont des symboles faibles de hid_device.c que TinyUSB appelle directement
- * une fois CFG_TUD_HID=1 (tusb_config.h) et l'interface enregistrée par
- * TUD_HID_DESCRIPTOR ci-dessus. Pas de force-link à la ccid_init() : aucun
- * pilote applicatif à tirer dans l'archive.
+ * Contrairement au CCID, HID est une vraie classe TinyUSB : ces handlers
+ * répondent aux callbacks de hid_device.c, que TinyUSB appelle une fois
+ * CFG_TUD_HID=1 (tusb_config.h) et l'interface enregistrée par
+ * TUD_HID_DESCRIPTOR ci-dessus. Mais ces callbacks sont des symboles globaux
+ * (un seul définisseur possible dans tout le lien) : depuis l'arrivée d'un
+ * second mode HID, c'est usb/hid_dispatch.c qui les possède et route vers le
+ * mode installé. Ici, on n'expose que des fonctions nommées, statiques, dans
+ * une table `s_otp_handlers` — jamais de symbole `tud_hid_*_cb` directement.
  *
  * Il n'y a qu'une seule interface HID installée à la fois (le coffre n'est
  * jamais clavier + OTP en même temps, à la différence du dongle KeSp d'où
@@ -132,17 +136,14 @@ static const char *s_strings[STRID_COUNT] = {
  * plus haut.
  */
 
-uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance)
+static const uint8_t *otp_report_desc(void)
 {
-    (void)instance;
     return desc_hid_report;
 }
 
-uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
-                               hid_report_type_t report_type, uint8_t *buffer,
-                               uint16_t reqlen)
+static uint16_t otp_get_report(uint8_t report_id, hid_report_type_t report_type,
+                               uint8_t *buffer, uint16_t reqlen)
 {
-    (void)instance;
     (void)report_id;
     (void)reqlen;
     if (report_type != HID_REPORT_TYPE_FEATURE) {
@@ -152,11 +153,9 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id,
     return OTP_FEATURE_RPT_SIZE;
 }
 
-void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
-                           hid_report_type_t report_type, uint8_t const *buffer,
-                           uint16_t bufsize)
+static void otp_set_report(uint8_t report_id, hid_report_type_t report_type,
+                           const uint8_t *buffer, uint16_t bufsize)
 {
-    (void)instance;
     (void)report_id;
     if (report_type != HID_REPORT_TYPE_FEATURE) {
         return;
@@ -165,6 +164,14 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         otp_proto_on_write(buffer);
     }
 }
+
+/* Table remise au répartiteur HID unique (usb/hid_dispatch.c) tant que le
+ * mode OTP est actif — voir mode_otp_start()/mode_otp_stop() plus bas. */
+static const hid_handlers_t s_otp_handlers = {
+    .report_desc = otp_report_desc,
+    .get_report  = otp_get_report,
+    .set_report  = otp_set_report,
+};
 
 /* ------------------------------------------------------------------------ */
 
@@ -198,4 +205,28 @@ const char **mode_otp_strings(int *out_count)
         *out_count = STRID_COUNT;
     }
     return s_strings;
+}
+
+/*
+ * Pose la table de handlers OTP au répartiteur HID unique (usb/
+ * hid_dispatch.c). À appeler juste après un usb_device_install() réussi vers
+ * le mode OTP — jamais avant : tant que rien n'est installé, laisser
+ * tud_hid_*_cb router vers l'OTP n'aurait aucun hôte en face. Symétrique de
+ * mode_pgp_data_load() côté CCID.
+ */
+void mode_otp_start(void)
+{
+    hid_dispatch_set(&s_otp_handlers);
+}
+
+/*
+ * Retire la table de handlers OTP du répartiteur (NULL). À appeler juste
+ * AVANT usb_device_uninstall() quand on quitte le mode OTP — sur le modèle
+ * exact de mode_pgp_stop() côté CCID : une fois la désinstallation lancée,
+ * plus aucun tud_hid_*_cb ne doit pouvoir retomber sur des handlers dont le
+ * mode n'est plus actif.
+ */
+void mode_otp_stop(void)
+{
+    hid_dispatch_set(NULL);
 }

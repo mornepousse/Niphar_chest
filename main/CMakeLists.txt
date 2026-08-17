@@ -5,6 +5,7 @@ set(srcs
     "sys/cr_crc16.c"
     "usb/usb_device.c"
     "usb/usb_mode.c"
+    "usb/hid_dispatch.c"
     "usb/usb_mode_name.c"
     "usb/mode_storage.c"
     "usb/mode_pgp.c"
