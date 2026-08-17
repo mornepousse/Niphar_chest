@@ -102,12 +102,22 @@ static void test_peek_on_idle_is_idle(void)
 }
 
 /* L'ecran doit nommer ce qu'il fait confirmer. Un numero de slot ne le permet
- * pas : toutes les operations CCID partagent le meme slot. */
+ * pas : toutes les operations CCID partagent le meme slot.
+ *
+ * sec_confirm_armed_op() a existe puis a ete retiree en revue : deux
+ * accesseurs separes (peek() + un lecteur d'operation) laissaient un appelant
+ * lire l'etat et l'operation en deux appels non synchronises, ce qu'un
+ * reset()+arm() intercale peut couper — l'ecran montrerait alors l'etat d'une
+ * operation avec le libelle d'une autre. sec_confirm_peek_labeled() est le
+ * seul accesseur desormais : un seul appel rend les deux, comme le contrat
+ * l'exige (voir CONCURRENCY MODEL dans sec_confirm.c). */
 static void test_armed_op_is_reported(void)
 {
     sec_confirm_reset();
     sec_confirm_arm(0xF0u, SEC_OP_SIGN, 1000);
-    TEST_ASSERT_EQ(sec_confirm_armed_op(), SEC_OP_SIGN, "l'operation armee est rendue");
+    sec_op_t op = SEC_OP_UNKNOWN;
+    sec_confirm_peek_labeled(1000, &op);
+    TEST_ASSERT_EQ(op, SEC_OP_SIGN, "l'operation armee est rendue");
 }
 
 static void test_armed_op_survives_peek(void)
@@ -115,8 +125,9 @@ static void test_armed_op_survives_peek(void)
     sec_confirm_reset();
     sec_confirm_arm(0xF0u, SEC_OP_DECRYPT, 1000);
     (void)sec_confirm_peek(1100);
-    TEST_ASSERT_EQ(sec_confirm_armed_op(), SEC_OP_DECRYPT,
-                   "peek ne detruit pas l'operation");
+    sec_op_t op = SEC_OP_UNKNOWN;
+    sec_confirm_peek_labeled(1100, &op);
+    TEST_ASSERT_EQ(op, SEC_OP_DECRYPT, "peek ne detruit pas l'operation");
 }
 
 /* Rien d'arme : l'ecran ne doit pas afficher l'operation PRECEDENTE, sinon il
@@ -126,8 +137,9 @@ static void test_reset_clears_the_op(void)
     sec_confirm_reset();
     sec_confirm_arm(0xF0u, SEC_OP_AUTH, 1000);
     sec_confirm_reset();
-    TEST_ASSERT_EQ(sec_confirm_armed_op(), SEC_OP_UNKNOWN,
-                   "apres reset, aucune operation n'est armee");
+    sec_op_t op = SEC_OP_AUTH;   /* pollue volontairement : peek_labeled doit l'ecraser */
+    sec_confirm_peek_labeled(1000, &op);
+    TEST_ASSERT_EQ(op, SEC_OP_UNKNOWN, "apres reset, aucune operation n'est armee");
 }
 
 /* Deux armements successifs : c'est le dernier qui compte. */
@@ -136,7 +148,33 @@ static void test_rearm_replaces_the_op(void)
     sec_confirm_reset();
     sec_confirm_arm(0xF0u, SEC_OP_SIGN, 1000);
     sec_confirm_arm(0xF0u, SEC_OP_OTP, 2000);
-    TEST_ASSERT_EQ(sec_confirm_armed_op(), SEC_OP_OTP, "le dernier armement gagne");
+    sec_op_t op = SEC_OP_UNKNOWN;
+    sec_confirm_peek_labeled(2000, &op);
+    TEST_ASSERT_EQ(op, SEC_OP_OTP, "le dernier armement gagne");
+}
+
+/* poll() consomme une autorisation ou acte une expiration : dans les deux cas
+ * l'operation qu'elle nommait ne doit pas survivre a sa propre consommation
+ * — sinon poll() et reset() divergent sur ce que IDLE veut dire, et le
+ * prochain lecteur devrait re-deriver la reponse a la main. */
+static void test_poll_clears_the_op_on_consume_or_timeout(void)
+{
+    sec_confirm_reset();
+    sec_confirm_arm(0xF0u, SEC_OP_SIGN, 1000);
+    sec_confirm_authorize();
+    TEST_ASSERT_EQ(sec_confirm_poll(1100, NULL), SEC_CONFIRM_AUTHORIZED,
+                   "consommee par poll()");
+    sec_op_t op = SEC_OP_SIGN;   /* pollue volontairement */
+    sec_confirm_peek_labeled(1100, &op);
+    TEST_ASSERT_EQ(op, SEC_OP_UNKNOWN, "poll() consommee efface aussi l'operation");
+
+    sec_confirm_reset();
+    sec_confirm_arm(0xF0u, SEC_OP_DECRYPT, 1000);
+    TEST_ASSERT_EQ(sec_confirm_poll(1000 + SEC_CONFIRM_TIMEOUT_MS, NULL),
+                   SEC_CONFIRM_TIMEDOUT, "expiree par poll()");
+    op = SEC_OP_DECRYPT;         /* pollue volontairement */
+    sec_confirm_peek_labeled(1000 + SEC_CONFIRM_TIMEOUT_MS, &op);
+    TEST_ASSERT_EQ(op, SEC_OP_UNKNOWN, "poll() expiree efface aussi l'operation");
 }
 
 void test_sec_confirm(void)
@@ -155,4 +193,5 @@ void test_sec_confirm(void)
     TEST_RUN(test_armed_op_survives_peek);
     TEST_RUN(test_reset_clears_the_op);
     TEST_RUN(test_rearm_replaces_the_op);
+    TEST_RUN(test_poll_clears_the_op_on_consume_or_timeout);
 }

@@ -44,6 +44,14 @@ sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot);
  * `now_ms` sert a signaler une echeance deja depassee sans la consommer — la
  * LED doit pouvoir montrer le refus. */
 sec_confirm_state_t sec_confirm_peek(uint32_t now_ms);
-/* L'operation actuellement armee, ou SEC_OP_UNKNOWN. Lecture SANS effet de
- * bord, comme peek() : pour l'affichage seulement. */
-sec_op_t sec_confirm_armed_op(void);
+/* Lit l'etat ET l'operation armee en un seul appel, sans rien consommer.
+ *
+ * Un seul accesseur, et pas deux, parce que deux lectures separees peuvent
+ * etre coupees par un reset()+arm() : l'appelant verrait alors l'etat d'une
+ * operation avec le libelle d'une autre, et l'utilisateur confirmerait en
+ * croyant autoriser ce qui est affiche. C'est precisement ce que l'ecran
+ * existe pour empecher.
+ *
+ * `out_op` peut etre NULL si l'appelant ne veut que l'etat.
+ */
+sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op);

@@ -1,7 +1,10 @@
 #include "sec_confirm.h"
 
 /* CONCURRENCY MODEL (Phase-2 pentest, 2026-06-11 ; relu et corrige a l'arrivee
- * de hmi_task, 2026-08-16 ; etendu a s_op, 2026-08-17) — why no lock is needed.
+ * de hmi_task, 2026-08-16 ; etendu a s_op, 2026-08-17 ; corrige apres revue
+ * sur le meme jour — deux lectures separees de l'etat et de l'operation
+ * n'etaient PAS couvertes par le raisonnement ci-dessous, voir le bullet
+ * sec_confirm_peek_labeled()) — why no lock is needed.
  * sec_confirm is a pure module (host-tested, no FreeRTOS). Entry points run
  * from at most THREE contexts, and the security personalities are mutually
  * exclusive at build (OpenPGP CCID xor OTP-HID), so per build:
@@ -69,34 +72,64 @@
  *     this guarantee: it covers peek() racing arm() only; it does NOT claim
  *     the analysis above is otherwise unchanged. Do NOT let a display path
  *     call poll().
- *   - sec_confirm_armed_op() is READ-ONLY, single aligned load, called from
- *     the same third context (hmi_task, for the operation label) alongside
- *     peek(). It falls in the SAME benign case as s_armed_ms above, not the
- *     reset() case below: armed_op() interleaved with arm()'s stores can
- *     pair a freshly-visible s_state == PENDING with the PREVIOUS s_op — the
- *     screen would name the prior operation for one display tick while
- *     already showing "waiting". Transient and self-correcting (the next
- *     armed_op(), after arm()'s stores complete, reads the fresh s_op) —
- *     never a security decision, since armed_op() feeds a label only, never
- *     a grant. It CANNOT fabricate or misattribute AUTHORIZED: that still
- *     depends only on s_state via poll(), which armed_op() never touches.
- *   - sec_confirm_reset() writes the same four fields, in the same order,
- *     as arm() (s_state, then s_slot, then s_op, then s_armed_ms — see
- *     above), and this comment used to say nothing about it. It's safe for
- *     the same reason peek()-vs-arm() is bounded, plus one more fact
- *     specific to reset(): every caller of reset() (dongle_confirm() in
- *     ccid.c) runs on the same task as arm(), so reset() never races arm()
- *     itself; and because reset() writes IDLE first, peek()'s
- *     `s_state == PENDING` guard can never pair a freshly-written state with
- *     reset()'s s_armed_ms — a peek() torn mid-reset() observes either the
- *     old PENDING/armed_ms pair (reset() hasn't stored yet) or IDLE
- *     (reset()'s first store already landed, and IDLE fails the PENDING
- *     guard outright), never a PENDING read paired with a reset()
- *     timestamp. The same first-field-gates-visibility argument covers
- *     armed_op(): a display path that only shows the operation label while
- *     peek() reports PENDING/AUTHORIZED can never observe reset()'s stale
- *     s_op paired with a fresh IDLE — IDLE lands first and gates the label
- *     off before s_op is even cleared. */
+ *   - sec_confirm_peek_labeled() is READ-ONLY and reads s_op alongside
+ *     s_state/s_armed_ms from the same third context (hmi_task, for the
+ *     operation label). CONTRACT, not a suggestion: a caller that wants both
+ *     the state and the label MUST call this one function, never peek() and
+ *     a separate op read side by side. Two separate calls have an UNBOUNDED
+ *     window between them — nothing serializes hmi_task's calls against
+ *     ccid_worker, so an entire reset()+arm() cycle (a whole NEW operation)
+ *     can complete in that window. The reader would then pair the fresh
+ *     state of operation B with the stale label of operation A, read a whole
+ *     call earlier — not a torn store, a torn STORY. That is not a display
+ *     glitch: authorize() only checks s_state, so a user who confirms
+ *     because the screen names A would in fact grant B. This is exactly the
+ *     attack the screen exists to close, so it may not reopen it through the
+ *     accessor design. Bundling into one function does not make the read
+ *     atomic — s_op and s_state are still two separate loads inside
+ *     peek_labeled() — but it bounds the window to the width of this
+ *     function body (a few instructions, no call or yield point between the
+ *     two loads) instead of the width of two independent API calls with
+ *     arbitrary caller-scheduled work between them. s_op is read FIRST, on
+ *     entry, before the timeout check: this keeps the two loads adjacent in
+ *     the source (mirroring peek()'s existing state-then-timestamp shape) so
+ *     there is no unrelated computation between them for a task switch to
+ *     land in. A residual tear is still possible in principle (arm()
+ *     interleaving exactly between the two loads) and falls in the SAME
+ *     benign, self-correcting class already accepted for s_armed_ms above:
+ *     transient (the very next peek_labeled() call, once arm() has finished,
+ *     reads the fresh pair), and never a security decision on its own — it
+ *     CANNOT fabricate or misattribute AUTHORIZED, because that still
+ *     depends only on s_state via poll(), which peek_labeled() never
+ *     touches. What changed from the torn-store framing above is the SCALE
+ *     of the window the caller must not reopen, not the mechanism: hence a
+ *     contract on the accessor, not a critical section.
+ *   - sec_confirm_reset() writes the same four fields, in the same order, as
+ *     arm() (s_state, then s_slot, then s_op, then s_armed_ms — see above).
+ *     It's safe for the same reason peek()-vs-arm() is bounded, plus one
+ *     more fact specific to reset(): every caller of reset()
+ *     (dongle_confirm() in ccid.c) runs on the same task as arm(), so
+ *     reset() never races arm() itself; and because reset() writes IDLE
+ *     first, peek()'s `s_state == PENDING` guard can never pair a
+ *     freshly-written state with reset()'s s_armed_ms — a peek() torn
+ *     mid-reset() observes either the old PENDING/armed_ms pair (reset()
+ *     hasn't stored yet) or IDLE (reset()'s first store already landed, and
+ *     IDLE fails the PENDING guard outright), never a PENDING read paired
+ *     with a reset() timestamp. The same first-field-gates-visibility
+ *     argument covers peek_labeled(): a display path that only shows the
+ *     operation label while the returned state is PENDING/AUTHORIZED can
+ *     never observe reset()'s stale s_op paired with a fresh IDLE — IDLE
+ *     lands first and gates the label off before s_op is even cleared.
+ *     poll() now clears s_op to SEC_OP_UNKNOWN on both its consuming
+ *     branches (AUTHORIZED and TIMEDOUT), symmetric with reset(): a field
+ *     that survives the consumption of the operation it describes is a
+ *     question the next reader would have to re-derive the answer to, so
+ *     the invariant "IDLE implies SEC_OP_UNKNOWN" now holds after every path
+ *     that reaches IDLE, not just reset(). poll() and peek_labeled() never
+ *     run concurrently with each other on this build (poll() is
+ *     ccid_worker/usb_task only, peek_labeled() is hmi_task only), so this
+ *     addition changes no race analysis above — it only makes a
+ *     single-threaded invariant hold in more places. */
 
 static sec_confirm_state_t s_state    = SEC_CONFIRM_IDLE;
 static uint8_t             s_slot     = 0;
@@ -130,11 +163,13 @@ sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot)
     if (s_state == SEC_CONFIRM_PENDING &&
         (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS) {
         s_state = SEC_CONFIRM_IDLE;
+        s_op    = SEC_OP_UNKNOWN;
         return SEC_CONFIRM_TIMEDOUT;
     }
     if (s_state == SEC_CONFIRM_AUTHORIZED) {
         if (out_slot) *out_slot = s_slot;
         s_state = SEC_CONFIRM_IDLE;
+        s_op    = SEC_OP_UNKNOWN;
         return SEC_CONFIRM_AUTHORIZED;
     }
     return s_state;
@@ -157,7 +192,16 @@ sec_confirm_state_t sec_confirm_peek(uint32_t now_ms)
     return s_state;
 }
 
-sec_op_t sec_confirm_armed_op(void)
+sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op)
 {
-    return s_op;
+    /* s_op est lu EN PREMIER, avant le calcul d'echeance de peek() : voir le
+     * paragraphe CONCURRENCY MODEL, bullet sec_confirm_peek_labeled(), pour
+     * pourquoi cet ordre (et pas l'inverse) borne la fenetre de course sans
+     * la fermer. */
+    if (out_op) *out_op = s_op;
+    if (s_state == SEC_CONFIRM_PENDING &&
+        (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS) {
+        return SEC_CONFIRM_TIMEDOUT;
+    }
+    return s_state;
 }
