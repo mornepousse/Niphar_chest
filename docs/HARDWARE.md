@@ -613,6 +613,19 @@ contact donne exactement deux ou trois bascules en moins de deux secondes puis
 des minutes de silence, là où un couplage I²C produirait un rythme régulier
 calé sur les 50 ms de la tâche d'affichage.
 
+**Symptôme visible, découvert le 2026-08-17 par sonde** : quand la carte
+bascule toute seule, **l'écran reste figé sur le logo plein** au lieu de passer
+en veille errante. Ce n'est pas un défaut d'affichage — c'est la conséquence
+exacte du défaut matériel. La veille se déclenche après 60 s sans changement
+d'état, et chaque bascule remet ce compteur à zéro ; une bascule toutes les
+~45 s l'empêche donc d'aboutir indéfiniment.
+
+Mesuré : `inactif=43050 ms` puis retour à `2940 ms` sur une bascule
+`mode=2 → mode=3` que personne n'avait demandée.
+
+**Un logo figé en grand est donc l'indicateur visible que le contact déraille.**
+Utile : il rend le défaut observable sans brancher de console.
+
 **Réparation au fer à souder.** Deux mécanismes indépendants — l'interruption et
 la lecture périodique, qui ne partagent rien — sont d'accord sur l'absence : ce
 n'est pas l'instrument.
