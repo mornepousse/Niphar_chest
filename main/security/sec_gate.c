@@ -37,11 +37,11 @@ const char *sec_gate_source(void)
     return "bouton en facade";
 }
 
-void sec_gate_button_confirm(void)
+void sec_gate_button_confirm(uint32_t pressed_at_ms)
 {
     /* Ne fait que relayer : c'est sec_confirm qui decide, et il refuse hors
      * d'une operation armee. Meme contrat que la variante console. */
-    sec_confirm_authorize();
+    sec_confirm_authorize(pressed_at_ms);
 }
 
 #else
@@ -72,8 +72,8 @@ const char *sec_gate_source(void)
  * accessible qu'on soit dans la branche "aucune source" (jc_devkit) ou "bouton"
  * (wt9932_key). Seule niphar_chest (BOARD_CONSOLE_ACTIONS=0) ne la compile pas.
  */
-void sec_gate_console_confirm(void)
+void sec_gate_console_confirm(uint32_t pressed_at_ms)
 {
-    sec_confirm_authorize();
+    sec_confirm_authorize(pressed_at_ms);
 }
 #endif

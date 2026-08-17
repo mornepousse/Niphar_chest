@@ -52,7 +52,7 @@ const char *sec_gate_source(void);
 #if BOARD_CONSOLE_ACTIONS
 /* Béquille de développement — n'existe que sur une carte qui autorise la
  * console à agir. */
-void sec_gate_console_confirm(void);
+void sec_gate_console_confirm(uint32_t pressed_at_ms);
 #endif
 
 #if BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_BUTTON
@@ -61,5 +61,5 @@ void sec_gate_console_confirm(void);
  * ce n'est PAS une bequille : c'est un geste physique qu'un hote ne peut pas
  * fabriquer. Appele par hmi.c, sur front d'appui stable.
  */
-void sec_gate_button_confirm(void);
+void sec_gate_button_confirm(uint32_t pressed_at_ms);
 #endif

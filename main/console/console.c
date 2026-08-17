@@ -183,7 +183,7 @@ static int cmd_sec(int argc, char **argv)
 
 #if BOARD_CONSOLE_ACTIONS
     if (strcmp(argv[1], "confirm") == 0) {
-        sec_gate_console_confirm();
+        sec_gate_console_confirm((uint32_t)(esp_timer_get_time() / 1000));
         printf("appui simulé — sans effet s'il n'y a pas d'opération armée.\n");
         return 0;
     }

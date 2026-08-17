@@ -6,7 +6,7 @@ static void test_arm_authorize_consume(void)
     sec_confirm_reset();
     sec_confirm_arm(2, SEC_OP_UNKNOWN, 1000);
     TEST_ASSERT_EQ(sec_confirm_poll(1000, NULL), SEC_CONFIRM_PENDING, "armed -> PENDING");
-    sec_confirm_authorize();
+    sec_confirm_authorize(1050);
     uint8_t slot = 0xFF;
     TEST_ASSERT_EQ(sec_confirm_poll(1100, &slot), SEC_CONFIRM_AUTHORIZED, "authorized");
     TEST_ASSERT_EQ(slot, 2, "slot preserved");
@@ -25,7 +25,7 @@ static void test_timeout(void)
 static void test_authorize_without_arm(void)
 {
     sec_confirm_reset();
-    sec_confirm_authorize();
+    sec_confirm_authorize(1000);
     TEST_ASSERT_EQ(sec_confirm_poll(0, NULL), SEC_CONFIRM_IDLE, "authorize w/o arm = no-op");
 }
 
@@ -34,7 +34,7 @@ static void test_rearm_overwrites_slot(void)
     sec_confirm_reset();
     sec_confirm_arm(1, SEC_OP_UNKNOWN, 1000);
     sec_confirm_arm(3, SEC_OP_UNKNOWN, 1050);
-    sec_confirm_authorize();
+    sec_confirm_authorize(1055);
     uint8_t slot = 0xFF;
     TEST_ASSERT_EQ(sec_confirm_poll(1060, &slot), SEC_CONFIRM_AUTHORIZED, "re-arm then authorize -> AUTHORIZED");
     TEST_ASSERT_EQ(slot, 3, "re-arm overwrites slot");
@@ -44,7 +44,7 @@ static void test_arm_while_authorized(void)
 {
     sec_confirm_reset();
     sec_confirm_arm(1, SEC_OP_UNKNOWN, 1000);
-    sec_confirm_authorize();          /* AUTHORIZED, not yet polled */
+    sec_confirm_authorize(1050);      /* AUTHORIZED, not yet polled */
     sec_confirm_arm(2, SEC_OP_UNKNOWN, 1100);         /* re-arm discards the grant */
     uint8_t slot = 0xFF;
     TEST_ASSERT_EQ(sec_confirm_poll(1100, &slot), SEC_CONFIRM_PENDING,
@@ -58,7 +58,7 @@ static void test_peek_does_not_consume_the_grant(void)
 {
     sec_confirm_reset();
     sec_confirm_arm(7, SEC_OP_UNKNOWN, 1000);
-    sec_confirm_authorize();
+    sec_confirm_authorize(1050);
 
     TEST_ASSERT_EQ(sec_confirm_peek(1100), SEC_CONFIRM_AUTHORIZED,
                    "peek voit l'autorisation");
@@ -161,7 +161,7 @@ static void test_poll_clears_the_op_on_consume_or_timeout(void)
 {
     sec_confirm_reset();
     sec_confirm_arm(0xF0u, SEC_OP_SIGN, 1000);
-    sec_confirm_authorize();
+    sec_confirm_authorize(1050);
     TEST_ASSERT_EQ(sec_confirm_poll(1100, NULL), SEC_CONFIRM_AUTHORIZED,
                    "consommee par poll()");
     sec_op_t op = SEC_OP_SIGN;   /* pollue volontairement */
@@ -189,9 +189,126 @@ static void test_peek_labeled_tolerates_null_out_op(void)
                    "out_op NULL : l'etat est quand meme rendu, rien ne deref NULL");
 }
 
+
+/* ------------------------------------------------------------------------- */
+/* Ruling 28 — l'appui doit tomber DANS la fenetre de l'operation armee.      */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * Le scenario reel, et la raison d'etre de l'horodatage.
+ *
+ * hmi_task lit peek() puis appelle authorize() : deux appels separes, que rien
+ * ne serialise contre la tache qui arme. Si l'ordonnanceur la laisse hors CPU
+ * entre les deux — millisecondes, sous charge — l'operation A peut expirer et
+ * une operation B s'armer dans l'intervalle. Sans horodatage, authorize() ne
+ * voit qu'un s_state PENDING et accorde : l'appui destine a A autorise B.
+ *
+ * L'utilisateur a physiquement confirme quelque chose qu'on ne lui a jamais
+ * montre. C'est exactement l'attaque que la porte de presence existe pour
+ * fermer, et sans PIN dans le futur perimetre FIDO, cette porte est la SEULE
+ * defense qui reste.
+ */
+static void test_a_press_meant_for_a_cannot_authorize_b(void)
+{
+    sec_confirm_reset();
+
+    /* Operation A armee a t=1000. L'utilisateur appuie a t=1200. */
+    sec_confirm_arm(1, SEC_OP_SIGN, 1000);
+    const uint32_t pressed_for_a = 1200;
+
+    /* hmi_task est preemptee ici. A expire, B s'arme a t=20000. */
+    TEST_ASSERT_EQ(sec_confirm_poll(1000 + 15000, NULL), SEC_CONFIRM_TIMEDOUT,
+                   "A expire faute d'appui relaye a temps");
+    sec_confirm_arm(2, SEC_OP_DECRYPT, 20000);
+
+    /* hmi_task reprend et relaie ENFIN l'appui, avec son horodatage d'origine. */
+    sec_confirm_authorize(pressed_for_a);
+
+    uint8_t slot = 0xFF;
+    TEST_ASSERT_EQ(sec_confirm_poll(20100, &slot), SEC_CONFIRM_PENDING,
+                   "B reste en attente : un appui anterieur a son armement ne l'autorise pas");
+    TEST_ASSERT(slot == 0xFF, "aucun emplacement n'a ete accorde");
+}
+
+/* Un appui ANTERIEUR a l'armement courant est refuse, meme sans expiration
+ * entre les deux : quelqu'un qui appuie en anticipant ne pre-autorise pas la
+ * prochaine operation. */
+static void test_press_before_arming_is_refused(void)
+{
+    sec_confirm_reset();
+    sec_confirm_arm(3, SEC_OP_AUTH, 5000);
+    sec_confirm_authorize(4999);   /* une milliseconde trop tot */
+    TEST_ASSERT_EQ(sec_confirm_poll(5100, NULL), SEC_CONFIRM_PENDING,
+                   "un appui d'avant l'armement n'accorde rien");
+}
+
+/* Et un appui trop TARD est refuse aussi : la meme expression borne les deux
+ * cotes de la fenetre. */
+static void test_press_after_the_window_is_refused(void)
+{
+    sec_confirm_reset();
+    sec_confirm_arm(4, SEC_OP_OTP, 5000);
+    sec_confirm_authorize(5000 + SEC_CONFIRM_TIMEOUT_MS);
+    TEST_ASSERT_EQ(sec_confirm_poll(5000 + 100, NULL), SEC_CONFIRM_PENDING,
+                   "un appui au seuil d'expiration n'accorde rien");
+}
+
+/* Les bornes exactes, comparees a des valeurs distinctes de part et d'autre —
+ * pas une valeur a elle-meme. */
+static void test_press_window_bounds_are_exact(void)
+{
+    /* Pile a l'instant de l'armement : accepte (zero milliseconde ecoulee). */
+    sec_confirm_reset();
+    sec_confirm_arm(1, SEC_OP_SIGN, 7000);
+    sec_confirm_authorize(7000);
+    TEST_ASSERT_EQ(sec_confirm_poll(7100, NULL), SEC_CONFIRM_AUTHORIZED,
+                   "appui pile a l'armement : accorde");
+
+    /* Derniere milliseconde valable : accepte. */
+    sec_confirm_reset();
+    sec_confirm_arm(1, SEC_OP_SIGN, 7000);
+    sec_confirm_authorize(7000 + SEC_CONFIRM_TIMEOUT_MS - 1u);
+    TEST_ASSERT_EQ(sec_confirm_poll(7100, NULL), SEC_CONFIRM_AUTHORIZED,
+                   "appui a la derniere milliseconde : accorde");
+
+    /* Une de plus : refuse. */
+    sec_confirm_reset();
+    sec_confirm_arm(1, SEC_OP_SIGN, 7000);
+    sec_confirm_authorize(7000 + SEC_CONFIRM_TIMEOUT_MS);
+    TEST_ASSERT_EQ(sec_confirm_poll(7100, NULL), SEC_CONFIRM_PENDING,
+                   "une milliseconde de trop : refuse");
+}
+
+/* Le repassage a zero du compteur de millisecondes, apres ~49 jours : une cle
+ * branchee en permanence l'atteint. Un appui legitime a cheval sur le
+ * repassage doit rester accepte, sinon la cle deviendrait inutilisable une
+ * fois tous les quarante-neuf jours. */
+static void test_press_window_survives_millisecond_wraparound(void)
+{
+    const uint32_t armed = 0xFFFFFFFFu - 100u;
+
+    sec_confirm_reset();
+    sec_confirm_arm(1, SEC_OP_SIGN, armed);
+    sec_confirm_authorize(armed + 200u);   /* repasse par zero entre les deux */
+    TEST_ASSERT_EQ(sec_confirm_poll(armed + 300u, NULL), SEC_CONFIRM_AUTHORIZED,
+                   "appui valable a cheval sur le repassage a zero : accorde");
+
+    /* Et un appui anterieur reste refuse malgre le repassage. */
+    sec_confirm_reset();
+    sec_confirm_arm(1, SEC_OP_SIGN, armed);
+    sec_confirm_authorize(armed - 1u);
+    TEST_ASSERT_EQ(sec_confirm_poll(armed + 10u, NULL), SEC_CONFIRM_PENDING,
+                   "appui anterieur, a cheval sur le repassage : refuse");
+}
+
 void test_sec_confirm(void)
 {
     TEST_SUITE("sec_confirm state machine");
+    TEST_RUN(test_a_press_meant_for_a_cannot_authorize_b);
+    TEST_RUN(test_press_before_arming_is_refused);
+    TEST_RUN(test_press_after_the_window_is_refused);
+    TEST_RUN(test_press_window_bounds_are_exact);
+    TEST_RUN(test_press_window_survives_millisecond_wraparound);
     TEST_RUN(test_arm_authorize_consume);
     TEST_RUN(test_timeout);
     TEST_RUN(test_authorize_without_arm);

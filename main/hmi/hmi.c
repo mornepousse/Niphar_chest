@@ -129,7 +129,7 @@ static void hmi_task(void *arg)
              * operation armee, pour ne pas suggerer qu'il s'est passe quelque
              * chose. */
             if (sec_confirm_peek(t) == SEC_CONFIRM_PENDING) {
-                sec_gate_button_confirm();
+                sec_gate_button_confirm(t);
                 event            = LED_EVENT_GRANTED;
                 event_until      = t + HMI_FLASH_MS;
                 event_started_at = t;

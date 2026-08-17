@@ -35,7 +35,7 @@ void sec_confirm_reset(void);
  * prior state, including an unconsumed AUTHORIZED grant. */
 void sec_confirm_arm(uint8_t slot, sec_op_t op, uint32_t now_ms);
 /* Physical confirm key pressed: PENDING -> AUTHORIZED; no-op otherwise. */
-void sec_confirm_authorize(void);
+void sec_confirm_authorize(uint32_t pressed_at_ms);
 /* Poll at now_ms. PENDING past timeout -> returns TIMEDOUT once (then IDLE).
  * AUTHORIZED -> writes slot to *out_slot, consumes (-> IDLE), returns AUTHORIZED. */
 sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot);

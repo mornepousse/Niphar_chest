@@ -35,7 +35,13 @@
  *     call authorize() concurrently. Still safe: both perform the exact same
  *     idempotent PENDING->AUTHORIZED flip on a single aligned word and never
  *     touch s_slot, so a race between them produces the same outcome twice,
- *     never a torn or wrong-slot grant.
+ *     never a torn or wrong-slot grant. Depuis la correction du Ruling 28,
+ *     authorize() LIT aussi s_armed_ms pour verifier que l'appui tombe dans la
+ *     fenetre armee. Cette lecture supplementaire ne change pas l'analyse
+ *     ci-dessus : s_armed_ms est un mot aligne, donc jamais dechire, et le pire
+ *     cas d'une valeur perimee est le meme que celui deja tolere par peek() —
+ *     un refus premature, jamais un octroi. La correction est FAIL-SAFE par
+ *     construction : toute incertitude sur l'horodatage fait refuser.
  * Each field is a byte / aligned word: a naturally-aligned single-word load
  * or store is atomic on the P4's RISC-V HP core (ESP32-P4 datasheet, p.37,
  * §4.1.1.1 "High-Performance CPU" — dual-core 32-bit RISC-V; this used to say
@@ -180,10 +186,41 @@ void sec_confirm_arm(uint8_t slot, sec_op_t op, uint32_t now_ms)
     s_armed_ms = now_ms;
 }
 
-void sec_confirm_authorize(void)
+/*
+ * L'appui doit tomber DANS la fenetre de l'operation actuellement armee.
+ *
+ * Le defaut que ceci ferme (Ruling 28) : authorize() ne prenait aucun
+ * horodatage, donc il ne pouvait pas savoir QUAND le geste avait eu lieu. Il ne
+ * voyait qu'un s_state a PENDING et accordait.
+ *
+ * Le scenario est reel, pas theorique. hmi_task lit peek() puis appelle
+ * authorize() : deux appels separes, que rien ne serialise contre la tache qui
+ * arme. Si l'ordonnanceur la laisse hors CPU entre les deux — des
+ * millisecondes, sous charge — l'operation A peut expirer et une operation B
+ * s'armer dans l'intervalle. L'appui destine a A autorisait alors B, et
+ * l'utilisateur avait physiquement confirme quelque chose qu'on ne lui avait
+ * jamais montre. C'est exactement l'attaque que cette porte existe pour fermer.
+ *
+ * Theorique sur OpenPGP, ou les operations arrivent une par une ; reel des
+ * qu'un navigateur enchaine des getAssertion FIDO. Et sans PIN dans le
+ * perimetre FIDO retenu, cette porte est la SEULE defense qui reste.
+ *
+ * UNE condition ferme les deux cotes de la fenetre, et c'est la meme expression
+ * que poll() et peek() : un appui anterieur a l'armement donne une difference
+ * non signee enorme (elle repasse par le haut), donc >= au delai — refuse. Un
+ * appui posterieur au delai est refuse par la meme comparaison. Ecrire deux
+ * tests separes aurait invite a une divergence ; ici il n'y a rien a faire
+ * diverger.
+ */
+void sec_confirm_authorize(uint32_t pressed_at_ms)
 {
-    if (s_state == SEC_CONFIRM_PENDING)
-        s_state = SEC_CONFIRM_AUTHORIZED;
+    if (s_state != SEC_CONFIRM_PENDING) {
+        return;
+    }
+    if ((uint32_t)(pressed_at_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS) {
+        return;
+    }
+    s_state = SEC_CONFIRM_AUTHORIZED;
 }
 
 sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot)
