@@ -28,10 +28,16 @@ static void test_every_state_has_a_screen(void)
 }
 
 /* Chaque operation a son libelle, et deux operations n'en partagent jamais un —
- * sinon l'ecran ne distingue pas une signature d'un dechiffrement. */
+ * sinon l'ecran ne distingue pas une signature d'un dechiffrement.
+ *
+ * SEC_OP_UNKNOWN est dans ce tableau, pas seulement dans les quatre connues :
+ * sans elle, ce test ne peut jamais voir une mutation qui ferait fuiter le
+ * libelle d'une operation connue vers le `default:` (l'inconnu) — il
+ * comparerait les quatre connues entre elles et s'arreterait la, aveugle a
+ * exactement le cas que screen_op_label() existe pour distinguer. */
 static void test_every_op_has_a_distinct_label(void)
 {
-    const sec_op_t ops[] = { SEC_OP_SIGN, SEC_OP_DECRYPT, SEC_OP_AUTH, SEC_OP_OTP };
+    const sec_op_t ops[] = { SEC_OP_UNKNOWN, SEC_OP_SIGN, SEC_OP_DECRYPT, SEC_OP_AUTH, SEC_OP_OTP };
     const unsigned n = sizeof(ops) / sizeof(ops[0]);
     for (unsigned i = 0; i < n; i++) {
         const char *a = screen_view_of(USB_MODE_PGP, true, ops[i], LED_EVENT_NONE).line;
@@ -65,6 +71,20 @@ static void test_verdict_beats_switch(void)
     TEST_ASSERT_EQ(v.kind, SCREEN_VERDICT, "le verdict prime sur la bascule");
 }
 
+/* L'attente prime aussi sur un verdict encore actif — epingle le choix fait
+ * dans screen_view_of() (confirm_pending teste avant event). Si un verdict
+ * est encore affiche au moment ou une nouvelle confirmation s'arme, ce
+ * verdict n'est jamais montre : rater l'attente coute une operation entiere
+ * a l'utilisateur, rater un verdict ne coute qu'une information deja
+ * redondante avec la LED. Reste a savoir si les deux peuvent coexister une
+ * fois l'instantane publie sous verrou (tache 4) — ce test fixe seulement ce
+ * que cette fonction pure decide aujourd'hui. */
+static void test_wait_beats_pending_verdict(void)
+{
+    screen_view_t v = screen_view_of(USB_MODE_PGP, true, SEC_OP_SIGN, LED_EVENT_GRANTED);
+    TEST_ASSERT_EQ(v.kind, SCREEN_WAIT, "l'attente prime sur un verdict encore actif");
+}
+
 /* Accord et refus doivent etre distinguables en toutes lettres. */
 static void test_granted_and_refused_read_differently(void)
 {
@@ -89,6 +109,7 @@ void test_screen_view(void)
     TEST_RUN(test_unknown_op_is_not_mistaken_for_a_known_one);
     TEST_RUN(test_wait_beats_switch);
     TEST_RUN(test_verdict_beats_switch);
+    TEST_RUN(test_wait_beats_pending_verdict);
     TEST_RUN(test_granted_and_refused_read_differently);
     TEST_RUN(test_idle_names_the_mode);
 }

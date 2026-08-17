@@ -49,10 +49,16 @@ static inline const char *screen_op_label(sec_op_t op)
 static inline const char *screen_mode_name(usb_mode_t mode)
 {
     switch (mode) {
+    case USB_MODE_NONE:    return "Au repos";
     case USB_MODE_PGP:     return "OpenPGP";
     case USB_MODE_OTP:     return "Cle OTP";
     case USB_MODE_STORAGE: return "Disque";
-    default:               return "Au repos";
+    /* Une valeur hors enum (USB_MODE_COUNT, ou un futur mode ajoute avant
+     * COUNT sans mise a jour de ce switch) ne doit pas se faire passer pour
+     * le repos : meme principe que screen_op_label() pour SEC_OP_UNKNOWN,
+     * pour la meme raison — un silence identique a un etat connu masquerait
+     * l'erreur au lieu de la signaler. */
+    default:               return "Mode inconnu";
     }
 }
 
@@ -63,8 +69,13 @@ static inline screen_view_t screen_view_of(usb_mode_t mode,
 {
     screen_view_t v;
 
-    /* L'attente d'abord : c'est le seul ecran qui reclame une action de
-     * l'utilisateur, et le rater lui coute une operation. */
+    /* L'attente d'abord — avant meme un verdict encore actif (event ==
+     * LED_EVENT_GRANTED/REFUSED) : c'est le seul ecran qui reclame une
+     * action de l'utilisateur, et le rater lui coute une operation entiere,
+     * alors qu'un verdict rate ne coute qu'une information deja portee par
+     * la LED. Consequence assumee : si une confirmation s'arme pendant
+     * qu'un verdict precedent est encore affiche, ce verdict n'apparait
+     * jamais a l'ecran. Voir test_wait_beats_pending_verdict. */
     if (confirm_pending) {
         v.kind  = SCREEN_WAIT;
         v.title = "CONFIRMER ?";
