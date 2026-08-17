@@ -251,15 +251,20 @@ Créer `test/test_screen_view.c` :
 #include "hmi/led_state.h"
 #include "hmi/screen_view.h"
 
-/* Totalite : aucun etat ne laisse l'ecran indefini. */
+/* Totalite : aucun etat ne laisse l'ecran indefini, meme pour un mode aberrant.
+ *
+ * NOTE — ce test affirme SCREEN_IDLE et non « une des quatre valeurs de
+ * l'enum ». La seconde formulation serait TAUTOLOGIQUE : l'enum n'a que ces
+ * quatre valeurs, donc aucune implementation, meme absurde, ne la ferait
+ * rougir. Avec ce jeu d'entrees (rien d'arme, aucun evenement), la seule
+ * reponse juste est l'ecran de repos, et c'est cela qu'il faut exiger. */
 static void test_every_state_has_a_screen(void)
 {
     for (int m = 0; m <= USB_MODE_COUNT; m++) {
         screen_view_t v = screen_view_of((usb_mode_t)m, false, SEC_OP_UNKNOWN,
                                          LED_EVENT_NONE);
-        TEST_ASSERT(v.kind == SCREEN_IDLE || v.kind == SCREEN_VERDICT
-                    || v.kind == SCREEN_WAIT || v.kind == SCREEN_SWITCH,
-                    "chaque etat donne un ecran connu");
+        TEST_ASSERT_EQ(v.kind, SCREEN_IDLE,
+                       "rien d'arme et aucun evenement : l'ecran de repos");
         TEST_ASSERT(v.title != NULL && v.line != NULL, "aucun texte n'est NULL");
     }
 }
