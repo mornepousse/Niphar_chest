@@ -405,6 +405,40 @@ confirmation intégrée n'existe pas.
 - Compteurs de PIN : un PIN admin erroné décrémente le compteur (3 → 2), et
   une vérification réussie le **réarme** (→ 3). Comportement conforme à la
   spécification OpenPGP.
+- **Cycle complet vers le mode OTP et retour**, appui MODE réel : en mode PGP,
+  le noyau journalise une **vraie déconnexion** du périphérique CCID
+  (`usb 3-3: USB disconnect, device number 76`) **avant** l'arrivée du
+  suivant (`new high-speed USB device number 79`), puis
+  `bInterfaceClass 3 Human Interface Device` et
+  `hid-generic … hidraw9: USB HID v1.11 Keyboard [Mae PUGIN Coffre Niphar]`.
+  Nouvel appui MODE → retour à `bInterfaceClass 11 Chip/SmartCard`,
+  `wMaxPacketSize 0x0200` (512 o) sur les deux endpoints. Ce n'est pas
+  l'apparition du HID qui compte, c'est la déconnexion préalable : la carte
+  n'est pas un périphérique composite qui exposerait ses deux fonctions en
+  permanence, elle quitte réellement le bus avant que le clavier n'arrive.
+  C'est le principe fondateur du projet — « plein de choses, une à la fois,
+  jamais deux en même temps » — constaté sur le fil et non déduit du code : un
+  hôte ne peut pas dialoguer avec la carte OpenPGP pendant que la clé OTP est
+  exposée, elle n'existe plus.
+- **Appui CONFIRM hors opération armée : aucun flash**, vérifié à l'œil.
+  Délibéré : flasher signalerait qu'il s'est passé quelque chose alors que
+  l'appui n'a rien autorisé.
+- **Signature de message réelle**, pas seulement des certificats de clé :
+  `echo "test alternance" | gpg --sign --armor` → alternance observée, appui
+  CONFIRM, et la signature vérifie :
+  ```
+  gpg: Signature made lun. 17 août 2026 14:10:37 CEST
+  gpg:       using ECDSA key 3DEF9F107CB7FE6F02D5351E2F49F54486F3560C
+  gpg: Good signature from "mae (coucou) <mae.protonmail.com>" [ultimate]
+  ```
+  Le compteur de signatures de la carte est passé de 4 à 5, confirmant que
+  l'opération a bien traversé la carte. C'est le cas d'usage ordinaire, celui
+  de tous les jours — les points précédents ne validaient que des signatures
+  internes à la génération de clés.
+
+Le protocole de validation à huit points (`.superpowers/sdd/2026-08-16-carte-cle-wt9932/tache-8-brief.md`)
+est désormais **complet : huit points sur huit**, tous obtenus par appui réel
+sur le bouton et aucun par la commande console.
 
 **Deux constats d'usage, à consigner ici plutôt que dans la spec** :
 
@@ -430,9 +464,8 @@ ici.
 - Le **lien S3** — absent des trois cartes, la variante intégrée au clavier
   reste non éprouvée.
 - L'**échange CR-HMAC** du mode OTP — pas d'outillage HID sur cette machine ;
-  le mode n'est vérifié que jusqu'à la liaison par le noyau.
-- Le **cycle vers le mode OTP** et l'**appui hors opération armée** — non
-  exercés lors de cette séance.
+  le mode n'est vérifié que jusqu'à la liaison par le noyau, jamais un
+  défi/réponse.
 - La **résistance au dump de flash** — le bouton BOOT est en façade, rien
   n'isole l'USB-Serial-JTAG, et les clés privées vivent dans la flash. La
   parade prévue pour le coffre de production (jumpers JP1/JP2 retirés en
