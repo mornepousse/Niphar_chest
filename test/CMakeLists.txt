@@ -27,6 +27,7 @@ add_executable(test_runner
     test_button_debounce.c
     test_led_state.c
     test_screen_view.c
+    test_screen_anim.c
     ../main/link/link_proto.c
     ../main/sys/cr_crc16.c
     ../main/security/sec_confirm.c
