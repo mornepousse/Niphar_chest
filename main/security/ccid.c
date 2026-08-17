@@ -427,11 +427,11 @@ static bool dongle_sign(const uint8_t d[32],
  * Arms sec_confirm, then polls every 20 ms.  While waiting, fires a CCID
  * time-extension (WTX) frame every CCID_WTX_PERIOD_MS so scdaemon does not
  * time out.  Returns 1 if authorised by touch, 2 if denied / timed out. */
-static int dongle_confirm(void)
+static int dongle_confirm(sec_op_t op)
 {
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     const uint32_t deadline = now + SEC_CONFIRM_TIMEOUT_MS;
-    sec_confirm_arm(CCID_CONFIRM_SLOT, now);
+    sec_confirm_arm(CCID_CONFIRM_SLOT, op, now);
     uint32_t last_wtx = now;
     uint8_t  slot     = 0;
 

@@ -79,5 +79,31 @@
 #define BOARD_LED_WS2812      GPIO_NUM_51
 #define BOARD_LED_COUNT       1
 
+/* ------------------------------------------------------------------------- */
+/* Ecran OLED SSD1306, I2C.                                                   */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * IO53/IO54 ne sont pas des pins de strapping et n'ont aucune restriction : la
+ * colonne « Comments » de la table GPIO du P4 est vide pour les deux. Elles
+ * portent des fonctions analogiques (ADC2_CH4/CH5, comparateur canal 1) dont ce
+ * projet n'a aucun usage — meme famille qu'IO51, deja prise par la LED.
+ *
+ * Cablage utilisateur, sorties sur J6. Adresse et sequence d'init confirmees
+ * par un sondage sur module reel le 2026-08-17 : vrai SSD1306 (cadre dessine
+ * sur les quatre bords, pas de decalage d'origine de colonnes a compenser
+ * comme sur un SH1106), 128x64 entierement pilotable, adresse I2C 0x3C.
+ *
+ * Pull-ups EXTERNES, deux 4,7 kOhm posees par Mae — pas les internes du P4 :
+ * un sondage anterieur, avant leur pose, avait active les internes faute de
+ * mieux ; les decrire ici compenserait une absence qui n'existe plus. Voir
+ * hmi/screen.c, config du bus i2c_master (enable_internal_pullup = false).
+ */
+#define BOARD_OLED_SCL        GPIO_NUM_53
+#define BOARD_OLED_SDA        GPIO_NUM_54
+#define BOARD_OLED_ADDR       0x3Cu
+#define BOARD_OLED_WIDTH      128u
+#define BOARD_OLED_HEIGHT     64u
+
 /* En dernier : il valide tout ce qui precede. */
 #include "board_common.h"

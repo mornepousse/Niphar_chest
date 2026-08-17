@@ -27,6 +27,14 @@ Trois cartes, un seul firmware (voir [`docs/HARDWARE.md`](docs/HARDWARE.md)) :
 - [ ] **niphar_chest** (le coffre) — **non fabriqué**. Le firmware compile pour
       cette carte mais n'a jamais tourné sur sa cible.
 
+- [x] **Écran OLED SSD1306** sur la carte-clé — la clé cesse d'être aveugle :
+      elle annonce ce qu'on lui demande d'autoriser avant qu'on appuie. Écran
+      d'accueil, quatre écrans d'état en police double hauteur, barre de
+      décompte, veille à logo errant. Validé à l'œil sur la dalle le
+      2026-08-17 ; l'écran de confirmation et sa barre restent à voir, ils
+      exigent une vraie opération OpenPGP pour s'armer (voir
+      [`docs/HARDWARE.md`](docs/HARDWARE.md)). **Défaut ouvert** : la carte
+      bascule de mode spontanément, trois observations, non diagnostiqué.
 - [ ] MSC multi-ISO
 - [x] Intégration OpenPGP CCID + CR-HMAC OTP-HID (specs KeSp) — PGP validé bout
       en bout sur matériel le 2026-08-07 (`gpg --card-status`, génération de

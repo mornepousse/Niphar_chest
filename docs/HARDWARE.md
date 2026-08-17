@@ -489,3 +489,135 @@ par opération » reste vraie ; elle ne se lit simplement pas sur ce compteur.
   parade prévue pour le coffre de production (jumpers JP1/JP2 retirés en
   fabrication) ne s'applique pas à cette carte, voir « Cette carte ne résiste
   pas au dump de flash » ci-dessus.
+
+### Écran OLED SSD1306 — 2026-08-17
+
+Ajouté sur la carte-clé uniquement. Ni le kit ni le coffre n'en portent : la
+garde `#if defined(BOARD_OLED_SCL)` de `main/hmi/screen.c` réduit le fichier à
+4 octets de `.text` sur les deux autres cartes, vérifié au `nm`.
+
+| | |
+|---|---|
+| contrôleur | **SSD1306**, pas un SH1106 — mesuré, voir plus bas |
+| dalle | 128×64, entièrement pilotable |
+| bus | I²C, `SCL = IO53`, `SDA = IO54`, adresse **0x3C**, 400 kHz |
+| pull-ups | **deux 4,7 kΩ externes**, posées à la main par la propriétaire |
+| séquence d'init | `AE 20 00 A1 C8 8D 14 A6 AF` |
+
+**Les pull-ups internes du P4 doivent rester désactivées** dans le pilote
+(`enable_internal_pullup = false`) : les externes existent, et les activer
+décrirait un montage qui n'est pas celui-là.
+
+#### Ce que le sondage a trouvé, avant qu'une ligne de pilote soit écrite
+
+Un sondage jetable — ajouté, flashé, puis effacé — a trouvé **deux défauts
+matériels** :
+
+1. **Une broche mal soudée.** Symptôme : des adresses parasites **non
+   reproductibles** d'un balayage à l'autre (première session `0x14/0x3A/0x74` ;
+   deuxième session dix autres, aucune commune). Un périphérique réel répond
+   toujours à la même adresse — c'était du bruit sur une ligne flottante. C'est
+   la non-reproductibilité qui a fait le diagnostic, pas les adresses
+   elles-mêmes.
+2. **Aucune pull-up externe.** Ajoutées ensuite.
+
+Il a aussi corrigé trois suppositions sur quatre : seule l'adresse `0x3C` était
+juste. Le contrôleur, la présence des pull-ups et la santé de la dalle étaient
+supposés sans preuve.
+
+#### Résiduel électrique — la marge est faible
+
+**Des adresses parasites persistent même après la pose des pull-ups**, encore
+différentes à chaque balayage. Le SSD1306 répond et accepte ses commandes, donc
+l'écran fonctionne — mais ce bus n'a pas de marge.
+
+Causes probables, par ordre : la longueur des fils volants, ou l'absence d'un
+découplage 100 nF au plus près du module.
+
+**Si des erreurs intermittentes apparaissent plus tard, chercher là AVANT de
+suspecter le pilote.** C'est la raison d'être de cette sous-section : le
+symptôme est déjà mesuré, il serait absurde de le rediagnostiquer.
+
+Le pilote en tient compte : après vingt trames perdues d'affilée (une seconde),
+`screen_task()` rejoue la séquence d'initialisation, parce que retransmettre la
+même trame ne répare qu'une perte transitoire — pas un contrôleur qui a perdu son
+état interne.
+
+#### Validé à l'œil, sur la dalle
+
+- Police **double hauteur** par doublement de pixels : lisible, confirmé par la
+  propriétaire. La table de glyphes 12×16 « vraie » n'est donc pas nécessaire.
+- **Logo à demi-échelle** (32×32) à l'écran d'accueil et en veille : lisible.
+  Le logo pleine taille chevauchait le texte de l'accueil — corrigé.
+- **Veille errante** : le logo se promène, validé.
+
+#### Mesuré
+
+- **Marge de pile de `screen_task` : 2004 octets libres sur 3072**, relevé sur la
+  carte dix secondes après le démarrage, une fois tous les chemins profonds
+  empruntés. La tâche consomme donc ~1068 octets, dont environ 800 pour le
+  pilote I²C et les journaux — part qu'un désassemblage du seul `screen.c.obj`
+  ne pouvait pas voir (il donnait ~256 octets).
+
+#### Pas prouvé
+
+- **L'écran de confirmation et sa barre de décompte.** Ils exigent une vraie
+  opération OpenPGP pour s'armer ; aucun n'a encore été vu sur la dalle.
+- **Le comportement sur erreur I²C durable.** La réinitialisation après vingt
+  échecs est écrite mais jamais déclenchée en conditions réelles.
+
+#### Défaut ouvert — bascules de mode spontanées
+
+La carte change de mode USB **sans que personne ne la touche**. Trois
+observations indépendantes, toujours la même signature :
+
+| quand | ce qui a été vu |
+|---|---|
+| pendant le premier sondage | bascules à 56016, 57206, 58856, 59046 ms |
+| capture de 600 s | 4 bascules, dont 3 en 1,3 s |
+| capture de 900 s | 3 bascules en 1,8 s |
+
+**Toujours un groupe serré de deux à trois bascules en moins de deux secondes,
+puis plus rien pendant des minutes.** Ce n'est pas du bruit diffus. Trois appuis
+acceptés signifie que la ligne MODE a lu « pressé » à trois instants distincts,
+malgré l'anti-rebond de 20 ms.
+
+Ce qui est établi :
+
+- le pull-up **interne** de IO32 est bien activé (`hmi.c`, `gpio_config`), donc
+  la broche ne flotte pas — mais un pull-up interne d'ESP32 vaut ~45 kΩ, ce qui
+  est faible sur des fils volants voisins d'un bus commutant à 400 kHz ;
+- l'écart entre deux bascules d'un même groupe (0,6 à 1,2 s) correspond à la
+  durée d'un `usb_mode_set()` complet : elles s'enchaînent **aussi vite que le
+  drapeau d'occupation le permet**, donc la ligne est vue active pendant toute
+  la rafale.
+
+**Diagnostiqué le 2026-08-17 : le bouton MODE est électriquement ouvert.**
+
+Une sonde jetable — ISR sur les deux fronts de IO32, plus une lecture de niveau
+toutes les 5 s — a mesuré, carte au repos :
+
+```
+niveau IO32=1  IO33=1  (fronts vus: 0)
+```
+
+Les deux broches lisent 1, tirées au repos par les pull-ups internes. La sonde
+est donc vivante : `hmi_task` tourne, la lecture fonctionne, et l'ISR n'a rien
+vu parce qu'il n'y avait rien à voir. **Un appui physique sur MODE n'a produit ni
+front ni bascule** — la broche n'est jamais descendue.
+
+Ce n'est donc pas un défaut de firmware, et l'hypothèse d'un couplage depuis le
+bus I²C que je poursuivais était fausse. Un **contact intermittent** explique
+chaque observation, mieux qu'elle : un fil qui tressaute sur son point de
+contact donne exactement deux ou trois bascules en moins de deux secondes puis
+des minutes de silence, là où un couplage I²C produirait un rythme régulier
+calé sur les 50 ms de la tâche d'affichage.
+
+**Réparation au fer à souder.** Deux mécanismes indépendants — l'interruption et
+la lecture périodique, qui ne partagent rien — sont d'accord sur l'absence : ce
+n'est pas l'instrument.
+
+Conséquence à connaître : tant que ce contact n'est pas repris, **la porte de
+présence physique ne peut pas être actionnée**, donc aucune opération OpenPGP
+exigeant une confirmation ne peut aboutir sur cette carte. L'état de IO33
+(bouton CONFIRM) n'a pas été éprouvé par un appui réel.

@@ -187,6 +187,25 @@ cmake -S test -B test/build >/dev/null || exit 1
 cmake --build test/build >/dev/null || exit 1
 ./test/build/test_runner || exit 1
 
+# --- Tests des outils de build (Python) -----------------------------------
+# tools/svg2bitmap.py décode le PNG à la main (chunks, inflate, les cinq filtres
+# de reconstruction) pour ne dépendre que de la bibliothèque standard. C'est du
+# parsing d'en-têtes, donc la norme TDD s'y applique — mais c'est du Python, donc
+# hors du harnais C et hors du ratchet .tripwire-testcount.
+#
+# Un bug dans le prédicteur Paeth ne casse aucun build, ne lève aucune exception,
+# et ne se verrait qu'à l'œil sur un logo déjà committé : sans ces tests, rien
+# ne le rattraperait. Ils ne demandent ni Inkscape ni réseau, les PNG sont
+# fabriqués en mémoire.
+# Volontairement sans garde « si le fichier existe » : un contrôle qui se saute
+# tout seul quand sa cible disparaît ne protège rien. Si svg2bitmap.py cesse
+# d'être utilisé, on retire ce bloc explicitement.
+if ! out=$(python3 tools/test_svg2bitmap.py 2>&1); then
+    echo "tests de tools/svg2bitmap.py en échec :" >&2
+    printf '%s\n' "$out" | tail -30 >&2
+    exit 1
+fi
+
 # --- Build ----------------------------------------------------------------
 if ! command -v idf.py >/dev/null 2>&1; then
     # shellcheck disable=SC1091

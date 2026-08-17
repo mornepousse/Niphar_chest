@@ -32,7 +32,7 @@ static bool fake_sign_fail(const uint8_t d[32],
 }
 
 static int g_confirm_calls = 0;   /* counts UIF confirm() invocations */
-static int fake_confirm(void) { g_confirm_calls++; return g_confirm_retval; }
+static int fake_confirm(sec_op_t op) { (void)op; g_confirm_calls++; return g_confirm_retval; }
 
 /* Algo-aware fake pubkey.
  * P-256: 0x04 || 0x77×64 (65 B).  X25519: 0x66×32 (32 B). */

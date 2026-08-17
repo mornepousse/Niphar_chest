@@ -11,12 +11,12 @@
 static void test_stub_is_not_more_permissive_than_a_key(void)
 {
     sec_confirm_reset();
-    sec_confirm_authorize();
+    sec_confirm_authorize(1000);
     TEST_ASSERT_EQ(sec_confirm_poll(0, NULL), SEC_CONFIRM_IDLE,
                    "confirmation hors contexte sans effet");
 
-    sec_confirm_arm(1, 1000);
-    sec_confirm_authorize();
+    sec_confirm_arm(1, SEC_OP_UNKNOWN, 1000);
+    sec_confirm_authorize(1050);
     uint8_t slot = 0xFF;
     TEST_ASSERT_EQ(sec_confirm_poll(1100, &slot), SEC_CONFIRM_AUTHORIZED,
                    "confirmation après armement accordée");
@@ -28,8 +28,8 @@ static void test_stub_is_not_more_permissive_than_a_key(void)
 static void test_confirmation_is_single_use(void)
 {
     sec_confirm_reset();
-    sec_confirm_arm(2, 1000);
-    sec_confirm_authorize();
+    sec_confirm_arm(2, SEC_OP_UNKNOWN, 1000);
+    sec_confirm_authorize(1050);
     TEST_ASSERT_EQ(sec_confirm_poll(1100, NULL), SEC_CONFIRM_AUTHORIZED, "premier usage");
     TEST_ASSERT_EQ(sec_confirm_poll(1200, NULL), SEC_CONFIRM_IDLE, "consommée");
 }

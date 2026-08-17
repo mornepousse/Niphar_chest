@@ -3,6 +3,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include "sec_confirm.h"
 
 /* Key slots (OpenPGP: Signature / Decryption / Authentication) */
 enum {
@@ -29,8 +30,10 @@ typedef struct {
     bool (*sign)(const uint8_t d[32],
                  const uint8_t *hash, uint16_t n,
                  uint8_t *out, uint16_t *out_n);
-    /* UIF gate: 0 = not yet, 1 = authorized, 2 = denied/timeout. */
-    int  (*confirm)(void);
+    /* UIF gate: 0 = not yet, 1 = authorized, 2 = denied/timeout.
+     * `op` names the operation being confirmed (Task 1) — the DO byte that
+     * triggers the gate already says which, see the three call sites. */
+    int  (*confirm)(sec_op_t op);
     /* Derive the public key for `algo`.
      * PGP_ALGO_ECDSA_P256: writes 65 B (0x04||X||Y), *out_n = 65.
      * PGP_ALGO_ECDH (X25519): writes 32 B (RFC 7748 LE u), *out_n = 32.
