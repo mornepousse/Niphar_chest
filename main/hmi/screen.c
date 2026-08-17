@@ -14,6 +14,7 @@
 
 #include "hmi/hmi.h"
 #include "hmi/screen_anim.h"
+#include "hmi/screen_layout.h"
 #include "hmi/screen_logo.h"
 #include "hmi/screen_view.h"
 
@@ -29,6 +30,15 @@ static const char *TAG = "screen";
 #define SCREEN_I2C_TIMEOUT_MS    100
 
 #define SCREEN_PAGES  (BOARD_OLED_HEIGHT / 8u)
+
+/* Cellule de la police double hauteur : le double de SCREEN_CHAR_PX
+ * (hmi/screen_layout.h), qui est la mesure dont se sert screen_text_px(). Les
+ * deux doivent avancer du meme pas, d'ou la derivation plutot qu'un 12 en dur. */
+#define SCREEN_BIG_CHAR_PX  (2u * SCREEN_CHAR_PX)
+
+/* Hauteur du bandeau inverse : 7 lignes de glyphe plus une marge de chaque
+ * cote, arrondi a la page suivante. */
+#define SCREEN_BAND_H       10
 
 static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_dev;
@@ -165,24 +175,186 @@ static void fb_set_pixel(int x, int y, bool on)
     }
 }
 
-static void draw_char(int x0, int y0, char c)
+/*
+ * `ink` porte la couleur de l'encre, et sert au texte du bandeau inverse : le
+ * bandeau est un pave blanc, son libelle s'y dessine donc en noir. Seuls les
+ * pixels ALLUMES du glyphe sont ecrits — le fond du glyphe n'est jamais peint,
+ * pour ne pas effacer ce qu'il y a autour (le pave du bandeau, ou le logo).
+ */
+static void draw_char(int x0, int y0, char c, bool ink)
 {
     const screen_glyph_t *g = glyph_for(c);
     for (int row = 0; row < 7; row++) {
         for (int col = 0; col < 5; col++) {
-            const bool on = ((g->rows[row] >> (4 - col)) & 1u) != 0;
-            fb_set_pixel(x0 + col, y0 + row, on);
+            if (((g->rows[row] >> (4 - col)) & 1u) != 0) {
+                fb_set_pixel(x0 + col, y0 + row, ink);
+            }
         }
     }
 }
 
-static void draw_text(int x0, int y0, const char *s)
+static void draw_text(int x0, int y0, const char *s, bool ink)
 {
     int x = x0;
     for (; *s != '\0'; s++) {
-        draw_char(x, y0, *s);
-        x += 6;   /* 5 colonnes de glyphe + 1 de marge */
+        draw_char(x, y0, *s, ink);
+        x += (int)SCREEN_CHAR_PX;
     }
+}
+
+/*
+ * Police double hauteur, par DOUBLEMENT DE PIXELS de la police 5x7 — un
+ * glyphe de 10x14 dans une cellule de 12x16, sans table supplementaire.
+ *
+ * C'est le levier principal de l'affinage : Mae a decrit l'ecran precedent
+ * comme « juste du texte en haut a gauche », « l'ecran est utilise 10% ». Une
+ * seule information par ecran doit dominer, et la dominer veut dire l'ecrire
+ * deux fois plus grand — pas la deplacer.
+ *
+ * Le doublement plutot qu'une vraie police 12x16 : une seconde table couterait
+ * ~2 Kio de flash pour un gain a peine perceptible a cette taille sur une dalle
+ * de 0,96 pouce. Si la grossierete se voit a l'oeil, on achetera la vraie
+ * police — mais on ne paie pas d'avance.
+ */
+static void draw_char_2x(int x0, int y0, char c, bool ink)
+{
+    const screen_glyph_t *g = glyph_for(c);
+    for (int row = 0; row < 7; row++) {
+        for (int col = 0; col < 5; col++) {
+            if (((g->rows[row] >> (4 - col)) & 1u) == 0) {
+                continue;
+            }
+            /* Un pixel source devient un pave de 2x2. */
+            for (int dy = 0; dy < 2; dy++) {
+                for (int dx = 0; dx < 2; dx++) {
+                    fb_set_pixel(x0 + col * 2 + dx, y0 + row * 2 + dy, ink);
+                }
+            }
+        }
+    }
+}
+
+static void draw_text_2x(int x0, int y0, const char *s, bool ink)
+{
+    int x = x0;
+    for (; *s != '\0'; s++) {
+        draw_char_2x(x, y0, *s, ink);
+        x += (int)SCREEN_BIG_CHAR_PX;
+    }
+}
+
+/* Centrage : l'origine vient de screen_center_x() (hmi/screen_layout.h, pur et
+ * teste), pas d'une soustraction faite ici — c'est exactement le melange que
+ * l'affinage devait defaire. */
+static void draw_text_centered(int y0, const char *s, bool ink)
+{
+    draw_text((int)screen_center_x(BOARD_OLED_WIDTH, screen_text_px(s)), y0, s, ink);
+}
+
+static void draw_text_2x_centered(int y0, const char *s, bool ink)
+{
+    const uint16_t w = (uint16_t)(screen_text_px(s) * 2u);
+    draw_text_2x((int)screen_center_x(BOARD_OLED_WIDTH, w), y0, s, ink);
+}
+
+/*
+ * Bandeau inverse pleine largeur : un pave blanc de SCREEN_BAND_H de haut, son
+ * libelle centre en noir.
+ *
+ * Sur un monochrome c'est l'element qui a le plus de poids visuel, et le seul
+ * qui occupe les 128 px de large — ce que rien ne faisait avant. Il porte le
+ * MODE et non l'etat : « au repos » ne dit rien, alors que savoir si la carte
+ * OpenPGP est exposee est justement l'information qui compte.
+ */
+static void draw_band(int y0, const char *s)
+{
+    for (int y = 0; y < SCREEN_BAND_H; y++) {
+        for (int x = 0; x < (int)BOARD_OLED_WIDTH; x++) {
+            fb_set_pixel(x, y0 + y, true);
+        }
+    }
+    /* +1 : le glyphe fait 7 lignes dans un bandeau de 10, centre a la ligne. */
+    draw_text_centered(y0 + (SCREEN_BAND_H - 7) / 2, s, false);
+}
+
+/*
+ * Les quatre points de cycle : lequel des modes est actif, et combien d'appuis
+ * pour aller ailleurs.
+ *
+ * C'est le seul ajout de l'affinage qui apporte une information que Mae n'avait
+ * pas. La LED donne une couleur qu'il faut memoriser — sa question « je suis en
+ * bleu mais fait quoi ? » vient de la. Les points disent ou l'on est ET la
+ * distance a parcourir.
+ *
+ * `active` vaut screen_mode_count() quand aucun mode connu n'est en cours :
+ * aucun point ne se remplit, ce qui se distingue de « rien expose » (le
+ * premier point plein).
+ */
+static void draw_dots(int y0, uint8_t active, uint8_t count)
+{
+    const int d     = 5;                       /* diametre d'un point */
+    const int gap   = 7;
+    const int total = count * d + (count - 1) * gap;
+    int x = (int)screen_center_x(BOARD_OLED_WIDTH, (uint16_t)total);
+
+    for (uint8_t i = 0; i < count; i++) {
+        const bool full = (i == active);
+        for (int yy = 0; yy < d; yy++) {
+            for (int xx = 0; xx < d; xx++) {
+                /* Disque approxime : on retire les quatre coins. */
+                const bool corner = (xx == 0 || xx == d - 1) && (yy == 0 || yy == d - 1);
+                if (corner) {
+                    continue;
+                }
+                const bool edge = (xx == 0 || xx == d - 1 || yy == 0 || yy == d - 1);
+                if (full || edge) {
+                    fb_set_pixel(x + xx, y0 + yy, true);
+                }
+            }
+        }
+        x += d + gap;
+    }
+}
+
+/* Segment epais, pour la coche et la croix. Parcours sur l'axe le plus long :
+ * suffisant pour des diagonales courtes, et sans division. */
+static void draw_line(int x0, int y0, int x1, int y1, int thick)
+{
+    const int dx = x1 - x0, dy = y1 - y0;
+    const int adx = dx < 0 ? -dx : dx;
+    const int ady = dy < 0 ? -dy : dy;
+    const int steps = adx > ady ? adx : ady;
+    if (steps == 0) {
+        return;
+    }
+    for (int i = 0; i <= steps; i++) {
+        const int x = x0 + (dx * i) / steps;
+        const int y = y0 + (dy * i) / steps;
+        for (int t = 0; t < thick; t++) {
+            fb_set_pixel(x, y + t, true);
+            fb_set_pixel(x + t, y, true);
+        }
+    }
+}
+
+/*
+ * Coche et croix, tracees plutot que stockees : deux bitmaps de 32x32
+ * couteraient 256 octets et figeraient l'epaisseur, alors que quatre segments
+ * ne coutent rien et se reglent. Se lisent sans lire, ce qui est le but — un
+ * verdict doit s'attraper d'un coup d'oeil.
+ */
+static void draw_check(int x0, int y0, int size)
+{
+    const int t = 3;
+    draw_line(x0, y0 + size / 2, x0 + size / 3, y0 + size - t, t);
+    draw_line(x0 + size / 3, y0 + size - t, x0 + size, y0, t);
+}
+
+static void draw_cross(int x0, int y0, int size)
+{
+    const int t = 3;
+    draw_line(x0, y0, x0 + size, y0 + size, t);
+    draw_line(x0 + size, y0, x0, y0 + size, t);
 }
 
 /* Barre de decompte : cadre 1 px, remplissage proportionnel a `permille`
@@ -215,6 +387,9 @@ static void draw_bar(int x0, int y0, int w, int h, uint16_t permille)
  * glissement d'entree applique en X au titre (SCREEN_SWITCH seulement,
  * ancre sur l'instant ou hmi.c a arme l'evenement — event_at_ms).
  */
+/* Defini plus bas, avec le format du bitmap genere. */
+static void draw_logo(int x0, int y0);
+
 static void render_frame(const hmi_snapshot_t *snap, uint32_t now)
 {
     const screen_view_t v =
@@ -222,23 +397,86 @@ static void render_frame(const hmi_snapshot_t *snap, uint32_t now)
 
     fb_clear();
 
-    const uint8_t shift_y = screen_shift_px(now);
+    /* Decalage anti-marquage applique au CONTENU seulement, jamais aux
+     * bandeaux : un bandeau colle en bas de la dalle et decale de 4 px sortirait
+     * du cadre. Les bandeaux ne restent d'ailleurs jamais assez longtemps a
+     * l'identique pour marquer — c'est l'ecran de repos qui le ferait, et lui
+     * est decale. */
+    const int shift = (int)screen_shift_px(now);
 
-    int title_x = 2;
-    if (v.kind == SCREEN_SWITCH) {
-        const uint16_t pm     = screen_slide_permille(snap->event_at_ms, now);
-        const uint32_t travel = BOARD_OLED_WIDTH;   /* hors-champ a droite au depart */
-        title_x += (int)(((uint32_t)(1000u - pm) * travel) / 1000u);
-    }
+    switch (v.kind) {
 
-    draw_text(title_x, 4 + shift_y, v.title);
-    if (v.line[0] != '\0') {
-        draw_text(2, 24 + shift_y, v.line);
-    }
+    /* Confirmation : la seule information dont la lecture a une consequence
+     * (quelle operation on autorise) en double hauteur, la barre en pleine
+     * largeur, et les secondes en chiffre sous elle. La barre dit qu'il reste du
+     * temps, le chiffre dit combien — deux generations de cles ont ete perdues
+     * sur des expirations invisibles. */
+    case SCREEN_WAIT: {
+        draw_band(0, v.title);
+        draw_text_2x_centered(20 + shift, screen_op_short(snap->op), true);
 
-    if (v.kind == SCREEN_WAIT) {
         const uint16_t pm = screen_bar_permille(snap->armed_at_ms, now);
-        draw_bar(4, 52, (int)BOARD_OLED_WIDTH - 8, 8, pm);
+        draw_bar(4, 42, (int)BOARD_OLED_WIDTH - 8, 8, pm);
+
+        char secs[8];
+        const uint16_t s = screen_seconds_left(snap->armed_at_ms, now);
+        secs[0] = (char)('0' + (s / 10u) % 10u);
+        secs[1] = (char)('0' + s % 10u);
+        secs[2] = ' ';
+        secs[3] = 's';
+        secs[4] = '\0';
+        draw_text_centered(54, (s >= 10u) ? secs : &secs[1], true);
+        break;
+    }
+
+    /* Verdict : un glyphe qui se lit sans lire, et le mot dans le bandeau. */
+    case SCREEN_VERDICT: {
+        const int size = 30;
+        const int x0   = (int)screen_center_x(BOARD_OLED_WIDTH, (uint16_t)size);
+        if (screen_verdict_glyph(snap->event) == SCREEN_VERDICT_CHECK) {
+            draw_check(x0, 6 + shift, size);
+        } else {
+            draw_cross(x0, 6 + shift, size);
+        }
+        draw_band((int)BOARD_OLED_HEIGHT - SCREEN_BAND_H, v.title);
+        break;
+    }
+
+    /* Bascule de mode : le nom du nouveau mode en grand, glissant depuis la
+     * droite, et les points qui disent la distance restante dans le cycle. */
+    case SCREEN_SWITCH: {
+        const uint16_t pm     = screen_slide_permille(snap->event_at_ms, now);
+        const uint16_t w      = (uint16_t)(screen_text_px(v.title) * 2u);
+        const int      target = (int)screen_center_x(BOARD_OLED_WIDTH, w);
+        const int      x      = target
+                              + (int)(((uint32_t)(1000u - pm) * BOARD_OLED_WIDTH) / 1000u);
+
+        draw_text(2, 2, "MODE", true);
+        draw_text_2x(x, 22 + shift, v.title, true);
+        draw_dots(48, screen_mode_index(snap->mode), screen_mode_count());
+        break;
+    }
+
+    /* Repos. Deux visages, et la frontiere est la seule decision de disposition
+     * que ce fichier prend seul :
+     *
+     * - rien d'expose : le logo Niphargus occupe la dalle. C'est le choix de
+     *   Mae (« au repos met le logo niphar plutot »), et il dit vrai — quand il
+     *   n'y a rien a annoncer, l'ecran montre l'identite de la cle.
+     * - un mode actif : le nom du mode en grand plus les points. Savoir que la
+     *   carte OpenPGP est exposee n'est PAS du repos, et le taire derriere un
+     *   logo serait taire la seule information qui compte a cet instant.
+     */
+    case SCREEN_IDLE:
+    default:
+        if (snap->mode == USB_MODE_NONE) {
+            const int x0 = (int)screen_center_x(BOARD_OLED_WIDTH, SCREEN_LOGO_WIDTH);
+            draw_logo(x0, shift);
+        } else {
+            draw_text_2x_centered(14 + shift, v.title, true);
+            draw_dots(46, screen_mode_index(snap->mode), screen_mode_count());
+        }
+        break;
     }
 }
 
@@ -268,9 +506,25 @@ static void draw_logo(int x0, int y0)
 static void render_splash(void)
 {
     fb_clear();
-    draw_logo(0, 0);
-    draw_text(SCREEN_LOGO_WIDTH + 4, 20, "NIPHARGUS");
-    draw_text(SCREEN_LOGO_WIDTH + 4, 32, NIPHAR_VERSION);
+
+    /*
+     * Logo centre en haut, nom et version centres en dessous.
+     *
+     * L'ancienne disposition posait le texte a x = SCREEN_LOGO_WIDTH + 4, soit
+     * 68, ou il ne restait que 60 px — dix caracteres. Or il n'y a AUCUN tag
+     * dans ce depot : « git describe --tags --always --dirty » rend un hash
+     * (« 6da0d70-dirty », treize caracteres), et la version etait donc coupee a
+     * l'ecran. Sans risque memoire — fb_set_pixel() borne les quatre cotes —
+     * mais un affichage tronque est un affichage faux.
+     *
+     * En pleine largeur, vingt-un caracteres passent : de quoi tenir un
+     * « v0.3.1-12-gdeadbee » entier le jour ou un tag existera.
+     */
+    const int logo_x = (int)screen_center_x(BOARD_OLED_WIDTH, SCREEN_LOGO_WIDTH);
+    draw_logo(logo_x, -8);   /* remonte : les 8 dernieres lignes cedent la place au texte */
+
+    draw_text_centered((int)BOARD_OLED_HEIGHT - 17, "NIPHARGUS", true);
+    draw_text_centered((int)BOARD_OLED_HEIGHT - 8, NIPHAR_VERSION, true);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -351,6 +605,37 @@ static esp_err_t ssd1306_flush(void)
     return ESP_OK;
 }
 
+/* Allumage/extinction de la dalle. 0xAE/0xAF ne touchent pas la RAM d'affichage :
+ * rallumer reaffiche ce qui y etait, donc rien a redessiner. */
+static esp_err_t ssd1306_display(bool on)
+{
+    const uint8_t cmd[2] = { 0x00, on ? 0xAFu : 0xAEu };
+    return i2c_master_transmit(s_dev, cmd, sizeof(cmd), SCREEN_I2C_TIMEOUT_MS);
+}
+
+/*
+ * « Quelque chose a-t-il change ? » — la definition d'activite pour
+ * l'anti-remanence.
+ *
+ * Volontairement fonde sur l'instantane IHM et non sur un horodatage que hmi.c
+ * aurait a publier : ce qui use la dalle, c'est un contenu IDENTIQUE affiche en
+ * continu, et l'instantane est exactement ce qui determine le contenu. Aucune
+ * modification de hmi.{c,h} n'a donc ete necessaire.
+ *
+ * Comparaison champ par champ et non memcmp() : le bourrage d'une structure
+ * n'est pas initialise de facon garantie, et un memcmp() verrait des
+ * changements imaginaires — l'ecran ne s'eteindrait jamais.
+ */
+static bool snap_differs(const hmi_snapshot_t *a, const hmi_snapshot_t *b)
+{
+    return a->mode            != b->mode
+        || a->confirm_pending != b->confirm_pending
+        || a->armed_at_ms     != b->armed_at_ms
+        || a->op              != b->op
+        || a->event           != b->event
+        || a->event_at_ms     != b->event_at_ms;
+}
+
 static void screen_task(void *arg)
 {
     (void)arg;
@@ -361,12 +646,55 @@ static void screen_task(void *arg)
      * boot. */
     const uint32_t splash_start_ms = (uint32_t)(esp_timer_get_time() / 1000);
 
+    hmi_snapshot_t prev = {0};
+    uint32_t       last_activity_ms = splash_start_ms;
+    bool           display_on       = true;
+
     for (;;) {
         hmi_snapshot_t snap;
         hmi_snapshot(&snap);
 
         const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-        if (screen_splash_active(splash_start_ms, now)) {
+        const bool     splash = screen_splash_active(splash_start_ms, now);
+
+        if (snap_differs(&snap, &prev)) {
+            prev             = snap;
+            last_activity_ms = now;
+        }
+
+        /*
+         * Extinction anti-remanence. Un OLED qui affiche les 1425 pixels du logo
+         * en continu les garde en trace permanente ; le decalage de
+         * screen_shift_px() ne fait que repartir la brulure sur quelques pixels
+         * de plus, il ne la supprime pas.
+         *
+         * Jamais pendant l'accueil (l'ecran vient de s'allumer), et jamais tant
+         * qu'une confirmation est en attente : eteindre la dalle sous le nez de
+         * quelqu'un a qui on demande d'appuyer serait exactement le contraire du
+         * but de cet ecran.
+         */
+        const bool want_on = splash
+                          || snap.confirm_pending
+                          || !screen_blank_after_ms(last_activity_ms, now);
+
+        if (want_on != display_on) {
+            const esp_err_t derr = ssd1306_display(want_on);
+            if (derr == ESP_OK) {
+                display_on = want_on;
+            } else {
+                ESP_LOGW(TAG, "bascule d'alimentation de la dalle : %s",
+                         esp_err_to_name(derr));
+            }
+        }
+
+        /* Dalle eteinte : rien a dessiner et rien a transmettre. Le bus se
+         * tait, ce qui est aussi la seule facon de ne rien lui couter au repos. */
+        if (!display_on) {
+            vTaskDelay(pdMS_TO_TICKS(SCREEN_TASK_MS));
+            continue;
+        }
+
+        if (splash) {
             render_splash();
         } else {
             render_frame(&snap, now);

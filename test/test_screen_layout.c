@@ -11,6 +11,8 @@
  */
 #include "test_framework.h"
 
+#include <string.h>
+
 #include "sec_confirm.h"
 #include "usb/usb_mode.h"
 #include "hmi/led_state.h"
@@ -270,6 +272,77 @@ static void test_blank_survives_millisecond_wraparound(void)
                 "eteint pile a la minute, a cheval sur le repassage a zero");
 }
 
+/* ------------------------------------------------------------------------- */
+/* Libelles courts, pour la police double hauteur.                            */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * Le test qui compte n'est pas le mappage mais la LARGEUR.
+ *
+ * En police double hauteur (12 px par cellule) un ecran de 128 px tient dix
+ * caracteres. screen_op_label() en rend jusqu'a dix-huit (« Operation
+ * inconnue ») : il fallait des libellés courts. Rien dans le compilateur ne
+ * relie la longueur d'une chaine a la largeur d'une police — quelqu'un qui
+ * rallonge un libelle pour le rendre plus clair casserait l'affichage en
+ * silence, et le defaut ne se verrait que sur la dalle, tronque en plein milieu
+ * d'un glyphe.
+ */
+#define SCREEN_BIG_CHAR_PX (2u * SCREEN_CHAR_PX)
+
+static void test_op_short_fits_the_double_height_font(void)
+{
+    const sec_op_t ops[] = { SEC_OP_UNKNOWN, SEC_OP_SIGN, SEC_OP_DECRYPT,
+                             SEC_OP_AUTH, SEC_OP_OTP };
+    for (unsigned i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+        const char *s = screen_op_short(ops[i]);
+        TEST_ASSERT(s != NULL, "aucun libelle court n'est nul");
+        TEST_ASSERT(screen_text_px(s) * 2u <= 128u,
+                    "le libelle court tient en double hauteur sur 128 px");
+    }
+    /* Et la borne est bien serree : un onzieme caractere ne tiendrait pas.
+     * Sans cette assertion, la precedente resterait vraie meme si la police
+     * doublait de largeur. */
+    TEST_ASSERT(screen_text_px("12345678901") * 2u > 128u,
+                "onze caracteres en double hauteur depassent 128 px");
+}
+
+static void test_op_short_maps_each_operation(void)
+{
+    /* Comparaisons deux a deux, jamais une valeur contre elle-meme : c'est le
+     * defaut recurrent de ce projet — un test qui croit couvrir cinq cas alors
+     * qu'il n'en compare qu'un a lui-meme. */
+    const char *unk  = screen_op_short(SEC_OP_UNKNOWN);
+    const char *sign = screen_op_short(SEC_OP_SIGN);
+    const char *dec  = screen_op_short(SEC_OP_DECRYPT);
+    const char *auth = screen_op_short(SEC_OP_AUTH);
+    const char *otp  = screen_op_short(SEC_OP_OTP);
+
+    TEST_ASSERT(strcmp(sign, dec) != 0,  "signer et dechiffrer se distinguent");
+    TEST_ASSERT(strcmp(sign, auth) != 0, "signer et authentifier se distinguent");
+    TEST_ASSERT(strcmp(sign, otp) != 0,  "signer et OTP se distinguent");
+    TEST_ASSERT(strcmp(dec, auth) != 0,  "dechiffrer et authentifier se distinguent");
+    TEST_ASSERT(strcmp(dec, otp) != 0,   "dechiffrer et OTP se distinguent");
+    TEST_ASSERT(strcmp(auth, otp) != 0,  "authentifier et OTP se distinguent");
+    TEST_ASSERT(strcmp(unk, sign) != 0,  "l'inconnu ne se dit pas comme signer");
+    TEST_ASSERT(strcmp(unk, dec) != 0,   "l'inconnu ne se dit pas comme dechiffrer");
+    TEST_ASSERT(strcmp(unk, auth) != 0,  "l'inconnu ne se dit pas comme authentifier");
+    TEST_ASSERT(strcmp(unk, otp) != 0,   "l'inconnu ne se dit pas comme OTP");
+}
+
+/*
+ * Une valeur hors enum doit dire « inconnu », pas emprunter le libelle d'une
+ * operation reelle. Sur l'ecran qui annonce ce qu'on autorise, afficher
+ * « SIGNATURE » pour un code d'operation aberrant ferait confirmer autre chose
+ * que ce qui est montre.
+ */
+static void test_op_short_out_of_range_says_unknown(void)
+{
+    TEST_ASSERT(strcmp(screen_op_short((sec_op_t)99), screen_op_short(SEC_OP_UNKNOWN)) == 0,
+                "une valeur aberrante se dit comme l'inconnu");
+    TEST_ASSERT(strcmp(screen_op_short((sec_op_t)99), screen_op_short(SEC_OP_SIGN)) != 0,
+                "une valeur aberrante ne se dit PAS comme signer");
+}
+
 void test_screen_layout(void)
 {
     TEST_SUITE("screen_layout");
@@ -288,4 +361,7 @@ void test_screen_layout(void)
     TEST_RUN(test_verdict_glyphs_are_three_distinct_things);
     TEST_RUN(test_blank_only_after_a_full_minute);
     TEST_RUN(test_blank_survives_millisecond_wraparound);
+    TEST_RUN(test_op_short_fits_the_double_height_font);
+    TEST_RUN(test_op_short_maps_each_operation);
+    TEST_RUN(test_op_short_out_of_range_says_unknown);
 }

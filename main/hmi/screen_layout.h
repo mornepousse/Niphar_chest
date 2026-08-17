@@ -159,3 +159,34 @@ static inline bool screen_blank_after_ms(uint32_t last_activity_ms, uint32_t now
     const uint32_t idle = now_ms - last_activity_ms;   /* juste au repassage a zero */
     return idle >= SCREEN_BLANK_AFTER_MS;
 }
+
+/*
+ * Libelle d'operation pour la police double hauteur : dix caracteres au plus.
+ *
+ * screen_op_label() (hmi/screen_view.h) rend jusqu'a dix-huit caracteres
+ * (« Operation inconnue »), ce qui tient en police simple mais pas en double
+ * hauteur : 12 px par cellule sur un ecran de 128 px n'en laisse passer que
+ * dix. Ce sont donc deux libelles pour deux polices, pas une duplication —
+ * l'ecran de confirmation montre celui-ci en grand, parce que c'est la seule
+ * information dont la lecture a une consequence.
+ *
+ * Rien dans le compilateur ne relie la longueur d'une chaine a la largeur d'une
+ * police : c'est test_op_short_fits_the_double_height_font() qui tient cette
+ * contrainte, et elle seule. Allonger un libelle ici sans regarder ce test
+ * tronquerait l'affichage en plein milieu d'un glyphe.
+ *
+ * Une valeur hors enum dit « INCONNU » et jamais le libelle d'une operation
+ * reelle : sur l'ecran qui annonce ce qu'on autorise, afficher « SIGNATURE »
+ * pour un code aberrant ferait confirmer autre chose que ce qui est montre.
+ */
+static inline const char *screen_op_short(sec_op_t op)
+{
+    switch (op) {
+    case SEC_OP_SIGN:    return "SIGNATURE";
+    case SEC_OP_DECRYPT: return "DECHIFFRER";
+    case SEC_OP_AUTH:    return "AUTH";
+    case SEC_OP_OTP:     return "CLE OTP";
+    case SEC_OP_UNKNOWN: return "INCONNU";
+    default:             return "INCONNU";
+    }
+}
