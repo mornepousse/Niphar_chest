@@ -40,6 +40,17 @@ static const char *TAG = "screen";
  * cote, arrondi a la page suivante. */
 #define SCREEN_BAND_H       10
 
+/* Echecs I2C consecutifs avant de rejouer la sequence d'init : 20 ticks de
+ * 50 ms, soit une seconde. Assez long pour ignorer une trame perdue isolee,
+ * assez court pour que la dalle revienne avant qu'un humain renonce. */
+#define SCREEN_REINIT_AFTER_FAILS 20u
+
+/* Instant du rapport de marge de pile, apres l'ecran d'accueil : a ce moment les
+ * chemins les plus profonds (logo, police double hauteur, veille) ont tous ete
+ * empruntes au moins une fois, donc la mesure porte sur le pire cas reel et non
+ * sur une estimation. */
+#define SCREEN_HWM_REPORT_MS 10000u
+
 static i2c_master_bus_handle_t s_bus;
 static i2c_master_dev_handle_t s_dev;
 static uint8_t                 s_fb[BOARD_OLED_WIDTH * BOARD_OLED_HEIGHT / 8u];
@@ -470,8 +481,15 @@ static void render_frame(const hmi_snapshot_t *snap, uint32_t now)
     case SCREEN_IDLE:
     default:
         if (snap->mode == USB_MODE_NONE) {
+            /* Pas de decalage ici, et c'est delibere : le logo plein fait
+             * SCREEN_LOGO_HEIGHT = 64 px sur une dalle de 64 px, donc il n'a
+             * AUCUNE marge verticale. Lui appliquer le decalage anti-marquage
+             * ne le repartissait pas, ca lui rognait jusqu'a 4 lignes du bas
+             * quatre minutes sur cinq — releve par la revue de branche. Cet
+             * ecran ne dure de toute facon qu'une minute avant que la veille
+             * errante prenne la main, et c'est elle qui porte l'anti-marquage. */
             const int x0 = (int)screen_center_x(BOARD_OLED_WIDTH, SCREEN_LOGO_WIDTH);
-            draw_logo(x0, shift);
+            draw_logo(x0, 0);
         } else {
             draw_text_2x_centered(14 + shift, v.title, true);
             draw_dots(46, screen_mode_index(snap->mode), screen_mode_count());
@@ -591,8 +609,12 @@ static void render_standby(usb_mode_t mode, uint32_t now)
     const int   group_w = (label_w > SCREEN_LOGO_HALF_W) ? label_w : SCREEN_LOGO_HALF_W;
     const int   group_h = SCREEN_LOGO_HALF_H + ((label != NULL) ? 10 : 0);
 
-    const uint16_t span_x = (uint16_t)((int)BOARD_OLED_WIDTH  - group_w);
-    const uint16_t span_y = (uint16_t)((int)BOARD_OLED_HEIGHT - group_h);
+    /* screen_span() et non une soustraction a la main : si le groupe depassait
+     * l'ecran, le non signe se replierait sur des dizaines de milliers et le
+     * logo partirait hors champ — defaisant la fonction anti-marquage pour
+     * laquelle cette veille existe. Releve par la revue de branche. */
+    const uint16_t span_x = screen_span(BOARD_OLED_WIDTH,  (uint16_t)group_w);
+    const uint16_t span_y = screen_span(BOARD_OLED_HEIGHT, (uint16_t)group_h);
     const int x = (int)screen_wander(now, SCREEN_WANDER_X_MS, span_x);
     const int y = (int)screen_wander(now, SCREEN_WANDER_Y_MS, span_y);
 
@@ -724,6 +746,8 @@ static void screen_task(void *arg)
     hmi_snapshot_t prev = {0};
     uint32_t       last_activity_ms = splash_start_ms;
     bool           display_on       = true;
+    unsigned       fails            = 0;
+    bool           hwm_reported     = false;
 
     for (;;) {
         hmi_snapshot_t snap;
@@ -785,6 +809,50 @@ static void screen_task(void *arg)
         const esp_err_t err = ssd1306_flush();
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "trame sautee : %s", esp_err_to_name(err));
+            fails++;
+        } else {
+            fails = 0;
+        }
+
+        /*
+         * Echecs repetes : rejouer la sequence d'initialisation.
+         *
+         * Retransmettre indefiniment la meme trame ne repare qu'une perte
+         * transitoire. Si le SSD1306 a perdu son etat interne — et le sondage
+         * materiel a montre que ce bus est electriquement marginal, avec des
+         * adresses parasites persistant meme apres la pose des pull-ups — alors
+         * seule la sequence d'init le remet d'aplomb.
+         *
+         * Le pire cas que ca evite est precis : on demande a quelqu'un
+         * d'appuyer pour autoriser une signature, et l'ecran est noir. La LED
+         * porte encore l'information, mais l'ecran est ce qui dit QUOI on
+         * autorise.
+         */
+        if (fails >= SCREEN_REINIT_AFTER_FAILS) {
+            ESP_LOGW(TAG, "%u trames perdues d'affilee — reinitialisation du SSD1306", fails);
+            const esp_err_t rerr = ssd1306_init_sequence();
+            if (rerr == ESP_OK) {
+                /* La sequence rallume la dalle (0xAF) : l'etat suivi doit le
+                 * refleter, sinon la prochaine comparaison want_on/display_on
+                 * croirait n'avoir rien a faire. */
+                display_on = true;
+                ESP_LOGI(TAG, "SSD1306 reinitialise");
+            } else {
+                ESP_LOGE(TAG, "reinitialisation echouee : %s", esp_err_to_name(rerr));
+            }
+            fails = 0;
+        }
+
+        /* Marge de pile, mesuree et non estimee, une fois par demarrage. La
+         * revue de branche a releve que l'estimation de la tache 4 etait
+         * perimee : le code a grossi depuis (police double hauteur, logo,
+         * points, veille errante). Une ligne au journal repond a la question a
+         * chaque boot, sur le vrai materiel, plutot qu'au desassemblage. */
+        if (!hwm_reported && (uint32_t)(now - splash_start_ms) >= SCREEN_HWM_REPORT_MS) {
+            hwm_reported = true;
+            ESP_LOGI(TAG, "marge de pile : %u octets libres sur %u",
+                     (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)),
+                     (unsigned)SCREEN_TASK_STACK);
         }
 
         vTaskDelay(pdMS_TO_TICKS(SCREEN_TASK_MS));

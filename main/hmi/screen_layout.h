@@ -255,3 +255,25 @@ static inline bool screen_sleep_after_ms(uint32_t last_activity_ms, uint32_t now
     const uint32_t idle = now_ms - last_activity_ms;   /* juste au repassage a zero */
     return idle >= SCREEN_SLEEP_AFTER_MS;
 }
+
+/*
+ * Course disponible pour un element mobile : ce qui reste de `total_px` une fois
+ * `used_px` occupes, et jamais moins que zero.
+ *
+ * C'est la garde que render_standby() n'avait pas. Il soustrayait a la main, et
+ * si le groupe depassait l'ecran la soustraction non signee se repliait sur des
+ * dizaines de milliers : le logo serait parti se promener hors champ, defaisant
+ * precisement la fonction anti-marquage pour laquelle la veille existe.
+ *
+ * Meme faute que screen_center_x() documente et evite depuis le debut. La revue
+ * de branche l'a retrouvee a quelques lignes de la — signe qu'une regle
+ * enoncee dans un commentaire ne se propage pas toute seule, et qu'il fallait
+ * une fonction pour la porter.
+ */
+static inline uint16_t screen_span(uint16_t total_px, uint16_t used_px)
+{
+    if (used_px >= total_px) {
+        return 0;
+    }
+    return (uint16_t)(total_px - used_px);
+}

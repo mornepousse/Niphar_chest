@@ -482,6 +482,59 @@ static void test_sleep_survives_millisecond_wraparound(void)
                 "eteint au seuil, a cheval sur le repassage a zero");
 }
 
+
+/* ------------------------------------------------------------------------- */
+/* Course disponible pour un element mobile.                                  */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * screen_span() est la garde que render_standby() n'avait pas.
+ *
+ * Il calculait « largeur de l'ecran - largeur du groupe » a la main. Si le
+ * groupe depassait l'ecran, la soustraction non signee se repliait sur des
+ * dizaines de milliers et le logo partait se promener hors champ — defaisant
+ * precisement la fonction anti-marquage pour laquelle la veille existe.
+ *
+ * Meme faute que screen_center_x() documente et evite depuis le debut ; la
+ * revue de branche l'a trouvee a un pixel pres au meme endroit.
+ */
+static void test_span_is_the_room_left(void)
+{
+    TEST_ASSERT_EQ(screen_span(128, 32), 96, "un logo de 32 sur 128 : 96 de course");
+    TEST_ASSERT_EQ(screen_span(64, 41), 23, "un groupe de 41 sur 64 : 23 de course");
+    TEST_ASSERT_EQ(screen_span(128, 128), 0, "pile la largeur : aucune course");
+    TEST_ASSERT_EQ(screen_span(128, 0), 128, "rien a placer : toute la course");
+}
+
+static void test_span_never_wraps(void)
+{
+    TEST_ASSERT_EQ(screen_span(128, 129), 0, "un pixel de trop : zero, pas 65535");
+    TEST_ASSERT_EQ(screen_span(64, 200), 0, "tres au-dela : zero");
+    TEST_ASSERT_EQ(screen_span(0, 32), 0, "ecran de largeur nulle : zero");
+    TEST_ASSERT_EQ(screen_span(128, 0xFFFF), 0, "largeur saturee : zero");
+
+    /* Formule en borne, sans valeur attendue precise : un repli non signe la
+     * casserait quelle que soit la facon de l'ecrire. */
+    for (uint32_t used = 0; used <= 400u; used += 7u) {
+        TEST_ASSERT(screen_span(128, (uint16_t)used) <= 128,
+                    "la course ne depasse jamais l'ecran");
+    }
+}
+
+/*
+ * Et le lien avec l'errance : une course nulle doit immobiliser, pas teleporter.
+ * C'est la composition des deux fonctions qui protege reellement l'affichage,
+ * pas chacune isolement.
+ */
+static void test_span_zero_keeps_the_logo_still(void)
+{
+    const uint16_t span = screen_span(64, 200);
+    for (uint32_t t = 0; t < 120000u; t += 997u) {
+        TEST_ASSERT_EQ(screen_wander(t, SCREEN_WANDER_X_MS, span), 0,
+                       "sans course, l'element ne bouge pas");
+    }
+}
+
 void test_screen_layout(void)
 {
     TEST_SUITE("screen_layout");
@@ -513,4 +566,7 @@ void test_screen_layout(void)
     TEST_RUN(test_sleep_comes_strictly_after_standby);
     TEST_RUN(test_sleep_bounds_are_exact);
     TEST_RUN(test_sleep_survives_millisecond_wraparound);
+    TEST_RUN(test_span_is_the_room_left);
+    TEST_RUN(test_span_never_wraps);
+    TEST_RUN(test_span_zero_keeps_the_logo_still);
 }
