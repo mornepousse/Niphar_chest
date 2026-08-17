@@ -64,6 +64,15 @@ static bool s_busy;
  * l'installation d'un mode. */
 static bool busy_try_acquire(void)
 {
+    /* usb_mode_init() peut rendre ESP_ERR_NO_MEM si xSemaphoreCreateMutexStatic()
+     * echoue, et main.c journalise cet echec sans s'arreter (doctrine : un
+     * echec d'init USB se journalise, il ne panique pas). Sans ce garde, le
+     * premier appel ici ferait xSemaphoreTake(NULL, ...) — panique FreeRTOS.
+     * Le chemin est quasi inatteignable (mutex statique sur buffer non nul),
+     * mais le refus explicite coute une ligne. */
+    if (s_busy_lock == NULL) {
+        return false;
+    }
     xSemaphoreTake(s_busy_lock, portMAX_DELAY);
     const bool was_busy = s_busy;
     if (!was_busy) {

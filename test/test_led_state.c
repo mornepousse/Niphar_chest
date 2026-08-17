@@ -223,30 +223,45 @@ static void test_mode_flash_for_aberrant_mode_is_black_but_defined(void)
  * l'instant d'armement, est toujours celle du mode (rgb, primary).
  */
 
-/* A l'instant meme de l'armement, sans aucun ecart : toujours primary. */
+/* A l'instant meme de l'armement, sans aucun ecart : toujours primary.
+ *
+ * armed = 7683 (7683 % LED_ALTERNATE_MS = 683, seconde moitie murale) —
+ * choisi a la place de l'ancien 0, qui est un multiple de LED_ALTERNATE_MS
+ * et coincide donc avec la phase absolue : sous le bug (phase calculee sur
+ * `now_ms % LED_ALTERNATE_MS` au lieu de l'ecart depuis l'armement), cet
+ * armement retomberait sur ALT des l'instant meme de l'armement, alors que
+ * la phase relative doit rester PRIMARY. */
 static void test_wait_phase_starts_on_primary_at_arming(void)
 {
-    TEST_ASSERT_EQ(led_wait_phase(0, 0), LED_WAIT_PHASE_PRIMARY,
-                   "phase a l'armement (t=0) : primary");
+    TEST_ASSERT_EQ(led_wait_phase(7683, 7683), LED_WAIT_PHASE_PRIMARY,
+                   "phase a l'armement, seconde moitie murale : primary");
     TEST_ASSERT_EQ(led_wait_phase(12345, 12345), LED_WAIT_PHASE_PRIMARY,
                    "phase a l'armement, quel que soit l'instant absolu : primary");
 }
 
 /* Toute la premiere moitie de periode doit rester primary — pas un instant
- * isole, toute la fenetre. */
+ * isole, toute la fenetre.
+ *
+ * armed = 7123 (pas un multiple de LED_ALTERNATE_MS, contrairement a
+ * l'ancien 7000) : phase relative et phase absolue murale ne coincident
+ * plus, donc la boucle finit par croiser le seuil de la phase absolue
+ * pendant que la phase relative doit rester PRIMARY sur toute la fenetre. */
 static void test_wait_phase_stays_primary_through_first_half(void)
 {
-    const uint32_t armed = 7000;
+    const uint32_t armed = 7123;
     for (uint32_t dt = 0; dt < LED_ALTERNATE_MS / 2; dt += 37) {
         TEST_ASSERT_EQ(led_wait_phase(armed, armed + dt), LED_WAIT_PHASE_PRIMARY,
                        "premiere demi-periode : toujours primary");
     }
 }
 
-/* Bascule pile a la moitie, et reste alt jusqu'a la fin de la periode. */
+/* Bascule pile a la moitie, et reste alt jusqu'a la fin de la periode.
+ *
+ * armed = 8377 (pas un multiple de LED_ALTERNATE_MS, contrairement a
+ * l'ancien 7000), meme raisonnement que ci-dessus. */
 static void test_wait_phase_switches_to_alt_at_half_period(void)
 {
-    const uint32_t armed = 7000;
+    const uint32_t armed = 8377;
     TEST_ASSERT_EQ(led_wait_phase(armed, armed + LED_ALTERNATE_MS / 2), LED_WAIT_PHASE_ALT,
                    "pile a la moitie de periode : bascule vers alt");
     for (uint32_t dt = LED_ALTERNATE_MS / 2; dt < LED_ALTERNATE_MS; dt += 41) {
@@ -284,6 +299,29 @@ static void test_wait_phase_survives_millisecond_wraparound(void)
                    "seconde demi-periode a cheval sur le repassage a zero : alt");
 }
 
+/* Le scenario EXACT du bug d'origine : un armement qui tombe dans la
+ * SECONDE moitie d'une periode d'HORLOGE MURALE (armed_at_ms % LED_ALTERNATE_MS
+ * >= LED_ALTERNATE_MS / 2). Sous l'ancien calcul (`now_ms % LED_ALTERNATE_MS`,
+ * sans tenir compte de armed_at_ms), une attente ainsi armee demarrait sur
+ * rgb_alt (le rouge) — le cas que la fonction existe pour eviter. Nomme pour
+ * qu'un lecteur qui le voit rougir sache immediatement quel bug est revenu. */
+static void test_wait_phase_survives_arming_in_wall_clock_second_half(void)
+{
+    const uint32_t armed = 7623;   /* 7623 % LED_ALTERNATE_MS == 623 : bien
+                                     * dans la seconde moitie murale. */
+    TEST_ASSERT(armed % LED_ALTERNATE_MS >= LED_ALTERNATE_MS / 2,
+                "l'armement choisi doit retomber dans la seconde moitie murale"
+                " (sinon ce test ne reproduit plus le scenario du bug)");
+
+    TEST_ASSERT_EQ(led_wait_phase(armed, armed), LED_WAIT_PHASE_PRIMARY,
+                   "arme en seconde moitie murale : primary des l'instant de l'armement");
+    for (uint32_t dt = 0; dt < LED_ALTERNATE_MS / 2; dt += 53) {
+        TEST_ASSERT_EQ(led_wait_phase(armed, armed + dt), LED_WAIT_PHASE_PRIMARY,
+                       "arme en seconde moitie murale : primary sur toute la premiere"
+                       " demi-periode ecoulee depuis l'armement");
+    }
+}
+
 void test_led_state(void)
 {
     TEST_SUITE("led_state");
@@ -306,4 +344,5 @@ void test_led_state(void)
     TEST_RUN(test_wait_phase_switches_to_alt_at_half_period);
     TEST_RUN(test_wait_phase_repeats_every_period);
     TEST_RUN(test_wait_phase_survives_millisecond_wraparound);
+    TEST_RUN(test_wait_phase_survives_arming_in_wall_clock_second_half);
 }
