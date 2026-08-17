@@ -4,8 +4,19 @@
  *
  * TinyUSB les résout par symbole global : deux modes HID ne peuvent donc pas
  * les définir chacun. Ce fichier les possède et route vers le mode installé.
- * Aucun mode installé -> réponses inertes, jamais de déréférencement nul. */
-static const hid_handlers_t *s_h = NULL;
+ * Aucun mode installé -> réponses inertes, jamais de déréférencement nul.
+ *
+ * s_h est écrit par la tâche appelante de hid_dispatch_set() (la bascule de
+ * mode USB, dans usb/usb_mode.c) et lu par les callbacks tud_hid_*_cb
+ * ci-dessous, appelés depuis tud_task — deux tâches FreeRTOS différentes.
+ * Le pointeur est donc volatile, comme le sont les drapeaux inter-tâches
+ * équivalents dans security/ccid.c (ex. ccid.c:196-223) : sans ce
+ * qualificatif, rien dans le langage C ne garantit qu'une écriture faite par
+ * une tâche devienne visible à l'autre.
+ * C'est le POINTEUR qui est volatile, pas sa cible (hid_handlers_t reste
+ * const) : `volatile const hid_handlers_t *` qualifierait la cible et pas le
+ * pointeur, et laisserait le même trou. */
+static const hid_handlers_t * volatile s_h = NULL;
 
 void hid_dispatch_set(const hid_handlers_t *h) { s_h = h; }
 
