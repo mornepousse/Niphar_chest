@@ -28,6 +28,7 @@ add_executable(test_runner
     test_led_state.c
     test_screen_view.c
     test_screen_anim.c
+    test_screen_layout.c
     ../main/link/link_proto.c
     ../main/sys/cr_crc16.c
     ../main/security/sec_confirm.c
