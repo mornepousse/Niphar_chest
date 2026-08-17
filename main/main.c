@@ -16,6 +16,7 @@
 #include "board.h"
 #include "console/console.h"
 #include "hmi/hmi.h"
+#include "hmi/screen.h"
 #include "sec_gate.h"
 #include "storage/sd_card.h"
 #include "usb/usb_mode.h"
@@ -124,6 +125,18 @@ void app_main(void)
     if (hmi_err != ESP_OK) {
         ESP_LOGW(TAG, "IHM indisponible : %s — pilotage par la console seulement",
                  esp_err_to_name(hmi_err));
+    }
+
+    /*
+     * L'ecran apres hmi_init() : il affiche l'instantane que hmi.c publie, il
+     * n'a aucune raison d'exister avant que cet etat existe. No-op sur une
+     * carte sans ecran (voir main/hmi/screen.c). Une erreur ici n'est pas
+     * fatale non plus — la cle reste utilisable sans affichage.
+     */
+    esp_err_t screen_err = screen_init();
+    if (screen_err != ESP_OK) {
+        ESP_LOGW(TAG, "ecran indisponible : %s — la cle reste utilisable sans lui",
+                 esp_err_to_name(screen_err));
     }
 
     /*

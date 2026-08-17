@@ -208,3 +208,12 @@ _Static_assert(BOARD_BTN_MODE != BOARD_BTN_CONFIRM,
 _Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_LED_WS2812),
                "BOARD_LED_WS2812 empiete sur un pin reserve");
 #endif
+
+#if defined(BOARD_OLED_SCL)
+_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_OLED_SCL),
+               "BOARD_OLED_SCL empiete sur un pin reserve");
+_Static_assert(!BOARD_PIN_IS_RESERVED(BOARD_OLED_SDA),
+               "BOARD_OLED_SDA empiete sur un pin reserve");
+_Static_assert(BOARD_OLED_SCL != BOARD_OLED_SDA,
+               "SCL et SDA sur la meme broche");
+#endif

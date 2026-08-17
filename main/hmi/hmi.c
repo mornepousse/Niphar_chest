@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "led_strip.h"
 
@@ -18,6 +19,33 @@
 #include "usb/usb_mode.h"
 
 static const char *TAG = "hmi";
+
+/*
+ * Instantane publie pour hmi/screen.c, sous verrou.
+ *
+ * Modele identique a storage/sd_card.c:s_lock — allocation statique (une
+ * creation qui echoue laisserait un verrou nul, exactement le bug qu'on
+ * fermerait sinon), verrou pris pour la duree de la copie seulement, jamais
+ * pendant un transfert materiel (ici, aucun ; l'I2C vit dans screen.c, dans
+ * une autre tache).
+ */
+static StaticSemaphore_t s_snap_lock_buf;
+static SemaphoreHandle_t s_snap_lock;
+static hmi_snapshot_t    s_snapshot;
+
+void hmi_snapshot(hmi_snapshot_t *out)
+{
+    if (s_snap_lock == NULL) {
+        /* hmi_init() n'a jamais tourne (ou son propre echec l'a laisse a
+         * NULL) : rendre l'instantane zero-initialise plutot que de lire une
+         * structure jamais ecrite. */
+        *out = (hmi_snapshot_t){ 0 };
+        return;
+    }
+    xSemaphoreTake(s_snap_lock, portMAX_DELAY);
+    *out = s_snapshot;
+    xSemaphoreGive(s_snap_lock);
+}
 
 /* 5 ms : quatre echantillons par periode d'anti-rebond, assez pour que le
  * filtre voie une ligne qui se calme, et assez rare pour ne rien couter. */
@@ -73,11 +101,12 @@ static void paint(led_view_t v, uint32_t t, uint32_t wait_armed_at)
 static void hmi_task(void *arg)
 {
     (void)arg;
-    led_event_t         event         = LED_EVENT_NONE;
-    uint32_t            event_until   = 0;
-    sec_confirm_state_t last_state    = SEC_CONFIRM_IDLE;
-    bool                was_pending   = false;
-    uint32_t            wait_armed_at = 0;
+    led_event_t         event           = LED_EVENT_NONE;
+    uint32_t            event_until     = 0;
+    uint32_t            event_started_at = 0;
+    sec_confirm_state_t last_state      = SEC_CONFIRM_IDLE;
+    bool                was_pending     = false;
+    uint32_t            wait_armed_at   = 0;
 
     for (;;) {
         const uint32_t t = now_ms();
@@ -86,8 +115,9 @@ static void hmi_task(void *arg)
             const esp_err_t err = usb_mode_cycle_next();
             /* Le flash annonce le NOUVEAU mode, donc il se lit apres la
              * bascule ; en cas d'echec, c'est un refus qu'on montre. */
-            event       = (err == ESP_OK) ? LED_EVENT_MODE : LED_EVENT_REFUSED;
-            event_until = t + HMI_FLASH_MS;
+            event            = (err == ESP_OK) ? LED_EVENT_MODE : LED_EVENT_REFUSED;
+            event_until      = t + HMI_FLASH_MS;
+            event_started_at = t;
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "bascule de mode : %s", esp_err_to_name(err));
             }
@@ -100,8 +130,9 @@ static void hmi_task(void *arg)
              * chose. */
             if (sec_confirm_peek(t) == SEC_CONFIRM_PENDING) {
                 sec_gate_button_confirm();
-                event       = LED_EVENT_GRANTED;
-                event_until = t + HMI_FLASH_MS;
+                event            = LED_EVENT_GRANTED;
+                event_until      = t + HMI_FLASH_MS;
+                event_started_at = t;
             }
         }
 
@@ -109,10 +140,16 @@ static void hmi_task(void *arg)
             event = LED_EVENT_NONE;
         }
 
-        /* peek() et jamais poll() : consommer ici volerait la permission a la
-         * tache qui attend de signer. Voir le modele de concurrence en tete de
-         * security/sec_confirm.c. */
-        const sec_confirm_state_t st = sec_confirm_peek(t);
+        /* peek_labeled() et jamais poll(), et jamais peek() ici : consommer
+         * volerait la permission a la tache qui attend de signer, et deux
+         * appels separes (etat puis operation) rouvriraient la fenetre de
+         * course qu'un seul appel ferme — voir le modele de concurrence en
+         * tete de security/sec_confirm.c, bullet peek_labeled(). `op` sert a
+         * la fois a rien ici (la LED ne porte pas de libelle) et a
+         * l'instantane publie plus bas pour hmi/screen.c — un seul appel pour
+         * les deux usages, jamais deux lectures. */
+        sec_op_t op = SEC_OP_UNKNOWN;
+        const sec_confirm_state_t st = sec_confirm_peek_labeled(t, &op);
         const bool pending = (st == SEC_CONFIRM_PENDING);
 
         /* Sur la TRANSITION vers l'attente : c'est l'instant que
@@ -130,18 +167,44 @@ static void hmi_task(void *arg)
          * tant que personne n'appelle poll(). Declencher sur l'etat ferait
          * clignoter le rouge indefiniment des que le consommateur tarde. */
         if (st == SEC_CONFIRM_TIMEDOUT && last_state != SEC_CONFIRM_TIMEDOUT) {
-            event       = LED_EVENT_REFUSED;
-            event_until = t + HMI_FLASH_MS;
+            event            = LED_EVENT_REFUSED;
+            event_until      = t + HMI_FLASH_MS;
+            event_started_at = t;
         }
         last_state = st;
 
         paint(led_state_view(usb_mode_get(), pending, event), t, wait_armed_at);
+
+        /* Publication sous verrou, en tout dernier — apres que ce tick a
+         * fini de decider event/pending/wait_armed_at, jamais avant : un
+         * lecteur de screen.c ne doit jamais voir un instantane a moitie a
+         * jour pour ce tick. */
+        if (s_snap_lock != NULL) {
+            const hmi_snapshot_t snap = {
+                .mode            = usb_mode_get(),
+                .confirm_pending = pending,
+                .armed_at_ms     = wait_armed_at,
+                .op              = op,
+                .event           = event,
+                .event_at_ms     = event_started_at,
+            };
+            xSemaphoreTake(s_snap_lock, portMAX_DELAY);
+            s_snapshot = snap;
+            xSemaphoreGive(s_snap_lock);
+        }
+
         vTaskDelay(pdMS_TO_TICKS(HMI_TICK_MS));
     }
 }
 
 esp_err_t hmi_init(void)
 {
+    /* Avant tout le reste : screen.c doit pouvoir lire un instantane (fut-il
+     * zero-initialise) meme si la suite de cette fonction echoue plus loin. */
+    if (s_snap_lock == NULL) {
+        s_snap_lock = xSemaphoreCreateMutexStatic(&s_snap_lock_buf);
+    }
+
     const gpio_config_t btns = {
         .pin_bit_mask = (1ULL << BOARD_BTN_MODE) | (1ULL << BOARD_BTN_CONFIRM),
         .mode         = GPIO_MODE_INPUT,
@@ -188,6 +251,16 @@ esp_err_t hmi_init(void)
 esp_err_t hmi_init(void)
 {
     return ESP_OK;   /* no-op : main.c n'a pas a savoir quelle carte tourne */
+}
+
+void hmi_snapshot(hmi_snapshot_t *out)
+{
+    /* Pas de hmi_task ici pour publier quoi que ce soit : le zero-init est le
+     * seul instantane correct — mode NONE, rien en attente, aucun evenement.
+     * Une carte sans bouton n'a d'ailleurs jamais BOARD_OLED_SCL non plus, donc
+     * personne n'appelle cette fonction en pratique ; elle existe pour que le
+     * lien reste correct si un jour l'un des deux existe sans l'autre. */
+    *out = (hmi_snapshot_t){ 0 };
 }
 
 #endif

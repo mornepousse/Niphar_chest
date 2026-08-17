@@ -27,10 +27,40 @@
  * timing ou de priorite doit le chercher ICI, pas se laisser dire qu'il n'y
  * a rien a y trouver.
  *
+ * Depuis la tache ecran (hmi/screen.c) : hmi.c publie aussi, en fin de
+ * chaque tick, un hmi_snapshot_t sous verrou — mode, attente, operation et
+ * evenement LED, copies d'un coup. Ce n'est pas une decision au sens des
+ * puces ci-dessus (rien n'y est choisi, tout y est deja calcule), mais c'est
+ * une responsabilite de plus que ce fichier porte, et une ou une lecture
+ * dechiree romprait la meme garantie que sec_confirm_peek_labeled() protege
+ * cote securite : voir hmi_snapshot_t plus bas.
+ *
  * N'existe que sur une carte qui a un bouton — voir boards/wt9932_key/board.h.
  */
 
 #include "esp_err.h"
+
+#include "hmi/led_state.h"
+#include "sec_confirm.h"
+#include "usb/usb_mode.h"
+
+/*
+ * Ce que la tache d'affichage a besoin de savoir. Publie par la tache IHM sous
+ * verrou, lu par la tache ecran : deux contextes, donc un instantane copie d'un
+ * coup plutot que quatre champs lus separement — une lecture dechiree
+ * afficherait une operation avec l'echeance d'une autre.
+ *
+ * Le verrou ne protege QUE la copie de cette structure. Il n'est jamais tenu
+ * pendant un transfert I2C.
+ */
+typedef struct {
+    usb_mode_t  mode;
+    bool        confirm_pending;
+    uint32_t    armed_at_ms;
+    sec_op_t    op;
+    led_event_t event;
+    uint32_t    event_at_ms;
+} hmi_snapshot_t;
 
 /*
  * Configure les deux GPIO d'entree (pull-up interne, actifs bas), le pilote
@@ -41,3 +71,13 @@
  * pilotable par la console.
  */
 esp_err_t hmi_init(void);
+
+/*
+ * Copie l'instantane courant dans *out, sous verrou. Sans effet sur l'etat de
+ * sec_confirm : hmi_task l'a deja lu via sec_confirm_peek_labeled() avant de
+ * publier. Sur une carte sans bouton (hmi_init() no-op), *out reste a sa
+ * valeur zero-initialisee — mode NONE, rien en attente, aucun evenement — ce
+ * qui est le bon defaut pour screen.c sur les cartes qui n'ont pas d'ecran
+ * non plus.
+ */
+void hmi_snapshot(hmi_snapshot_t *out);
