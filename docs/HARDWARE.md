@@ -373,3 +373,68 @@ en renvoyant `ESC[0n` sur réception de la sonde), le même boot tombe à 100 ms
 (819→919). Les deux nombres sont sous la barre du sondage SD à 11 s ; le
 second est la mesure fidèle à ce que verrait un utilisateur sur un vrai
 terminal.
+
+### Validation sec_confirm par bouton réel — 2026-08-17
+
+Tâche 8 de `.superpowers/sdd/2026-08-16-carte-cle-wt9932/`, sur la carte-clé
+WT9932P4-TINY, boutons IO32 (MODE)/IO33 (CONFIRM) fraîchement câblés par Mae.
+Première fois que ce projet éprouve sa chaîne de présence physique : jusque-là
+`sec_confirm` n'avait qu'une commande console, sans valeur de sécurité puisque
+déclenchable par du logiciel, et le lien clavier qui portera la vraie
+confirmation intégrée n'existe pas.
+
+**Prouvé, par appui réel sur le bouton — pas par la console** :
+
+- Appui MODE (IO32) → LED bleue, `303a:4021` énumère en **haute vitesse**,
+  `gpg --card-status` répond.
+- **Génération de clés sur la carte** : `gpg` effectue **trois** signatures
+  (auto-signature de l'identité, puis une signature de liaison par sous-clé),
+  chacune soumise à `UIF Sign=on`.
+- **Sans appui** : expiration à 15 s (`SEC_CONFIRM_TIMEOUT_MS`), la carte
+  renvoie le mot d'état **`6985`** (« Conditions of use not satisfied »),
+  `gpg` abandonne. **Observé deux fois.**
+- **Avec appui** pendant l'alternance : l'opération passe. **Observé deux
+  fois**, puis trois fois d'affilée pour mener une génération complète à son
+  terme.
+- **Une confirmation par opération, pas par session** — mesuré et non déduit :
+  le compteur de signatures de la carte est passé de 0 à 2 pour exactement
+  deux appuis.
+- Génération complète aboutie : `pub nistp256
+  3DEF9F107CB7FE6F02D5351E2F49F54486F3560C [SC]`, sous-clés `[A]` nistp256 et
+  `[E]` cv25519, identité « mae (coucou) ».
+- Compteurs de PIN : un PIN admin erroné décrémente le compteur (3 → 2), et
+  une vérification réussie le **réarme** (→ 3). Comportement conforme à la
+  spécification OpenPGP.
+
+**Deux constats d'usage, à consigner ici plutôt que dans la spec** :
+
+1. `gpg` ne prévient nulle part qu'une génération de clés demandera **trois**
+   confirmations, et n'affiche rien entre elles. Quelqu'un qui ne surveille
+   pas la LED croira à un échec sans comprendre pourquoi.
+2. La pulsation d'attente initiale (fondu de luminosité à 20/255 sur la
+   couleur du mode) s'est révélée **trop discrète en usage réel**. Remplacée
+   le même jour par une **alternance couleur du mode ↔ rouge à pleine
+   luminosité**, jugée « beaucoup plus visible » par Mae. Réserve assumée : le
+   rouge porte alors deux sens — « j'attends » et « refusé » — distingués par
+   la durée (15 s d'alternance contre un flash de 120 ms) ; documentée dans la
+   spec.
+
+**Un fait non expliqué, consigné tel quel** : pendant la génération de clés
+complète ci-dessus (trois signatures requises), le compteur de signatures de
+la carte est passé de 2 à 4, soit +2 et non +3. L'écart n'est pas expliqué —
+à vérifier dans `main/security/openpgp_card.c`. Aucun mécanisme n'est supposé
+ici.
+
+**Pas prouvé** :
+
+- Le **lien S3** — absent des trois cartes, la variante intégrée au clavier
+  reste non éprouvée.
+- L'**échange CR-HMAC** du mode OTP — pas d'outillage HID sur cette machine ;
+  le mode n'est vérifié que jusqu'à la liaison par le noyau.
+- Le **cycle vers le mode OTP** et l'**appui hors opération armée** — non
+  exercés lors de cette séance.
+- La **résistance au dump de flash** — le bouton BOOT est en façade, rien
+  n'isole l'USB-Serial-JTAG, et les clés privées vivent dans la flash. La
+  parade prévue pour le coffre de production (jumpers JP1/JP2 retirés en
+  fabrication) ne s'applique pas à cette carte, voir « Cette carte ne résiste
+  pas au dump de flash » ci-dessus.
