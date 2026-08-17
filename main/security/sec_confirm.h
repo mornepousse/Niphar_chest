@@ -12,9 +12,28 @@ typedef enum {
     SEC_CONFIRM_TIMEDOUT, /* return-only signal from poll() and peek(); s_state never holds this value */
 } sec_confirm_state_t;
 
+/*
+ * Ce qu'une confirmation autorise. Un CODE, pas une chaine : sec_confirm garde
+ * la porte, il n'a a porter ni texte, ni allocation, ni borne de longueur a
+ * defendre. La traduction en libelle affichable est une fonction pure de
+ * hmi/screen_view.h, donc testable — et un futur FIDO2 ajoutera ses codes ici
+ * sans toucher a ce module.
+ *
+ * Necessaire parce que le slot ne porte pas le sens : toutes les operations
+ * CCID partagent CCID_CONFIRM_SLOT.
+ */
+typedef enum {
+    SEC_OP_UNKNOWN = 0,   /* rien d'arme, ou origine inconnue */
+    SEC_OP_SIGN,          /* PSO:CDS — signature OpenPGP */
+    SEC_OP_DECRYPT,       /* PSO:DEC */
+    SEC_OP_AUTH,          /* INTERNAL AUTHENTICATE */
+    SEC_OP_OTP,           /* defi/reponse CR-HMAC */
+} sec_op_t;
+
 void sec_confirm_reset(void);
-/* Arm a pending request for `slot`, stamped at now_ms. Overwrites any prior state, including an unconsumed AUTHORIZED grant. */
-void sec_confirm_arm(uint8_t slot, uint32_t now_ms);
+/* Arm a pending request for `slot`/`op`, stamped at now_ms. Overwrites any
+ * prior state, including an unconsumed AUTHORIZED grant. */
+void sec_confirm_arm(uint8_t slot, sec_op_t op, uint32_t now_ms);
 /* Physical confirm key pressed: PENDING -> AUTHORIZED; no-op otherwise. */
 void sec_confirm_authorize(void);
 /* Poll at now_ms. PENDING past timeout -> returns TIMEDOUT once (then IDLE).
@@ -25,3 +44,6 @@ sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot);
  * `now_ms` sert a signaler une echeance deja depassee sans la consommer — la
  * LED doit pouvoir montrer le refus. */
 sec_confirm_state_t sec_confirm_peek(uint32_t now_ms);
+/* L'operation actuellement armee, ou SEC_OP_UNKNOWN. Lecture SANS effet de
+ * bord, comme peek() : pour l'affichage seulement. */
+sec_op_t sec_confirm_armed_op(void);

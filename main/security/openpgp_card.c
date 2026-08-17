@@ -1057,7 +1057,7 @@ uint16_t openpgp_card_apdu(const uint8_t *in, uint16_t in_len,
 
             /* UIF D7 gate (after input validation: don't burn a touch on garbage). */
             if (uif_required(0x00D7u)) {
-                int cs = s_hooks->confirm();
+                int cs = s_hooks->confirm(SEC_OP_DECRYPT);
                 if (cs != 1) return sw_only(out, out_max, SW_COND_NOT_SAT);
             }
             /* NOTE: mode-82 verification is NOT consumed — the C4 validity
@@ -1099,7 +1099,7 @@ uint16_t openpgp_card_apdu(const uint8_t *in, uint16_t in_len,
 
         /* UIF gate: if DO 0xD6 byte[0] != 0, call confirm hook */
         if (uif_required(0x00D6u)) {
-            int cs = s_hooks->confirm();
+            int cs = s_hooks->confirm(SEC_OP_SIGN);
             if (cs != 1)
                 return sw_only(out, out_max, SW_COND_NOT_SAT);
         }
@@ -1156,7 +1156,7 @@ uint16_t openpgp_card_apdu(const uint8_t *in, uint16_t in_len,
             return sw_only(out, out_max, SW_WRONG_DATA);
 
         if (uif_required(0x00D8u)) {
-            int cs = s_hooks->confirm();
+            int cs = s_hooks->confirm(SEC_OP_AUTH);
             if (cs != 1) return sw_only(out, out_max, SW_COND_NOT_SAT);
         }
         /* mode-82 is NOT consumed and the DS counter does NOT move —

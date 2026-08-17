@@ -82,7 +82,7 @@ static void hook_confirm_arm(uint8_t slot)
     int idx = otp_slot_to_store_idx(slot);
     if (idx < 0) return;
     s_armed_idx = idx;
-    sec_confirm_arm((uint8_t)idx, now_ms());
+    sec_confirm_arm((uint8_t)idx, SEC_OP_OTP, now_ms());
     ESP_LOGI(TAG, "confirm armed for store slot %d", idx);
 }
 
