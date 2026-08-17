@@ -242,7 +242,8 @@ et **mutation transitoire pour prouver que le test mord**.
   longueur annoncée supérieure au reçu, canal inconnu, `INIT` en cours de
   transaction.
 
-**`libfido2` doit être installé** (`pacman -S libfido2`) : les phases 1 et 2 n'ont
+**`libfido2` arrive par `nix-shell`** (`shell.nix` à la racine, écrit pour ça —
+la machine est sous NixOS) : les phases 1 et 2 n'ont
 aucun flux navigateur pour les tester. Et il vaut mieux que mon propre client de
 test pour une raison de fond — **un client que j'écris partage mes propres
 mélectures de la spécification**. `libfido2` est une implémentation
