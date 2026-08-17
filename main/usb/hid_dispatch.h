@@ -3,11 +3,12 @@
 /*
  * Répartiteur des callbacks HID de TinyUSB — propriétaire unique.
  *
- * TinyUSB résout tud_hid_descriptor_report_cb(), tud_hid_get_report_cb() et
- * tud_hid_set_report_cb() par symbole global : un seul fichier peut donc les
- * définir dans tout le lien. mode_otp.c les possédait jusqu'ici ; dès qu'un
- * second mode HID (FIDO2/CTAP-HID) doit exister, il lui faut ce répartiteur
- * unique, qui route vers le mode HID actuellement installé.
+ * TinyUSB résout tud_hid_descriptor_report_cb(), tud_hid_get_report_cb(),
+ * tud_hid_set_report_cb() et tud_hid_report_complete_cb() par symbole
+ * global : un seul fichier peut donc les définir dans tout le lien.
+ * mode_otp.c les possédait jusqu'ici ; dès qu'un second mode HID (FIDO2/
+ * CTAP-HID) doit exister, il lui faut ce répartiteur unique, qui route vers
+ * le mode HID actuellement installé.
  *
  * Un seul mode HID est actif à la fois — les modes USB du coffre sont
  * mutuellement exclusifs au run-time (voir usb/usb_mode.c). hid_dispatch_set()
@@ -29,6 +30,12 @@ typedef struct {
                            uint8_t *buffer, uint16_t reqlen);
     void     (*set_report)(uint8_t report_id, hid_report_type_t type,
                            const uint8_t *buffer, uint16_t bufsize);
+    /* Fin d'une transmission IN (tud_hid_report() a été consommé par
+     * l'hôte). NULL pour un mode qui n'envoie jamais qu'un rapport isolé
+     * sans suite à chaîner (OTP : rien via cette voie, tout passe par EP0) —
+     * FIDO s'en sert pour émettre les paquets de continuation d'une réponse
+     * CTAP-HID fragmentée sur plusieurs rapports, voir mode_fido.c. */
+    void     (*report_complete)(const uint8_t *report, uint16_t len);
 } hid_handlers_t;
 
 /*

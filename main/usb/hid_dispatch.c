@@ -44,3 +44,11 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id,
         s_h->set_report(report_id, report_type, buffer, bufsize);
     }
 }
+
+void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, uint16_t len)
+{
+    (void)instance;
+    if (s_h && s_h->report_complete) {
+        s_h->report_complete(report, len);
+    }
+}

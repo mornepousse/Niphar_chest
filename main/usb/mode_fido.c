@@ -154,38 +154,89 @@ static uint32_t s_last_cid;
 #define CTAPHID_CAPFLAG_NMSG 0x08u
 
 /*
- * Empaquette et envoie une réponse CTAP-HID sur un UNIQUE paquet HID de 64
- * octets (paquet d'initialisation, jamais de continuation).
+ * État d'émission fragmentée — image miroir de ctaphid_asm_t côté envoi :
+ * même argument (Ruling 4) qu'un seul message en vol à la fois, donc une
+ * seule réponse en cours d'émission à tout instant. `buf` reprend la taille
+ * maximale d'un message CTAP-HID (CTAPHID_MAX_PAYLOAD, 7,6 Kio) — jamais sur
+ * une pile de tâche, pour la même raison que s_asm.
  *
- * Appelée directement depuis tud_hid_set_report_cb (via handle_message()),
- * donc dans la tâche tud_task : c'est le chemin littéral du brief de la
- * tâche 3, et il tient sur matériel — vérifié par 30 PING consécutifs
- * répondus sans accroc (wt9932_key, 2026-08-17). Une inquiétude de
- * ré-entrance dans hidd_xfer_cb (hid_device.c:416, qui ré-arme l'endpoint
- * OUT juste après cet appel) a été envisagée puis écartée par ce test : la
- * défaillance observée en premier lieu ne venait pas de là, mais d'un banc
- * de test envoyant un rapport de sortie tronqué à 63 octets — un octet de
- * moins que CTAPHID_PKT_SIZE, silencieusement refusé par le garde de
- * fido_set_report() plus bas. Rien à corriger côté firmware.
+ * Nécessaire dès qu'une réponse dépasse 57 octets (la place dans un paquet
+ * INIT) : authenticatorGetInfo (CBOR, tâche 5) porte les versions, un AAGUID
+ * de 16 octets, les options et maxMsgSize — bien au-delà. Ruling du
+ * coordinateur (2026-08-17) : la fragmentation est du code de TRANSPORT,
+ * elle appartient ici, pas à la tâche CBOR qui viendra ensuite.
+ */
+typedef struct {
+    uint8_t  buf[CTAPHID_MAX_PAYLOAD];
+    uint16_t len;         /* longueur totale du message à émettre */
+    uint16_t sent;        /* octets déjà copiés dans un paquet déjà envoyé */
+    uint32_t cid;
+    uint8_t  cmd;
+    uint8_t  next_seq;    /* prochain numéro de séquence CONT, 0..127 */
+} fido_tx_t;
+
+static fido_tx_t s_tx;
+
+/*
+ * Empaquette et envoie une réponse CTAP-HID, fragmentée si nécessaire sur
+ * plusieurs paquets — l'image miroir exacte de ce que ctaphid_feed() sait
+ * défaire côté réception : un paquet d'initialisation (CID, CMD|0x80, BCNT
+ * sur 16 bits, jusqu'à 57 octets de charge), puis des paquets de
+ * continuation (CID, numéro de séquence 0..127, jusqu'à 59 octets).
  *
- * Limitation assumée de cette tâche : contrairement à ctaphid_feed() côté
- * réception (qui réassemble jusqu'à CTAPHID_MAX_PAYLOAD sur plusieurs
- * paquets), l'envoi ne FRAGMENTE PAS. Une charge utile de plus de 57 octets
- * (CTAPHID_PKT_SIZE - 7, la place dans un paquet INIT) est tronquée à 57,
- * avec `len` ajusté sur ce qui est réellement envoyé — jamais un message
- * annoncé plus long que ce qui suit, ce qui ferait attendre l'hôte des
- * paquets CONT qui ne viendront jamais. INIT (17 octets) et un PING usuel
- * tiennent largement dans cette limite. L'envoi fragmenté (nécessaire pour
- * authenticatorGetInfo en CBOR, par exemple) demande tud_hid_report_
- * complete_cb() — un troisième callback HID, hors périmètre de cette tâche
- * limitée à INIT/PING ; à ouvrir avec la tâche CBOR.
+ * Un message de plus de CTAPHID_MAX_PAYLOAD (57 + 128×59 = 7609) est
+ * IMPOSSIBLE à représenter en CTAP-HID — le numéro de séquence CONT ne tient
+ * que sur 7 bits, 128 paquets de continuation au plus. Refusé explicitement
+ * ici (rien n'est envoyé) plutôt que tronqué en silence : un appelant qui
+ * produit une réponse plus grande a un bug, mieux vaut un message absent
+ * qu'un message mal formé sur le fil, que l'hôte prendrait pour argent
+ * comptant.
+ *
+ * Le premier paquet part directement d'ici, dans tud_hid_set_report_cb (via
+ * handle_message()) — chemin vérifié sur matériel par 30 PING consécutifs
+ * sans accroc (wt9932_key, 2026-08-17), y compris sans le mécanisme de
+ * continuation ci-dessous. Les paquets de continuation, eux, NE PEUVENT PAS
+ * partir du même appel synchrone : la classe HID de TinyUSB n'admet qu'un
+ * seul transfert IN en vol à la fois (tud_hid_ready() reste faux tant que
+ * l'hôte n'a pas consommé le précédent), et ce chemin tourne déjà dans
+ * tud_task — l'attendre ici bloquerait la tâche même qui doit libérer
+ * l'endpoint. fido_report_complete() ci-dessous (chaîné via le répartiteur
+ * HID, tud_hid_report_complete_cb) prend donc le relais paquet par paquet,
+ * exactement le patron que hid_device.c attend de tud_hid_report_
+ * complete_cb — c'est là, et seulement là, qu'un nouvel appel à
+ * tud_hid_report() est sûr après le premier.
+ *
+ * Limite connue, non fermée par cette tâche : rien n'empêche un nouveau
+ * message CTAP-HID d'arriver (et donc un nouvel appel à send_response())
+ * avant que toutes les continuations d'une réponse précédente n'aient été
+ * émises — s_tx serait alors écrasé en cours d'envoi. ctaphid_feed() ne
+ * connaît que l'état de RÉCEPTION (s_asm), jamais l'état d'ÉMISSION ; un
+ * hôte CTAP-HID correct attend la réponse complète avant d'émettre la
+ * requête suivante, ce que cette tâche ne vérifie pas. À rouvrir si un test
+ * d'intégration révèle qu'un client réel ne respecte pas cet ordre.
  */
 static void send_response(uint32_t cid, uint8_t cmd, const uint8_t *data, uint16_t len)
 {
+    if (len > CTAPHID_MAX_PAYLOAD) {
+        return;   /* refus explicite — voir le commentaire ci-dessus */
+    }
+
+    /* Copié maintenant, jamais lu plus tard directement depuis `data` : elle
+     * pointe souvent dans s_asm.buf (cas PING), que le prochain paquet
+     * OUT — accepté dès que ce paquet-ci sera parti — peut réécrire avant
+     * que toutes les continuations n'aient été émises. */
+    if (len > 0u && data != NULL) {
+        memcpy(s_tx.buf, data, len);
+    }
+    s_tx.len      = len;
+    s_tx.cid      = cid;
+    s_tx.cmd      = cmd;
+    s_tx.next_seq = 0;   /* la séquence CONT repart de 0 à CHAQUE message */
+
     uint8_t pkt[CTAPHID_PKT_SIZE];
     memset(pkt, 0, sizeof(pkt));
 
-    const uint16_t room = (uint16_t)(CTAPHID_PKT_SIZE - 7u);
+    const uint16_t room = (uint16_t)(CTAPHID_PKT_SIZE - 7u);   /* 57 */
     const uint16_t n    = (len < room) ? len : room;
 
     pkt[0] = (uint8_t)(cid >> 24);
@@ -193,17 +244,60 @@ static void send_response(uint32_t cid, uint8_t cmd, const uint8_t *data, uint16
     pkt[2] = (uint8_t)(cid >> 8);
     pkt[3] = (uint8_t)cid;
     pkt[4] = (uint8_t)(0x80u | cmd);
-    pkt[5] = (uint8_t)(n >> 8);
-    pkt[6] = (uint8_t)(n & 0xFFu);
-    if (n > 0u && data != NULL) {
-        memcpy(pkt + 7, data, n);
+    pkt[5] = (uint8_t)(len >> 8);   /* longueur TOTALE, jamais tronquée */
+    pkt[6] = (uint8_t)(len & 0xFFu);
+    if (n > 0u) {
+        memcpy(pkt + 7, s_tx.buf, n);
     }
+    s_tx.sent = n;
 
     /* Abandon silencieux si l'endpoint n'est pas prêt, jamais d'attente
-     * bloquante : ce chemin tourne dans tud_task, l'attendre ici
-     * bloquerait la tâche même qui doit libérer l'endpoint. Un seul paquet
-     * envoyé par réponse (voir ci-dessus) : l'endpoint est toujours libre
-     * à ce point en pratique. */
+     * bloquante — même raison que ci-dessus. Rien n'est en vol avant ce
+     * premier paquet (Ruling 4), donc l'endpoint est toujours libre à ce
+     * point en pratique. */
+    if (tud_hid_ready()) {
+        tud_hid_report(0, pkt, sizeof(pkt));
+    }
+}
+
+/*
+ * Suite de send_response() : émet le prochain paquet de continuation, s'il
+ * en reste — appelée par le répartiteur HID (usb/hid_dispatch.c) à chaque
+ * fois qu'un rapport IN part effectivement sur le fil (tud_hid_report_
+ * complete_cb). Ne rien faire si s_tx est déjà épuisé (réponse tenue dans
+ * l'unique paquet d'initialisation, cas le plus fréquent — INIT, PING
+ * usuel) : c'est le report_complete du DERNIER paquet d'une telle réponse
+ * qui arrive ici sans qu'il reste rien à envoyer, comportement normal et
+ * silencieux.
+ */
+static void fido_report_complete(const uint8_t *report, uint16_t len)
+{
+    (void)report;
+    (void)len;
+
+    if (s_tx.sent >= s_tx.len) {
+        return;
+    }
+
+    uint8_t pkt[CTAPHID_PKT_SIZE];
+    memset(pkt, 0, sizeof(pkt));
+
+    pkt[0] = (uint8_t)(s_tx.cid >> 24);
+    pkt[1] = (uint8_t)(s_tx.cid >> 16);
+    pkt[2] = (uint8_t)(s_tx.cid >> 8);
+    pkt[3] = (uint8_t)s_tx.cid;
+    pkt[4] = (uint8_t)(s_tx.next_seq & 0x7Fu);   /* bit 7 bas : continuation */
+
+    const uint16_t room      = (uint16_t)(CTAPHID_PKT_SIZE - 5u);   /* 59 */
+    const uint16_t remaining = (uint16_t)(s_tx.len - s_tx.sent);
+    const uint16_t n         = (remaining < room) ? remaining : room;
+    memcpy(pkt + 5, s_tx.buf + s_tx.sent, n);
+    s_tx.sent = (uint16_t)(s_tx.sent + n);
+    s_tx.next_seq++;
+
+    /* Le transfert précédent vient juste de se terminer (c'est ce qui
+     * déclenche cet appel) : l'endpoint est donc prêt. Gardé quand même,
+     * défensivement, sur le même principe qu'au premier paquet. */
     if (tud_hid_ready()) {
         tud_hid_report(0, pkt, sizeof(pkt));
     }
@@ -260,8 +354,9 @@ static void handle_message(const ctaphid_msg_t *msg)
         break;
     }
     case CTAPHID_CMD_PING:
-        /* Écho pur : la charge utile revient telle quelle (troncature à 57
-         * octets au-delà — voir send_response()). */
+        /* Écho pur : la charge utile revient telle quelle, fragmentée si
+         * besoin par send_response() — msg->len peut dépasser 57 octets,
+         * ctaphid_feed() l'a déjà réassemblée le cas échéant. */
         send_response(msg->cid, CTAPHID_CMD_PING, msg->data, msg->len);
         break;
     default:
@@ -326,34 +421,43 @@ static void fido_set_report(uint8_t report_id, hid_report_type_t report_type,
 /* Table remise au répartiteur HID unique (usb/hid_dispatch.c) tant que le
  * mode FIDO est actif — voir mode_fido_start()/mode_fido_stop() plus bas.
  * Pas de get_report : ce mode n'échange rien par GET_REPORT/SET_REPORT sur
- * EP0, tout passe par les endpoints OUT/IN dédiés. Le répartiteur rend 0 en
- * son absence, une réponse inerte, jamais un déréférencement nul. */
+ * EP0, tout passe par les endpoints OUT/IN dédiés. report_complete chaîne
+ * les paquets de continuation d'une réponse fragmentée — voir send_response()
+ * et fido_report_complete(). Le répartiteur rend 0/aucune action en
+ * l'absence d'un champ, jamais un déréférencement nul. */
 static const hid_handlers_t s_fido_handlers = {
-    .report_desc = fido_report_desc,
-    .get_report  = NULL,
-    .set_report  = fido_set_report,
+    .report_desc     = fido_report_desc,
+    .get_report      = NULL,
+    .set_report      = fido_set_report,
+    .report_complete = fido_report_complete,
 };
 
 /* ------------------------------------------------------------------------ */
 
 /*
- * Réarme l'assembleur CTAP-HID (Ruling 4) et le dernier CID alloué à chaque
- * entrée dans le mode — sur le modèle exact de otp_hid_init() dans
- * mode_otp.c : l'ordre d'évaluation des arguments de usb_device_install()
- * n'étant pas spécifié en C, mode_fido_hs_config() peut être appelé avant
- * mode_fido_fs_config(), donc les deux réarment.
+ * Réarme l'assembleur CTAP-HID (Ruling 4), le dernier CID alloué et l'état
+ * d'émission à chaque entrée dans le mode — sur le modèle exact de
+ * otp_hid_init() dans mode_otp.c : l'ordre d'évaluation des arguments de
+ * usb_device_install() n'étant pas spécifié en C, mode_fido_hs_config() peut
+ * être appelé avant mode_fido_fs_config(), donc les deux réarment.
+ * s_tx.sent = s_tx.len == 0 suffit à marquer « rien en cours d'émission » :
+ * fido_report_complete() n'y regarde que la comparaison des deux.
  */
 const uint8_t *mode_fido_fs_config(void)
 {
     ctaphid_reset(&s_asm);
-    s_last_cid = 0;
+    s_last_cid   = 0;
+    s_tx.len     = 0;
+    s_tx.sent    = 0;
     return s_fs_config;
 }
 
 const uint8_t *mode_fido_hs_config(void)
 {
     ctaphid_reset(&s_asm);
-    s_last_cid = 0;
+    s_last_cid   = 0;
+    s_tx.len     = 0;
+    s_tx.sent    = 0;
     return s_hs_config;
 }
 
