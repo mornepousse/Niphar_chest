@@ -100,6 +100,12 @@ static void fido_master_ensure_loaded(void)
                                                   "fido_master_ver", &stored_ver);
         bool schema_mismatch = (err == ESP_OK) && (stored_ver != FIDO_MASTER_SCHEMA_VERSION);
         if (schema_mismatch) {
+            /* Regenerer K_maitre ici efface tous les identifiants (credential
+             * ID) deja emis avec l'ancienne cle : fido_key_check() les
+             * derive tous a partir de K_maitre, donc plus aucun ne validera
+             * une fois ce chemin pris. C'est ce desaccord de schema, pas le
+             * cas generique « pas de NVS » documente en tete de fichier, qui
+             * declenchera cette perte en pratique (revue finale de branche). */
             ESP_LOGW(TAG, "cle maitresse FIDO : version de schema %u inattendue (attendu %u) — regeneration",
                      (unsigned)stored_ver, (unsigned)FIDO_MASTER_SCHEMA_VERSION);
         }
@@ -151,8 +157,18 @@ void fido_master_hmac(const uint8_t *msg, size_t len, uint8_t out[32])
         memset(out, 0, 32);
         return;
     }
-    mbedtls_md_hmac_starts(&ctx, s_master_key, sizeof(s_master_key));
-    mbedtls_md_hmac_update(&ctx, msg, len);
-    mbedtls_md_hmac_finish(&ctx, out);
+    /* Retours verifies (revue finale de branche) : la promesse ci-dessus
+     * ("jamais de sortie non initialisee") etait fausse en pratique tant que
+     * ces trois appels n'etaient pas controles — un echec silencieux
+     * aurait laisse `out` partiellement ecrit par le dernier appel reussi,
+     * pas remis a zero. */
+    if (mbedtls_md_hmac_starts(&ctx, s_master_key, sizeof(s_master_key)) != 0
+        || mbedtls_md_hmac_update(&ctx, msg, len) != 0
+        || mbedtls_md_hmac_finish(&ctx, out) != 0) {
+        ESP_LOGE(TAG, "HMAC-SHA256 a echoue");
+        mbedtls_md_free(&ctx);
+        memset(out, 0, 32);
+        return;
+    }
     mbedtls_md_free(&ctx);
 }
