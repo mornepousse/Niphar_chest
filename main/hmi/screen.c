@@ -76,9 +76,10 @@ static uint8_t                 s_fb[BOARD_OLED_WIDTH * BOARD_OLED_HEIGHT / 8u];
  *
  * Un caractere hors de [0x20 (espace), 'z'] retombe sur le glyphe '?'
  * (glyph_for()). Un caractere DANS cet intervalle mais non dessine ici
- * (ponctuation ASCII hors « ? », non demandee par le brief) retombe sur un
- * glyphe vide, indiscernable de l'espace — sans consequence : aucune chaine
- * de hmi/screen_view.h n'emet un tel caractere.
+ * (ponctuation ASCII hors « ? ») retombe aussi sur '?' — voir glyph_for() :
+ * un glyphe vide serait indiscernable de l'espace, et oath_name (tache OATH,
+ * security/oath_name.c) peut desormais emettre un tel caractere pour un nom
+ * de compte fourni par l'hote.
  */
 typedef struct { uint8_t rows[7]; } screen_glyph_t;
 
@@ -162,7 +163,20 @@ static const screen_glyph_t *glyph_for(char c)
     if (c < ' ' || c > 'z') {
         c = '?';
     }
-    return &s_font[(unsigned char)c - (unsigned char)' '];
+    const screen_glyph_t *g = &s_font[(unsigned char)c - (unsigned char)' '];
+    /* Un caractere DANS l'intervalle mais non dessine (toute la ponctuation
+     * ASCII) retombait sur un glyphe vide, indiscernable d'une espace :
+     * « GitHub:mae » et « GitHub mae » s'affichaient a l'identique. Sur un
+     * ecran qui sert a decider d'autoriser une operation, un caractere qu'on
+     * ne sait pas dessiner doit se VOIR. L'espace garde son glyphe vide, qui
+     * est le bon. */
+    if (c != ' ') {
+        static const screen_glyph_t vide = {{ 0, 0, 0, 0, 0, 0, 0 }};
+        if (memcmp(g, &vide, sizeof(vide)) == 0) {
+            g = &s_font['?' - ' '];
+        }
+    }
+    return g;
 }
 
 /* ------------------------------------------------------------------------- */

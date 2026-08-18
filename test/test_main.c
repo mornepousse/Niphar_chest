@@ -27,6 +27,7 @@ extern void test_led_state(void);
 extern void test_screen_view(void);
 extern void test_screen_anim(void);
 extern void test_screen_layout(void);
+extern void test_oath_name(void);
 
 int main(void)
 {
@@ -36,6 +37,7 @@ int main(void)
     test_cr_crc16();
     test_sec_confirm();
     test_sec_store();
+    test_oath_name();
     test_apdu();
     test_ctaphid();
     test_cbor_enc();

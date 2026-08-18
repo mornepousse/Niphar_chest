@@ -1,0 +1,87 @@
+#include "test_framework.h"
+#include "oath_name.h"
+
+/* Le nom YKOATH s'ecrit « [periode/][Issuer:]compte ». Ce que Mae reconnait
+ * d'un coup d'oeil est l'issuer, pas l'adresse. */
+static void test_issuer_extrait(void)
+{
+    char out[OATH_NAME_DISPLAY_MAX];
+    const char *n = "GitHub:mae@exemple.org";
+    oath_name_display(n, (uint16_t)strlen(n), out, sizeof(out));
+    TEST_ASSERT(strcmp(out, "GITHUB") == 0, "l'issuer seul, en majuscules");
+
+    const char *p = "30/GitLab:mae";
+    oath_name_display(p, (uint16_t)strlen(p), out, sizeof(out));
+    TEST_ASSERT(strcmp(out, "GITLAB") == 0, "le prefixe de periode est retire");
+}
+
+/*
+ * LE test de ce fichier. Deux noms DIFFERENTS doivent rester DISTINGUABLES a
+ * l'ecran : c'est toute la raison d'afficher le nom. Verifier separement que
+ * « a » rend « A » ne prouve rien la-dessus — un assainissement qui rendrait
+ * la meme chose pour tout passerait.
+ */
+static void test_noms_distincts_restent_distincts(void)
+{
+    const char *paires[][2] = {
+        { "GitHub:mae",        "GitHub mae"  },   /* ponctuation vs espace */
+        { "Banque",            "Ban\x01que"  },   /* caractere de controle */
+        { "MonServiceTresLong1", "MonServiceTresLong2" }, /* divergence tardive */
+    };
+    for (unsigned i = 0; i < sizeof(paires) / sizeof(paires[0]); i++) {
+        char a[OATH_NAME_DISPLAY_MAX], b[OATH_NAME_DISPLAY_MAX];
+        oath_name_display(paires[i][0], (uint16_t)strlen(paires[i][0]), a, sizeof(a));
+        oath_name_display(paires[i][1], (uint16_t)strlen(paires[i][1]), b, sizeof(b));
+        TEST_ASSERT(strcmp(a, b) != 0,
+                    "deux noms differents ne doivent pas s'afficher pareil");
+    }
+}
+
+/* Un caractere sans glyphe devient « ? », jamais un blanc : un nom bricole doit
+ * se VOIR, pas se deguiser en nom propre. */
+static void test_caractere_indessinable_visible(void)
+{
+    char out[OATH_NAME_DISPLAY_MAX];
+    const char *n = "Ban\x01que";
+    oath_name_display(n, (uint16_t)strlen(n), out, sizeof(out));
+    TEST_ASSERT(strchr(out, '?') != NULL, "le caractere de controle laisse une trace");
+    TEST_ASSERT(strchr(out, '\x01') == NULL, "l'octet brut ne passe pas");
+}
+
+/* Troncature marquee : sans marqueur, deux noms qui divergent au-dela du
+ * dixieme caractere seraient indiscernables et l'appui redeviendrait aveugle. */
+static void test_troncature_marquee(void)
+{
+    char out[OATH_NAME_DISPLAY_MAX];
+    const char *n = "ServiceExtremementLong";
+    oath_name_display(n, (uint16_t)strlen(n), out, sizeof(out));
+    TEST_ASSERT(strlen(out) == 11, "dix caracteres plus le marqueur");
+    TEST_ASSERT(out[10] == '?', "le marqueur de troncature termine la ligne");
+
+    const char *court = "Court";
+    oath_name_display(court, (uint16_t)strlen(court), out, sizeof(out));
+    TEST_ASSERT(out[strlen(out) - 1] != '?', "un nom court ne porte pas de marqueur");
+}
+
+/* Entrees degenerees : la sortie est TOUJOURS une chaine valide. Une fonction
+ * d'affichage qui laisse `out` non initialise fait dessiner de la pile. */
+static void test_entrees_degenerees(void)
+{
+    char out[OATH_NAME_DISPLAY_MAX];
+    oath_name_display("", 0, out, sizeof(out));
+    TEST_ASSERT(out[0] == '\0', "nom vide -> chaine vide, pas de pile dessinee");
+    oath_name_display(NULL, 0, out, sizeof(out));
+    TEST_ASSERT(out[0] == '\0', "nom absent -> chaine vide");
+    oath_name_display(":", 1, out, sizeof(out));
+    TEST_ASSERT(out[0] == '\0', "issuer vide -> chaine vide");
+}
+
+void test_oath_name(void)
+{
+    TEST_SUITE("oath_name");
+    TEST_RUN(test_issuer_extrait);
+    TEST_RUN(test_noms_distincts_restent_distincts);
+    TEST_RUN(test_caractere_indessinable_visible);
+    TEST_RUN(test_troncature_marquee);
+    TEST_RUN(test_entrees_degenerees);
+}
