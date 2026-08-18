@@ -522,32 +522,69 @@ pas d'une console.
   d'attestation, vérification clé d'attestation ↔ certificat embarqué — tout
   le chemin de signature, sans jamais passer par le bouton. Log au
   démarrage du mode FIDO : `selftest: PASS (credential + attestation)`.
-- **Marge de pile d'`usb_task` : 3532 octets libres sur 6144, MESURÉE**
-  (`uxTaskGetStackHighWaterMark()`, `main/usb/mode_fido.c:648-654`) — pas
-  estimée par analogie. La pile avait été portée de 4096 à 6144 « par
-  analogie avec `ccid_worker` » (tâche 7, avant mesure) ; c'est l'autotest
-  ci-dessus qui a rendu la mesure possible en exerçant réellement le chemin
-  de signature. 57 % de marge, mesure conservatrice puisque le selftest
-  vérifie la signature — chose que la production ne fait jamais.
+- **Marge de pile d'`usb_task` au démarrage du mode (autotest, GET_DESCRIPTOR) :
+  3548 octets libres sur 6144, MESURÉE** (`uxTaskGetStackHighWaterMark()`,
+  `main/usb/mode_fido.c`, `fido_selftest_once()`) — pas estimée par analogie.
+  La pile avait été portée de 4096 à 6144 « par analogie avec `ccid_worker` »
+  (tâche 7, avant mesure) ; c'est l'autotest qui a rendu une première mesure
+  possible en exerçant réellement le chemin de signature.
+  **Corrigé à la revue finale de branche (I2, ci-dessous) : ce chemin n'est
+  PAS le pire cas** — voir la mesure sur le vrai chemin juste après.
 
-### PAS mesuré, et pourquoi — le point le plus important de cette section
+### Validation matérielle réelle du chemin de signature — 2026-08-18 (revue finale de branche)
 
-**Le chemin de signature n'a jamais produit une seule signature réelle.**
-Le bouton de confirmation en façade est électriquement ouvert (voir
-« Défaut ouvert — bascules de mode spontanées » plus bas dans ce document,
-même défaut que celui qui bloque aussi la confirmation OpenPGP) : toute
-requête U2F qui exige une présence physique expire et rend `0x6985`, y
-compris les 124 captures ci-dessus. Aucun hôte n'a donc jamais reçu de
-signature U2F réelle de cette carte.
+**Une confirmation était possible depuis le début : `sec confirm` (console),
+pas le bouton.** `wt9932_key` définit `BOARD_CONSOLE_ACTIONS 1`
+(`boards/wt9932_key/board.h:25`), donc `sec_gate_console_confirm()` compile
+et accorde le slot armé par U2F — indépendamment de l'état du bouton MODE/
+CONFIRM en façade. La revue de branche avait affirmé à plusieurs reprises
+que le bouton électriquement ouvert empêchait toute validation du chemin de
+signature ; **c'était faux**. Le fait rapporté (« aucune signature réelle
+produite ») était exact ; sa cause (« le bouton est ouvert, donc rien n'est
+possible ») ne l'était pas — la béquille console restait disponible et n'a
+simplement pas été utilisée avant ce passage.
 
-**Conséquence pour qui répare la soudure du bouton** : le premier
-enregistrement U2F réussi sur cette carte sera la **première exécution
-réelle** de ce code hors autotest — dérivation, signature et encodage DER
-sur des données choisies par un hôte, pas sur le message fixe du selftest.
-L'autotest atténue le risque (il prouve que le chemin ne déborde pas et que
-la crypto est cohérente sur SES données), il ne le supprime pas : un hôte
-adverse ou simplement différent peut exercer des tailles ou des contenus
-que le selftest n'a jamais vus.
+**Protocole** : `usb mode fido` en console, `fido2-cred -M` (via `nix-shell`,
+`shell.nix`) dans une seconde session pour lancer un `U2F_REGISTER` réel
+(RP id `niphar-test.example`), puis `sec confirm` tapé dans la session
+console pendant la fenêtre de 15 s.
+
+**Résultat — deux enregistrements réels, deux clés distinctes (preuve directe
+que C1 est corrigé)** :
+
+| | key handle (32 octets, nonce‖tag) | clé publique COSE Y (32 octets) |
+|---|---|---|
+| enregistrement 1 | `98852ce4e63598462d72ab55ddcb25961eb6e7fb420dc72900cc3109144f5a5b` | `7e6e060d768de5712e2761bcac115bcf72b04c4cf4bdaf8c0733a54cfdabf3dd` |
+| enregistrement 2 | `96dbd5cd017c39a4973597075cb24f88434c8afb7169cd8482346cb448437dd0` | `8923a06ca4629af341cba5e57509d6df4e01fe01e4c4b3c24afe403d71e7d4fc` |
+
+Chaque key handle fait exactement 32 octets (vérifié après décodage base64) ;
+les deux colonnes sont intégralement différentes entre les deux lignes, pas
+seulement sur un préfixe.
+
+Les deux `fido2-cred -M` ont abouti (`fmt: fido-u2f`, code de sortie 0,
+certificat d'attestation `Niphargus FIDO Attestation` embarqué, signature
+DER présente) — avant C1, ces deux enregistrements sur le même domaine
+auraient produit le MÊME key handle et la MÊME clé publique (nonce
+systématiquement nul) ; ici ils diffèrent intégralement, sur les 32 octets
+du key handle comme sur la clé publique. C'est la preuve de bout en bout,
+au-dessus du test unitaire `test_zero_nonce_derivation_is_predictable_not_random`
+de `test/test_fido_key.c`, qui ne peut borner que la logique pure de
+`fido_key.c` — pas le bug de câblage de `u2f.c` lui-même (voir ce fichier de
+test pour pourquoi).
+
+**I2 — marge de pile mesurée sur le VRAI chemin, depuis `handle_message()`
+(`main/usb/mode_fido.c`, cas `CTAPHID_CMD_MSG`), après le `U2F_REGISTER`
+confirmé ci-dessus (dérivation + signature ECDSA + encodage DER réels, pas
+le message fixe du selftest) :**
+
+**3164 octets libres sur 6144 — 51,5 % de marge.** Ni les 57 % avancés par
+l'autotest (mesuré sur le mauvais chemin, GET_DESCRIPTOR plutôt que
+SET_REPORT), ni les ~33 % que la revue finale de branche redoutait par
+extrapolation (« ~1520 octets de cadres plus bas ») : l'écart réel entre les
+deux points de mesure est de 384 octets (3548 → 3164), pas 1520. Ce chiffre
+remplace tous les précédents comme référence de marge pour `usb_task` en
+mode FIDO ; la mention « mesure conservatrice » est retirée, elle décrivait
+une mesure qui ne l'était pas.
 
 ### Décisions dont la conséquence se voit
 
