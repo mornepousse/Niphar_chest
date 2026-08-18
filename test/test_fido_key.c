@@ -149,6 +149,42 @@ static void test_derive_differs_by_rp_id_hash(void)
     TEST_ASSERT(memcmp(d_a, d_b, 32) != 0, "deux domaines donnent deux cles distinctes");
 }
 
+/* ---- regression C1 (revue finale de branche, main/security/u2f.c) ----
+ *
+ * handle_register() lisait s_wait_nonce APRES u2f_reset() (qui le zeroise) :
+ * toute derivation se faisait donc sur seize octets nuls, quel que soit le
+ * nonce genere par esp_fill_random() a l'armement. u2f.c est deliberement
+ * absent de test/ (mbedtls, esp_fill_random, minutage sec_confirm — voir
+ * u2f.h), donc la sequence fautive elle-meme (lire un buffer APRES l'avoir
+ * efface) n'est pas rejouable ici. Ce que la logique PURE de fido_key.c peut
+ * borner, et que ce test verifie explicitement, c'est la consequence que ce
+ * genre de bug produit : un nonce nul degenere en cle et tag PREVISIBLES,
+ * identiques a chaque appel, sur un domaine donne — exactement le symptome
+ * observe (« deux REGISTER sur le meme site donnent la meme cle publique et
+ * le meme key handle »). Combine a test_derive_differs_by_nonce ci-dessus
+ * (des nonces DIFFERENTS donnent des cles DIFFERENTES), ces deux tests
+ * bornent la propriete des deux cotes : la cle depend reellement du nonce
+ * fourni, pas d'un artefact de remise a zero. La preuve directe, de bout en
+ * bout, que C1 est corrige reste la validation materielle (docs/HARDWARE.md,
+ * section FIDO2/U2F) : deux REGISTER reels sur le meme domaine produisant
+ * deux cles publiques et deux key handles distincts. */
+static void test_zero_nonce_derivation_is_predictable_not_random(void)
+{
+    uint8_t rp[32]; memset(rp, 0x5A, 32);
+    uint8_t zero_nonce[16]; memset(zero_nonce, 0, 16);
+    uint8_t real_nonce[16]; memset(real_nonce, 0x3C, 16);
+
+    uint8_t d_zero_1[32], d_zero_2[32], d_real[32];
+    fido_key_derive(fake_hmac, rp, zero_nonce, d_zero_1);
+    fido_key_derive(fake_hmac, rp, zero_nonce, d_zero_2);
+    fido_key_derive(fake_hmac, rp, real_nonce, d_real);
+
+    TEST_ASSERT(memcmp(d_zero_1, d_zero_2, 32) == 0,
+                "un nonce nul degenere en cle PREVISIBLE : deux derivations identiques (le symptome de C1)");
+    TEST_ASSERT(memcmp(d_zero_1, d_real, 32) != 0,
+                "un nonce nul ne doit JAMAIS coincider avec la cle d'un vrai nonce genere aleatoirement");
+}
+
 /* Un credential ID dont le tag a ete altere (un seul octet) est rejete sur
  * SON PROPRE domaine — distinct du test "autre domaine" ci-dessus, qui ne
  * touche pas au tag. */
@@ -173,5 +209,6 @@ void test_fido_key(void)
     TEST_RUN(test_derive_is_deterministic);
     TEST_RUN(test_derive_differs_by_nonce);
     TEST_RUN(test_derive_differs_by_rp_id_hash);
+    TEST_RUN(test_zero_nonce_derivation_is_predictable_not_random);
     TEST_RUN(test_tampered_tag_is_rejected);
 }

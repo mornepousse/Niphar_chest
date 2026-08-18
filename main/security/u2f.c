@@ -175,26 +175,38 @@ static size_t handle_register(const apdu_t *a, uint8_t *out, size_t cap, uint32_
         return sw_only(out, cap, U2F_SW_COND_NOT_SAT);
     }
 
-    /* Autorise : deriver la cle du credential, puis construire la reponse.
-     * Consomme l'attente immediatement (que la suite reussisse ou non) —
+    /* Hisser le nonce dans un local AVANT u2f_reset() (C1, revue finale de
+     * branche) : u2f_reset() zeroise s_wait_nonce, et les lignes qui
+     * suivaient le lisaient APRES l'appel — toute derivation se faisait donc
+     * sur seize octets nuls, silencieusement : la cle privee devenait une
+     * fonction deterministe du seul `application`, et deux REGISTER sur le
+     * meme site produisaient la MEME cle publique et le MEME key handle.
+     * fido_key_check() valide ces identifiants sans broncher, ce qui a
+     * masque le defaut jusqu'a la revue finale. */
+    uint8_t nonce[16];
+    memcpy(nonce, s_wait_nonce, sizeof(nonce));
+
+    /* Consomme l'attente immediatement (que la suite reussisse ou non) —
      * une seule confirmation n'accorde qu'un seul REGISTER. */
     u2f_reset();
 
     uint8_t d[32];
-    fido_key_derive(fido_master_hmac, application, s_wait_nonce, d);
+    fido_key_derive(fido_master_hmac, application, nonce, d);
 
     uint8_t pubkey[65];
     const bool pk_ok = openpgp_crypto_p256_pubkey(d, pubkey);
     if (!pk_ok) {
         memset(d, 0, sizeof(d));
+        memset(nonce, 0, sizeof(nonce));
         return sw_only(out, cap, U2F_SW_OTHER);
     }
 
     uint8_t tag[16];
-    fido_key_tag(fido_master_hmac, application, s_wait_nonce, tag);
+    fido_key_tag(fido_master_hmac, application, nonce, tag);
     uint8_t cred_id[32];
-    memcpy(cred_id, s_wait_nonce, 16);
+    memcpy(cred_id, nonce, 16);
     memcpy(cred_id + 16, tag, 16);
+    memset(nonce, 0, sizeof(nonce));   /* deja recopie dans cred_id ci-dessus */
 
     /* Message signe par la cle d'ATTESTATION (fido_attest_key — PAS `d`) :
      * 0x00 || application || challenge || keyHandle || pubkey — spec U2F
