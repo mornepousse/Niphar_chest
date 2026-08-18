@@ -62,13 +62,25 @@ size_t ctap2_build_get_info(uint8_t *out, size_t cap)
      */
     cbor_map(&w, 4);
 
-    /* Cle 1 : versions supportees. U2F_V2 (CTAP1/U2F) et FIDO_2_0 (CTAP2) —
-     * la carte annonce les deux, meme si seul authenticatorGetInfo est
-     * cable a ce stade du plan (U2F/MSG suit dans une tache ulterieure). */
+    /*
+     * Cle 1 : versions supportees. SEUL "U2F_V2" est annonce.
+     *
+     * Ruling du coordinateur (2026-08-18, revue de cette meme tache) : la
+     * reponse doit dire ce que la cle saura faire A LA FIN DE CE PLAN, rien
+     * de plus. "FIDO_2_0" impliquerait un support CTAP2 complet — au moins
+     * une commande de creance (authenticatorMakeCredential,
+     * authenticatorGetAssertion) — or AUCUNE des deux n'est cablee, ni ne
+     * le sera dans ce plan : le decodeur CBOR general est explicitement
+     * reporte au plan 2 (contraintes-globales.md, ecart assume 2). Annoncer
+     * "FIDO_2_0" inviterait un navigateur a tenter une passkey CTAP2, qui
+     * echouerait tard et de façon peu informative (CTAP2_ERR_INVALID_
+     * COMMAND depuis mode_fido.c). "U2F_V2" restera vrai a la fin de la
+     * branche : la tache 7 cable CTAPHID_MSG et U2F (REGISTER/AUTHENTICATE/
+     * VERSION), et la porte de presence existe deja et fonctionne.
+     */
     cbor_uint(&w, 1);
-    cbor_array(&w, 2);
+    cbor_array(&w, 1);
     cbor_text(&w, "U2F_V2");
-    cbor_text(&w, "FIDO_2_0");
 
     /* Cle 3 : aaguid, 16 octets fixes — voir le commentaire au-dessus de
      * s_aaguid. */
@@ -76,25 +88,33 @@ size_t ctap2_build_get_info(uint8_t *out, size_t cap)
     cbor_bytes(&w, s_aaguid, sizeof s_aaguid);
 
     /*
-     * Cle 4 : options. Dans la sous-map, "rk" precede "up" : RFC 8949, deux
-     * cles TEXTE de meme longueur d'encodage s'ordonnent par comparaison
-     * d'octets, et 'r' (0x72) < 'u' (0x75) — la encore, l'ordre "alphabetique
-     * naturel" coincide avec le canonique pour CES DEUX noms precis, par
-     * chance et non par construction (ce ne serait plus vrai avec un futur
-     * "uv" a inserer : 'u'=0x75 < ... il faudrait le placer AVANT "up" et
-     * verifier a nouveau). clientPin et uv sont ABSENTS de cette sous-map :
-     * la spec retenue pour cette carte est SANS PIN (voir CLAUDE.md,
+     * Cle 4 : options. SEUL "up" (user presence) est annonce.
+     *
+     * Meme ruling que pour "FIDO_2_0" ci-dessus : "rk" (resident keys,
+     * identifiants residents) suppose un magasin de creances — il n'en
+     * existe aucun dans ce plan, la gestion des creances residentes etant
+     * elle aussi reportee au plan 2 avec le decodeur CBOR general. Annoncer
+     * "rk": true ferait echouer plus tard, obscurement, un client qui
+     * tenterait un enregistrement resident. "up" reste annonce et VRAI :
+     * la porte de presence existe deja et fonctionne independamment du
+     * decodeur CBOR — voir sec_gate.{c,h}.
+     *
+     * clientPin et uv restent ABSENTS de cette sous-map (inchangé) : la
+     * spec retenue pour cette carte est SANS PIN (voir CLAUDE.md,
      * contraintes-globales.md) ; une option absente vaut "non supportee"
      * pour un client CTAP2, ce qui est exactement vrai ici. Les annoncer a
      * `false` explicitement serait fonctionnellement equivalent mais
      * ajouterait des octets pour rien ; les annoncer a `true` — l'erreur
      * qu'on prend soin d'eviter ici — ferait echouer un client PLUS TARD,
      * au moment ou il tenterait reellement un flux avec PIN, pas plus tot.
+     *
+     * N'y ayant plus qu'UNE seule cle dans cette sous-map, la question de
+     * l'ordre canonique entre "rk" et "up" ne se pose plus — a reconsiderer
+     * si "rk" ou "uv" revient un jour (voir le commentaire au sommet de ce
+     * fichier sur la garantie d'ordre a la charge de cet appelant).
      */
     cbor_uint(&w, 4);
-    cbor_map(&w, 2);
-    cbor_text(&w, "rk");
-    cbor_bool(&w, true);
+    cbor_map(&w, 1);
     cbor_text(&w, "up");
     cbor_bool(&w, true);
 

@@ -28,6 +28,9 @@
 #define CTAP2_OK                  0x00u /* succes : le CBOR qui suit est la reponse */
 #define CTAP2_ERR_INVALID_COMMAND 0x01u /* sous-commande CBOR non reconnue */
 #define CTAP2_ERR_INVALID_LENGTH  0x03u /* charge CTAPHID_CBOR vide (pas d'octet de commande) */
+#define CTAP2_ERR_OTHER           0x7Fu /* erreur generique — ex. echec interne de construction
+                                          * de la reponse, qui n'a rien a voir avec la longueur
+                                          * de la REQUETE (voir mode_fido.c) */
 
 /*
  * Construit la reponse complete a authenticatorGetInfo dans `out` (capacite

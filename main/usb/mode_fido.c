@@ -151,6 +151,17 @@ static uint32_t s_last_cid;
  * retirer quand U2F (MSG) sera câblé — tâche ultérieure du plan. CAPFLAG_CBOR
  * est désormais posé (tâche 5) : authenticatorGetInfo répond sur CBOR — voir
  * le cas CTAPHID_CMD_CBOR ci-dessous. WINK reste à 0 : non câblé.
+ *
+ * CONTRADICTION INTERNE ASSUMÉE, JUSQU'À LA TÂCHE 7 : authenticatorGetInfo
+ * (ctap2.c) annonce "U2F_V2" dans `versions`, alors que ce drapeau dit ici
+ * que CTAPHID_MSG — le transport QU'EXIGE U2F — n'est pas implémenté. Ruling
+ * du coordinateur (2026-08-18, revue de la tâche 5) : la réponse getInfo dit
+ * ce que la clé saura faire À LA FIN DU PLAN, et "U2F_V2" y sera vrai — mais
+ * tant que la tâche 7 n'a pas câblé CTAPHID_MSG et U2F, ce drapeau reste VRAI
+ * (NMSG posé) et contredit `versions`. RETIRER CTAPHID_CAPFLAG_NMSG d'ici dès
+ * que la tâche 7 câble CTAPHID_MSG — pas avant, et pas oublier ensuite : un
+ * client qui lit `versions` avant `caps` pourrait tenter U2F_REGISTER contre
+ * un périphérique qui l'annonce indisponible.
  */
 #define CTAPHID_CAPFLAG_WINK 0x01u
 #define CTAPHID_CAPFLAG_CBOR 0x04u
@@ -500,7 +511,7 @@ static void handle_message(const ctaphid_msg_t *msg)
             break;
         }
 
-        /* 128 octets : la réponse authenticatorGetInfo tient en 52 (statut
+        /* 128 octets : la réponse authenticatorGetInfo tient en 39 (statut
          * compris — voir ctap2.c), large marge sans dépasser ce que
          * send_response()/CTAPHID_MAX_PAYLOAD sauraient de toute façon
          * gérer si ce champ grossissait plus tard. */
@@ -510,8 +521,11 @@ static void handle_message(const ctaphid_msg_t *msg)
             /* Ne devrait jamais arriver (tampon largement suffisant) —
              * défense plutôt que silence : mieux vaut un message d'erreur
              * explicite qu'une trame absente que l'hôte prendrait pour un
-             * périphérique muet. */
-            const uint8_t status = CTAP2_ERR_INVALID_LENGTH;
+             * périphérique muet. CTAP2_ERR_OTHER, pas INVALID_LENGTH : cet
+             * échec porte sur la construction de la RÉPONSE (place dans un
+             * tampon interne), rien à voir avec la longueur de la requête
+             * reçue — la branche juste au-dessus couvre déjà ce cas-là. */
+            const uint8_t status = CTAP2_ERR_OTHER;
             send_response(msg->cid, CTAPHID_CMD_CBOR, &status, 1u);
             break;
         }

@@ -39,44 +39,45 @@ static void test_status_byte_is_ctap2_ok(void)
  * verifiable. Un commentaire affirmant "c'est deja croissant" ne mord pas ;
  * ceci mord.
  *
- * Format de la reponse (bytes dument comptes a la main, cf. le brief de la
- * tache 5) :
+ * Format REVISE (ruling du coordinateur, 2026-08-18, revue Critique de cette
+ * meme tache) : "FIDO_2_0" et "rk" sont retires — la reponse ne doit annoncer
+ * que ce que la cle saura reellement faire A LA FIN DU PLAN. Voir ctap2.c
+ * pour la justification complete.
+ *
+ * Format de la reponse (bytes dument comptes a la main) :
  *   [0]      statut CTAP2_OK
- *   [1]      0xA4              map(4)
+ *   [1]      0xA4              map(4)                — toujours 4 cles au sommet
  *   [2]      0x01              cle 1  (versions)
- *   [3]      0x82              array(2)
+ *   [3]      0x81              array(1)               — SEUL "U2F_V2", plus "FIDO_2_0"
  *   [4..10]  "U2F_V2"          text(6), entete inclus
- *   [11..19] "FIDO_2_0"        text(8), entete inclus
- *   [20]     0x03              cle 3  (aaguid)
- *   [21..37] bytes(16)         entete + aaguid
- *   [38]     0x04              cle 4  (options)
- *   [39]     0xA2              map(2)
- *   [40..42] "rk"              text(2), entete inclus
- *   [43]     0xF5              bool vrai
- *   [44..46] "up"              text(2), entete inclus
- *   [47]     0xF5              bool vrai
- *   [48]     0x05              cle 5  (maxMsgSize)
- *   [49..51] uint(7609)        entete 2 octets + valeur
- * Longueur totale : 52 octets — sous les 57 d'un unique paquet
- * d'initialisation CTAP-HID (voir le rapport de tache : la fragmentation
- * n'est en fait pas exercee par CETTE reponse precise).
+ *   [11]     0x03              cle 3  (aaguid)
+ *   [12..28] bytes(16)         entete + aaguid
+ *   [29]     0x04              cle 4  (options)
+ *   [30]     0xA1              map(1)                 — SEUL "up", plus "rk"
+ *   [31..33] "up"              text(2), entete inclus
+ *   [34]     0xF5              bool vrai
+ *   [35]     0x05              cle 5  (maxMsgSize)
+ *   [36..38] uint(7609)        entete 2 octets + valeur
+ * Longueur totale : 39 octets — bien sous les 57 d'un unique paquet
+ * d'initialisation CTAP-HID (la fragmentation n'est pas exercee par cette
+ * reponse precise, voir le rapport de tache 5).
  */
 static void test_get_info_key_order_is_canonical(void)
 {
     uint8_t out[128];
     size_t n = ctap2_build_get_info(out, sizeof out);
-    TEST_ASSERT_EQ(n, 52, "longueur totale exacte de la reponse (voir calcul en commentaire)");
+    TEST_ASSERT_EQ(n, 39, "longueur totale exacte de la reponse (voir calcul en commentaire)");
 
-    TEST_ASSERT_EQ(out[1], 0xA4, "map de 4 paires (major type 5 | 4)");
+    TEST_ASSERT_EQ(out[1], 0xA4, "map de 4 paires au sommet (major type 5 | 4) — inchange par le retrait");
 
     /* Les quatre cles ENTIERES de la map principale, dans l'ORDRE DES
      * OCTETS PRODUITS : 1 < 3 < 4 < 5. Comparees deux a deux, pas a des
      * constantes isolees — c'est ce qui romprait si un futur appel
      * reordonnait par exemple options avant aaguid. */
     uint8_t key_versions   = out[2];
-    uint8_t key_aaguid     = out[20];
-    uint8_t key_options    = out[38];
-    uint8_t key_maxmsgsize = out[48];
+    uint8_t key_aaguid     = out[11];
+    uint8_t key_options    = out[29];
+    uint8_t key_maxmsgsize = out[35];
     TEST_ASSERT_EQ(key_versions, 1, "premiere cle produite : 1 (versions)");
     TEST_ASSERT_EQ(key_aaguid, 3, "deuxieme cle produite : 3 (aaguid)");
     TEST_ASSERT_EQ(key_options, 4, "troisieme cle produite : 4 (options)");
@@ -85,26 +86,47 @@ static void test_get_info_key_order_is_canonical(void)
     TEST_ASSERT(key_aaguid < key_options, "3 < 4 dans l'ordre d'ecriture reel");
     TEST_ASSERT(key_options < key_maxmsgsize, "4 < 5 dans l'ordre d'ecriture reel");
 
-    /* Sous-map "options" : deux cles TEXTE, "rk" avant "up". RFC 8949 :
-     * cles de meme longueur d'encodage -> ordre des octets ; 'r' (0x72) <
-     * 'u' (0x75), donc "rk" precede bien "up" dans l'ordre canonique — et
-     * c'est bien ce que produisent les octets. */
-    TEST_ASSERT_EQ(out[39], 0xA2, "sous-map de 2 paires (options)");
-    TEST_ASSERT(memcmp(out + 40, "\x62rk", 3) == 0, "cle texte \"rk\" en premier dans options");
-    TEST_ASSERT(memcmp(out + 44, "\x62up", 3) == 0, "cle texte \"up\" en second dans options");
+    /* versions : UN SEUL element, "U2F_V2". */
+    TEST_ASSERT_EQ(out[3], 0x81, "array(1) : un seul element dans versions");
+    TEST_ASSERT(memcmp(out + 4, "\x66U2F_V2", 7) == 0, "\"U2F_V2\" juste apres l'array");
+
+    /* options : UNE SEULE cle, "up". */
+    TEST_ASSERT_EQ(out[30], 0xA1, "sous-map d'UNE SEULE paire (options) — \"rk\" retire");
+    TEST_ASSERT(memcmp(out + 31, "\x62up", 3) == 0, "cle texte \"up\", seule presente dans options");
+    TEST_ASSERT_EQ(out[34], 0xF5, "\"up\" vaut vrai");
 }
 
-/* clientPin et uv doivent etre ABSENTS de la reponse : la spec retenue est
- * sans PIN, et annoncer une capacite absente ferait echouer un client plus
- * tard (silencieusement) plutot que plus tot. On verifie deux choses :
- * la map principale ne porte que 4 paires (pas de cle 6 pour
- * pinUvAuthProtocols), et aucune sequence "clientPin"/"uv" n'apparait dans
- * les octets produits. */
-static void test_client_pin_and_uv_are_absent(void)
+/*
+ * "FIDO_2_0" et "rk" doivent etre ABSENTS : c'est le cœur du Critique de la
+ * revue (2026-08-18) — la reponse annoncait un support CTAP2 complet
+ * (creances residentes comprises) qu'aucune commande de creance ne cable
+ * dans ce plan (makeCredential/getAssertion, decodeur CBOR general : tous
+ * reportes au plan 2). clientPin et uv restent absents pour la meme raison
+ * qu'avant (spec sans PIN). Les quatre verifications portent sur les octets
+ * REELLEMENT produits, pas sur une relecture du code source. */
+static void test_unimplemented_capabilities_are_absent(void)
 {
     uint8_t out[128];
     size_t n = ctap2_build_get_info(out, sizeof out);
-    TEST_ASSERT_EQ(out[1], 0xA4, "la map principale ne porte que 4 paires, pas 5 ou 6");
+
+    /* "FIDO_2_0" encode en CBOR commencerait par 0x68 (text, longueur 8). */
+    int found_fido2 = 0;
+    for (size_t i = 0; i + 9 <= n; i++) {
+        if (out[i] == 0x68 && memcmp(out + i + 1, "FIDO_2_0", 8) == 0) {
+            found_fido2 = 1;
+        }
+    }
+    TEST_ASSERT(!found_fido2, "\"FIDO_2_0\" n'apparait nulle part : aucune commande de creance cablee");
+
+    /* "rk" encode commencerait par 0x62 (text, longueur 2) suivi de "rk" —
+     * a distinguer de "up", present et legitime ailleurs dans la reponse. */
+    int found_rk = 0;
+    for (size_t i = 0; i + 3 <= n; i++) {
+        if (out[i] == 0x62 && out[i + 1] == 'r' && out[i + 2] == 'k') {
+            found_rk = 1;
+        }
+    }
+    TEST_ASSERT(!found_rk, "\"rk\" n'apparait nulle part : aucun magasin de creances residentes");
 
     /* "clientPin" encode en CBOR commencerait par 0x69 (text, longueur 9). */
     int found_client_pin = 0;
@@ -115,8 +137,7 @@ static void test_client_pin_and_uv_are_absent(void)
     }
     TEST_ASSERT(!found_client_pin, "\"clientPin\" n'apparait nulle part dans la reponse");
 
-    /* "uv" encode commencerait par 0x62 (text, longueur 2) suivi de "uv" —
-     * a distinguer de "rk"/"up", deja verifies par ailleurs. */
+    /* "uv" encode commencerait par 0x62 (text, longueur 2) suivi de "uv". */
     int found_uv = 0;
     for (size_t i = 0; i + 3 <= n; i++) {
         if (out[i] == 0x62 && out[i + 1] == 'u' && out[i + 2] == 'v') {
@@ -134,9 +155,9 @@ static void test_aaguid_matches_committed_value(void)
 {
     uint8_t out[128];
     size_t n = ctap2_build_get_info(out, sizeof out);
-    TEST_ASSERT(n >= 38, "assez d'octets pour contenir l'aaguid");
-    TEST_ASSERT_EQ(out[21], 0x50, "en-tete bytes(16) pour l'aaguid");
-    TEST_ASSERT(memcmp(out + 22, k_expected_aaguid, 16) == 0,
+    TEST_ASSERT(n >= 29, "assez d'octets pour contenir l'aaguid");
+    TEST_ASSERT_EQ(out[12], 0x50, "en-tete bytes(16) pour l'aaguid");
+    TEST_ASSERT(memcmp(out + 13, k_expected_aaguid, 16) == 0,
                 "les 16 octets de l'aaguid correspondent a la valeur committee");
 }
 
@@ -147,9 +168,9 @@ static void test_max_msg_size_matches_ctaphid_max_payload(void)
 {
     uint8_t out[128];
     size_t n = ctap2_build_get_info(out, sizeof out);
-    TEST_ASSERT(n >= 52, "assez d'octets pour contenir maxMsgSize");
-    TEST_ASSERT_EQ(out[49], 0x19, "entete uint 2 octets suivants (7609 > 255)");
-    uint16_t value = (uint16_t)((out[50] << 8) | out[51]);
+    TEST_ASSERT(n >= 39, "assez d'octets pour contenir maxMsgSize");
+    TEST_ASSERT_EQ(out[36], 0x19, "entete uint 2 octets suivants (7609 > 255)");
+    uint16_t value = (uint16_t)((out[37] << 8) | out[38]);
     TEST_ASSERT_EQ(value, CTAPHID_MAX_PAYLOAD, "maxMsgSize == CTAPHID_MAX_PAYLOAD");
 }
 
@@ -160,7 +181,7 @@ static void test_buffer_too_small_returns_zero(void)
 {
     uint8_t out[10];
     size_t n = ctap2_build_get_info(out, sizeof out);
-    TEST_ASSERT_EQ(n, 0, "10 octets ne suffisent pas pour la reponse complete (52 attendus)");
+    TEST_ASSERT_EQ(n, 0, "10 octets ne suffisent pas pour la reponse complete (39 attendus)");
 }
 
 /* Deux constructions successives doivent produire des octets identiques :
@@ -180,7 +201,7 @@ void test_ctap2(void)
     TEST_SUITE("ctap2 authenticatorGetInfo");
     TEST_RUN(test_status_byte_is_ctap2_ok);
     TEST_RUN(test_get_info_key_order_is_canonical);
-    TEST_RUN(test_client_pin_and_uv_are_absent);
+    TEST_RUN(test_unimplemented_capabilities_are_absent);
     TEST_RUN(test_aaguid_matches_committed_value);
     TEST_RUN(test_max_msg_size_matches_ctaphid_max_payload);
     TEST_RUN(test_buffer_too_small_returns_zero);
