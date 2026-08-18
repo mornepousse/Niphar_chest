@@ -17,7 +17,12 @@ bool oath_tlv_find(const uint8_t *buf, uint16_t len, uint8_t tag,
 {
     if (buf == NULL) return false;
     uint16_t i = 0;
-    while ((uint16_t)(i + 2u) <= len) {
+    /* Comparaison en 32 bits, comme la garde voisine : un cast (uint16_t)
+     * ici retronquerait i+2 avant la comparaison, et quand i approche 65534
+     * avec len=65535, (uint16_t)(65534+2)=(uint16_t)65536=0 rendrait la
+     * garde vraie a tort — la boucle lirait alors un octet au-dela du
+     * tampon logique avant que la garde interne ne le rattrape. */
+    while ((uint32_t)i + 2u <= len) {
         const uint8_t t = buf[i];
         const uint8_t l = buf[i + 1];
         /* Longueur qui deborde : trame malformee, on s'arrete au lieu de lire
