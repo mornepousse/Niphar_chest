@@ -585,6 +585,21 @@ static void handle_message(const ctaphid_msg_t *msg)
         uint8_t resp[U2F_RESP_MAX];
         const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
         size_t n = u2f_handle_apdu(&a, resp, sizeof resp, now_ms);
+
+        /* I2 (revue finale de branche) : marge de pile MESURÉE sur le VRAI
+         * chemin de signature — depuis handle_message(), donc après que
+         * fido_set_report()/ctaphid_feed() (SET_REPORT) aient déjà empilé
+         * leurs propres cadres, contrairement à l'autotest de
+         * fido_selftest_once() ci-dessus qui mesure depuis GET_DESCRIPTOR,
+         * ~1520 octets de cadres plus haut. Journalisée à chaque MSG traité
+         * (coût négligeable, un compteur déjà tenu par FreeRTOS) : un
+         * REGISTER ou AUTHENTICATE confirmé par bouton, qui descend
+         * jusqu'à la signature ECDSA dans u2f_handle_apdu(), y logge donc le
+         * pire cas réel — pas une estimation par analogie. */
+        ESP_LOGI("u2f", "MSG traite (handle_message), marge de pile : %u octets libres sur %u",
+                 (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)),
+                 (unsigned)(USB_TASK_STACK_BYTES * sizeof(StackType_t)));
+
         if (n == 0u) {
             /* Ne devrait jamais arriver (tampon dimensionné sur le pire
              * cas, U2F_RESP_MAX) — défense plutôt que silence, même
@@ -646,14 +661,26 @@ static void fido_selftest_once(void)
 
     /* Marge de pile MESURÉE, pas estimée — c'est tout l'intérêt de cet
      * autotest : uxTaskGetStackHighWaterMark() rend le creux le plus bas
-     * jamais atteint par CETTE tâche depuis sa création, en mots de pile ;
-     * multiplié par sizeof(StackType_t) pour des octets, même formule que
-     * hmi/screen.c. Journalié même si le selftest a échoué : la mesure
-     * reste informative (la pile a quand même été exercée jusqu'au point
-     * d'échec). */
-    ESP_LOGI("u2f", "usb_task, marge de pile : %u octets libres sur %u",
+     * jamais atteint par CETTE tâche depuis sa création, dans l'unité de
+     * StackType_t — l'octet sur ESP-IDF (M1, revue finale de branche ;
+     * sizeof(StackType_t) reste dans la formule pour rester correct si cette
+     * unité changeait un jour, même discipline que hmi/screen.c). Journalié
+     * même si le selftest a échoué : la mesure reste informative (la pile a
+     * quand même été exercée jusqu'au point d'échec).
+     *
+     * I2 (revue finale de branche) — CE CHEMIN N'EST PAS LE PIRE CAS : cet
+     * autotest est déclenché depuis fido_report_desc(), un callback
+     * GET_DESCRIPTOR appelé tôt pendant l'énumération. Le chemin de
+     * signature RÉEL passe par SET_REPORT (fido_set_report() ->
+     * ctaphid_feed() -> handle_message() -> u2f_handle_apdu()), ~1520 octets
+     * de cadres TinyUSB/HID plus bas — voir la mesure prise DEPUIS
+     * handle_message() en fin de cas CTAPHID_CMD_MSG plus bas dans ce
+     * fichier, qui est la marge qui compte réellement. Celle-ci reste utile
+     * comme point de repère au démarrage du mode, avant toute requête hôte,
+     * mais ne doit plus être lue comme LA mesure de marge de ce chemin. */
+    ESP_LOGI("u2f", "usb_task (autotest, GET_DESCRIPTOR), marge de pile : %u octets libres sur %u",
              (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)),
-             (unsigned)(USB_TASK_STACK_WORDS * sizeof(StackType_t)));
+             (unsigned)(USB_TASK_STACK_BYTES * sizeof(StackType_t)));
 }
 
 static const uint8_t *fido_report_desc(void)

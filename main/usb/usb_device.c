@@ -329,7 +329,7 @@ esp_err_t usb_device_install(const uint8_t *fs_cfg, const uint8_t *hs_cfg,
      * Priorité au-dessus de la boucle applicative : un NAK tardif sur un
      * transfert de masse dégrade le débit, et l'hôte a des délais serrés.
      *
-     * USB_TASK_STACK_WORDS (usb_device.h) = 6144, pas 4096, depuis la
+     * USB_TASK_STACK_BYTES (usb_device.h) = 6144 octets, pas 4096, depuis la
      * tâche 7 : U2F_REGISTER/U2F_AUTHENTICATE (security/u2f.c) signent
      * directement dans CE callback TinyUSB — donc sur CETTE pile, pas
      * ccid_worker — via openpgp_crypto_p256_sign()/_pubkey()
@@ -344,7 +344,7 @@ esp_err_t usb_device_install(const uint8_t *fs_cfg, const uint8_t *hs_cfg,
      * rapport de tâche 7 pour le chiffre mesuré sur wt9932_key.
      */
     s_task_run = true;
-    if (xTaskCreate(usb_task, "usb", USB_TASK_STACK_WORDS, NULL, 5, &s_task) != pdPASS) {
+    if (xTaskCreate(usb_task, "usb", USB_TASK_STACK_BYTES, NULL, 5, &s_task) != pdPASS) {
         ESP_LOGE(TAG, "création de la tâche USB");
         s_task_run = false;
         tusb_deinit(TUD_OPT_RHPORT);

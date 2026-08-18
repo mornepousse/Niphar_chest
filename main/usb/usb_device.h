@@ -19,14 +19,24 @@
 #include "esp_err.h"
 
 /*
- * Taille (en mots de pile FreeRTOS, l'unité de xTaskCreate) de `usb_task` —
- * voir son commentaire dans usb_device.c pour pourquoi 6144 depuis la
- * tâche 7. Exportée pour que tout code qui mesure la marge de pile de cette
- * tâche (ex. security/u2f.c, autotest de démarrage FIDO) journalise un
- * dénominateur qui reste vrai si cette valeur change un jour, plutôt qu'une
- * constante recopiée à la main qui divergerait en silence.
+ * Taille de `usb_task`, dans l'unité que xTaskCreate() attend pour son
+ * paramètre usStackDepth — voir son commentaire dans usb_device.c pour
+ * pourquoi 6144 depuis la tâche 7. Exportée pour que tout code qui mesure la
+ * marge de pile de cette tâche (ex. security/u2f.c, autotest de démarrage
+ * FIDO) journalise un dénominateur qui reste vrai si cette valeur change un
+ * jour, plutôt qu'une constante recopiée à la main qui divergerait en
+ * silence.
+ *
+ * M1 (revue finale de branche) : CE SONT DES OCTETS, pas des « mots de pile
+ * FreeRTOS » comme le nom précédent (USB_TASK_STACK_WORDS) et ce commentaire
+ * l'affirmaient. Sur ESP-IDF, `StackType_t` est `uint8_t` (contrairement au
+ * FreeRTOS vanilla où c'est souvent `uint32_t`), donc l'unité de
+ * usStackDepth est ici l'octet — le chiffre 6144 était déjà juste, seul son
+ * nom mentait. Quelqu'un qui « corrigerait » un futur appel en multipliant
+ * par 4, croyant convertir des mots 32 bits en octets, obtiendrait 24 Kio —
+ * quatre fois la pile réellement allouée.
  */
-#define USB_TASK_STACK_WORDS 6144u
+#define USB_TASK_STACK_BYTES 6144u
 
 /*
  * Installe le PHY, la tâche TinyUSB et les descripteurs fournis, puis
