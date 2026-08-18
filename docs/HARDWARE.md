@@ -773,7 +773,23 @@ Utile : il rend le défaut observable sans brancher de console.
 la lecture périodique, qui ne partagent rien — sont d'accord sur l'absence : ce
 n'est pas l'instrument.
 
-Conséquence à connaître : tant que ce contact n'est pas repris, **la porte de
-présence physique ne peut pas être actionnée**, donc aucune opération OpenPGP
-exigeant une confirmation ne peut aboutir sur cette carte. L'état de IO33
-(bouton CONFIRM) n'a pas été éprouvé par un appui réel.
+**Seul MODE est atteint. CONFIRM (IO33) fonctionne — mesuré le 2026-08-18.**
+
+Cette section affirmait auparavant que « la porte de présence physique ne peut
+pas être actionnée ». **C'était une extrapolation abusive** : la sonde du
+2026-08-17 n'avait éprouvé par un appui réel que IO32. Les deux broches lisaient
+1 au repos, ce qui ne distingue pas un bouton sain d'un bouton déconnecté.
+
+Le 2026-08-18, un `U2F_REGISTER` émis par `fido2-cred -M` a été **autorisé par
+un appui physique de la propriétaire sur CONFIRM**, produisant une vraie
+signature avec le certificat d'attestation embarqué — en trois secondes, sans
+recourir à la béquille `sec confirm`.
+
+Conséquence pratique : **la clé est utilisable dès aujourd'hui.** On peut
+enregistrer et s'authentifier ; seul le changement de mode passe obligatoirement
+par la console (`usb mode …`), IO32 restant ouvert.
+
+Et une conséquence de méthode, qui vaut au-delà de ce cas : deux broches lisant
+la même valeur au repos ne disent rien de leur santé respective. Il fallait
+appuyer sur chacune. La conclusion trop large a bloqué pendant tout le plan
+FIDO2 une validation qui était possible.
