@@ -28,6 +28,8 @@ typedef enum {
     SEC_OP_DECRYPT,       /* PSO:DEC */
     SEC_OP_AUTH,          /* INTERNAL AUTHENTICATE */
     SEC_OP_OTP,           /* defi/reponse CR-HMAC */
+    SEC_OP_FIDO_REGISTER, /* U2F_REGISTER : creer une nouvelle cle */
+    SEC_OP_FIDO_AUTH,     /* U2F_AUTHENTICATE : prouver une cle existante */
 } sec_op_t;
 
 void sec_confirm_reset(void);

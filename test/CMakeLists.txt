@@ -21,6 +21,7 @@ add_executable(test_runner
     test_cbor_enc.c
     test_ctap2.c
     test_fido_key.c
+    test_ecdsa_der.c
     test_otp_proto.c
     test_openpgp_do.c
     test_openpgp_card.c
@@ -42,6 +43,7 @@ add_executable(test_runner
     ../main/security/cbor_enc.c
     ../main/security/ctap2.c
     ../main/security/fido_key.c
+    ../main/security/ecdsa_der.c
     ../main/security/otp_proto.c
     ../main/security/openpgp_do.c
     ../main/security/openpgp_card.c

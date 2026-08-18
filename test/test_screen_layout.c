@@ -348,7 +348,8 @@ static void test_blank_survives_millisecond_wraparound(void)
 static void test_op_short_fits_the_double_height_font(void)
 {
     const sec_op_t ops[] = { SEC_OP_UNKNOWN, SEC_OP_SIGN, SEC_OP_DECRYPT,
-                             SEC_OP_AUTH, SEC_OP_OTP };
+                             SEC_OP_AUTH, SEC_OP_OTP,
+                             SEC_OP_FIDO_REGISTER, SEC_OP_FIDO_AUTH };
     for (unsigned i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
         const char *s = screen_op_short(ops[i]);
         TEST_ASSERT(s != NULL, "aucun libelle court n'est nul");
@@ -366,23 +367,37 @@ static void test_op_short_maps_each_operation(void)
 {
     /* Comparaisons deux a deux, jamais une valeur contre elle-meme : c'est le
      * defaut recurrent de ce projet — un test qui croit couvrir cinq cas alors
-     * qu'il n'en compare qu'un a lui-meme. */
-    const char *unk  = screen_op_short(SEC_OP_UNKNOWN);
-    const char *sign = screen_op_short(SEC_OP_SIGN);
-    const char *dec  = screen_op_short(SEC_OP_DECRYPT);
-    const char *auth = screen_op_short(SEC_OP_AUTH);
-    const char *otp  = screen_op_short(SEC_OP_OTP);
+     * qu'il n'en compare qu'un a lui-meme. Sept valeurs -> vingt et une
+     * paires (7*6/2), toutes ecrites ici. */
+    const char *unk   = screen_op_short(SEC_OP_UNKNOWN);
+    const char *sign  = screen_op_short(SEC_OP_SIGN);
+    const char *dec   = screen_op_short(SEC_OP_DECRYPT);
+    const char *auth  = screen_op_short(SEC_OP_AUTH);
+    const char *otp   = screen_op_short(SEC_OP_OTP);
+    const char *freg  = screen_op_short(SEC_OP_FIDO_REGISTER);
+    const char *fauth = screen_op_short(SEC_OP_FIDO_AUTH);
 
-    TEST_ASSERT(strcmp(sign, dec) != 0,  "signer et dechiffrer se distinguent");
-    TEST_ASSERT(strcmp(sign, auth) != 0, "signer et authentifier se distinguent");
-    TEST_ASSERT(strcmp(sign, otp) != 0,  "signer et OTP se distinguent");
-    TEST_ASSERT(strcmp(dec, auth) != 0,  "dechiffrer et authentifier se distinguent");
-    TEST_ASSERT(strcmp(dec, otp) != 0,   "dechiffrer et OTP se distinguent");
-    TEST_ASSERT(strcmp(auth, otp) != 0,  "authentifier et OTP se distinguent");
-    TEST_ASSERT(strcmp(unk, sign) != 0,  "l'inconnu ne se dit pas comme signer");
-    TEST_ASSERT(strcmp(unk, dec) != 0,   "l'inconnu ne se dit pas comme dechiffrer");
-    TEST_ASSERT(strcmp(unk, auth) != 0,  "l'inconnu ne se dit pas comme authentifier");
-    TEST_ASSERT(strcmp(unk, otp) != 0,   "l'inconnu ne se dit pas comme OTP");
+    TEST_ASSERT(strcmp(unk, sign) != 0,   "l'inconnu ne se dit pas comme signer");
+    TEST_ASSERT(strcmp(unk, dec) != 0,    "l'inconnu ne se dit pas comme dechiffrer");
+    TEST_ASSERT(strcmp(unk, auth) != 0,   "l'inconnu ne se dit pas comme authentifier");
+    TEST_ASSERT(strcmp(unk, otp) != 0,    "l'inconnu ne se dit pas comme OTP");
+    TEST_ASSERT(strcmp(unk, freg) != 0,   "l'inconnu ne se dit pas comme creer une cle FIDO");
+    TEST_ASSERT(strcmp(unk, fauth) != 0,  "l'inconnu ne se dit pas comme authentifier FIDO");
+    TEST_ASSERT(strcmp(sign, dec) != 0,   "signer et dechiffrer se distinguent");
+    TEST_ASSERT(strcmp(sign, auth) != 0,  "signer et authentifier se distinguent");
+    TEST_ASSERT(strcmp(sign, otp) != 0,   "signer et OTP se distinguent");
+    TEST_ASSERT(strcmp(sign, freg) != 0,  "signer et creer une cle FIDO se distinguent");
+    TEST_ASSERT(strcmp(sign, fauth) != 0, "signer et authentifier FIDO se distinguent");
+    TEST_ASSERT(strcmp(dec, auth) != 0,   "dechiffrer et authentifier se distinguent");
+    TEST_ASSERT(strcmp(dec, otp) != 0,    "dechiffrer et OTP se distinguent");
+    TEST_ASSERT(strcmp(dec, freg) != 0,   "dechiffrer et creer une cle FIDO se distinguent");
+    TEST_ASSERT(strcmp(dec, fauth) != 0,  "dechiffrer et authentifier FIDO se distinguent");
+    TEST_ASSERT(strcmp(auth, otp) != 0,   "authentifier et OTP se distinguent");
+    TEST_ASSERT(strcmp(auth, freg) != 0,  "authentifier et creer une cle FIDO se distinguent");
+    TEST_ASSERT(strcmp(auth, fauth) != 0, "authentifier et authentifier FIDO se distinguent");
+    TEST_ASSERT(strcmp(otp, freg) != 0,   "OTP et creer une cle FIDO se distinguent");
+    TEST_ASSERT(strcmp(otp, fauth) != 0,  "OTP et authentifier FIDO se distinguent");
+    TEST_ASSERT(strcmp(freg, fauth) != 0, "creer une cle FIDO et authentifier FIDO se distinguent");
 }
 
 /*

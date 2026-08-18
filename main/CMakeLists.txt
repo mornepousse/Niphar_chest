@@ -22,6 +22,8 @@ set(srcs
     "security/ctap2.c"
     "security/fido_key.c"
     "security/fido_master.c"
+    "security/ecdsa_der.c"
+    "security/u2f.c"
     "security/otp_proto.c"
     "security/cr_hmac.c"
     "security/openpgp_do.c"

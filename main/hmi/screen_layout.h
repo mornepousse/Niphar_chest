@@ -253,6 +253,8 @@ static inline const char *screen_op_short(sec_op_t op)
     case SEC_OP_DECRYPT: return "DECHIFFRER";
     case SEC_OP_AUTH:    return "AUTH";
     case SEC_OP_OTP:     return "CLE OTP";
+    case SEC_OP_FIDO_REGISTER: return "CREER CLE";
+    case SEC_OP_FIDO_AUTH:     return "AUTH FIDO";
     case SEC_OP_UNKNOWN: return "INCONNU";
     default:             return "INCONNU";
     }

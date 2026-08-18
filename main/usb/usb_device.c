@@ -328,9 +328,20 @@ esp_err_t usb_device_install(const uint8_t *fs_cfg, const uint8_t *hs_cfg,
     /*
      * Priorité au-dessus de la boucle applicative : un NAK tardif sur un
      * transfert de masse dégrade le débit, et l'hôte a des délais serrés.
+     *
+     * 6144 (pas 4096) depuis la tâche 7 : U2F_REGISTER/U2F_AUTHENTICATE
+     * (security/u2f.c) signent directement dans CE callback TinyUSB — donc
+     * sur CETTE pile, pas sur ccid_worker — via openpgp_crypto_p256_sign()/
+     * _pubkey() (mbedtls_ecdsa_sign/mbedtls_ecp_mul, groupe P-256). ccid.c
+     * exécute exactement les mêmes opérations mbedtls sur une pile de
+     * 6144 (xTaskCreate(ccid_worker, ..., 6144, ...)) : même budget ici,
+     * par analogie — PAS mesuré sur ce matériel, le bouton de confirmation
+     * étant électriquement ouvert (docs/HARDWARE.md), le chemin de
+     * signature ne s'exécute jamais réellement lors de cette tâche. Voir
+     * le rapport de tâche 7 pour ce constat.
      */
     s_task_run = true;
-    if (xTaskCreate(usb_task, "usb", 4096, NULL, 5, &s_task) != pdPASS) {
+    if (xTaskCreate(usb_task, "usb", 6144, NULL, 5, &s_task) != pdPASS) {
         ESP_LOGE(TAG, "création de la tâche USB");
         s_task_run = false;
         tusb_deinit(TUD_OPT_RHPORT);

@@ -5,8 +5,12 @@
 
 #include "tusb.h"
 
+#include "esp_timer.h"
+
+#include "apdu.h"
 #include "ctap2.h"
 #include "ctaphid.h"
+#include "u2f.h"
 #include "usb/hid_dispatch.h"
 #include "usb/usb_device.h"
 
@@ -20,9 +24,11 @@
  * testée sur l'hôte) ; ce fichier ne fait que lui fournir des paquets de 64
  * octets et empaqueter les réponses.
  *
- * Étape 3 du plan FIDO2 (tâche 3) : seules INIT et PING sont câblées. MSG et
- * CBOR rendent CTAPHID_ERR_INVALID_CMD — les tâches suivantes du plan les
- * cableront (U2F d'abord, CBOR ensuite).
+ * Historique : la tâche 3 ne câblait qu'INIT et PING (MSG/CBOR rendaient
+ * CTAPHID_ERR_INVALID_CMD) ; la tâche 5 a câblé CBOR (authenticatorGetInfo
+ * seul) ; la tâche 7 câble enfin MSG — U2F au complet (VERSION, REGISTER,
+ * AUTHENTICATE, dans security/u2f.c) — ce qui fait de cette carte un second
+ * facteur réellement utilisable. CANCEL reste seul non câblé.
  */
 
 enum {
@@ -146,26 +152,20 @@ static uint32_t s_last_cid;
 
 /*
  * Drapeaux de capacité CTAPHID_CAPFLAG_* du dernier octet d'INIT.
- * CAPFLAG_NMSG (« ce périphérique n'implémente PAS CTAPHID_MSG ») est VRAI à
- * ce stade : MSG rend CTAPHID_ERR_INVALID_CMD (handle_message() plus bas). À
- * retirer quand U2F (MSG) sera câblé — tâche ultérieure du plan. CAPFLAG_CBOR
- * est désormais posé (tâche 5) : authenticatorGetInfo répond sur CBOR — voir
- * le cas CTAPHID_CMD_CBOR ci-dessous. WINK reste à 0 : non câblé.
+ * CAPFLAG_CBOR posé depuis la tâche 5 : authenticatorGetInfo répond sur
+ * CBOR (cas CTAPHID_CMD_CBOR ci-dessous). WINK reste à 0 : non câblé.
  *
- * CONTRADICTION INTERNE ASSUMÉE, JUSQU'À LA TÂCHE 7 : authenticatorGetInfo
- * (ctap2.c) annonce "U2F_V2" dans `versions`, alors que ce drapeau dit ici
- * que CTAPHID_MSG — le transport QU'EXIGE U2F — n'est pas implémenté. Ruling
- * du coordinateur (2026-08-18, revue de la tâche 5) : la réponse getInfo dit
- * ce que la clé saura faire À LA FIN DU PLAN, et "U2F_V2" y sera vrai — mais
- * tant que la tâche 7 n'a pas câblé CTAPHID_MSG et U2F, ce drapeau reste VRAI
- * (NMSG posé) et contredit `versions`. RETIRER CTAPHID_CAPFLAG_NMSG d'ici dès
- * que la tâche 7 câble CTAPHID_MSG — pas avant, et pas oublier ensuite : un
- * client qui lit `versions` avant `caps` pourrait tenter U2F_REGISTER contre
- * un périphérique qui l'annonce indisponible.
+ * CTAPHID_CAPFLAG_NMSG (« ce périphérique n'implémente PAS CTAPHID_MSG »)
+ * n'est PLUS posé depuis cette tâche (7) : CTAPHID_MSG route désormais vers
+ * U2F (security/u2f.c, cas CTAPHID_CMD_MSG ci-dessous). Avant cette tâche,
+ * ce drapeau contredisait "U2F_V2" annoncé par authenticatorGetInfo
+ * (ctap2.c) — un client qui lisait `versions` avant `caps` aurait pu
+ * tenter U2F_REGISTER contre un périphérique qui l'annonçait indisponible.
+ * NE PAS le reposer sans retirer "U2F_V2" de ctap2.c en même temps : les
+ * deux doivent rester synchronisés.
  */
 #define CTAPHID_CAPFLAG_WINK 0x01u
 #define CTAPHID_CAPFLAG_CBOR 0x04u
-#define CTAPHID_CAPFLAG_NMSG 0x08u
 
 /*
  * État d'émission fragmentée — image miroir de ctaphid_asm_t côté envoi :
@@ -471,7 +471,7 @@ static void handle_message(const ctaphid_msg_t *msg)
         resp[13] = FIDO_DEV_VER_MAJOR;
         resp[14] = FIDO_DEV_VER_MINOR;
         resp[15] = FIDO_DEV_VER_BUILD;
-        resp[16] = CTAPHID_CAPFLAG_NMSG | CTAPHID_CAPFLAG_CBOR; /* WINK : non câblé, à 0 */
+        resp[16] = CTAPHID_CAPFLAG_CBOR; /* NMSG retiré (tâche 7) ; WINK : non câblé, à 0 */
 
         /* Réponse envoyée sur le canal DE LA REQUÊTE (msg->cid), diffusion
          * comprise : le nouveau CID ne voyage que dans la charge utile,
@@ -532,10 +532,44 @@ static void handle_message(const ctaphid_msg_t *msg)
         send_response(msg->cid, CTAPHID_CMD_CBOR, resp, (uint16_t)n);
         break;
     }
+    case CTAPHID_CMD_MSG: {
+        /*
+         * U2F (CTAP1) : la charge utile est un APDU ISO 7816-4 complet,
+         * déjà réassemblé par ctaphid_feed() — voir security/apdu.c (parseur
+         * pur, testé sur l'hôte) et security/u2f.c (VERSION/REGISTER/
+         * AUTHENTICATE, tâche 7). Contrairement à CTAPHID_CMD_CBOR, une
+         * réponse U2F voyage TOUJOURS dans une trame CTAPHID_CMD_MSG, y
+         * compris en cas d'échec : le statut n'est jamais un code d'erreur
+         * CTAP-HID mais les deux octets SW1SW2 en fin de réponse APDU.
+         */
+        apdu_t a;
+        if (!apdu_parse(msg->data, (uint16_t)msg->len, &a)) {
+            /* APDU malformé : rien à répondre côté U2F (aucun SW à
+             * produire sur un cadre qu'on n'a pas su découper) — une
+             * erreur de TRANSPORT est donc légitime ici, contrairement au
+             * cas CBOR ci-dessus qui a toujours un octet de commande à
+             * lire. */
+            send_error(msg->cid, CTAPHID_ERR_INVALID_LEN);
+            break;
+        }
+
+        uint8_t resp[U2F_RESP_MAX];
+        const uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        size_t n = u2f_handle_apdu(&a, resp, sizeof resp, now_ms);
+        if (n == 0u) {
+            /* Ne devrait jamais arriver (tampon dimensionné sur le pire
+             * cas, U2F_RESP_MAX) — défense plutôt que silence, même
+             * discipline que la garde CTAP2_ERR_OTHER du cas CBOR
+             * ci-dessus. */
+            send_error(msg->cid, CTAPHID_ERR_INVALID_LEN);
+            break;
+        }
+        send_response(msg->cid, CTAPHID_CMD_MSG, resp, (uint16_t)n);
+        break;
+    }
     default:
-        /* MSG, CANCEL : pas encore câblés — voir le commentaire en tête de
-         * fichier. ERR_INVALID_CMD est la réponse prévue par la
-         * spécification pour une commande que l'authentificateur ne
+        /* CANCEL : pas encore câblé. ERR_INVALID_CMD est la réponse prévue
+         * par la spécification pour une commande que l'authentificateur ne
          * reconnaît pas. */
         send_error(msg->cid, CTAPHID_ERR_INVALID_CMD);
         break;
@@ -608,16 +642,21 @@ static const hid_handlers_t s_fido_handlers = {
 /* ------------------------------------------------------------------------ */
 
 /*
- * Réarme l'assembleur CTAP-HID (Ruling 4), le dernier CID alloué et l'état
- * d'émission (y compris s_tx_busy) à chaque entrée dans le mode — sur le
+ * Réarme l'assembleur CTAP-HID (Ruling 4), le dernier CID alloué, l'état
+ * d'émission (y compris s_tx_busy) et — depuis la tâche 7 — toute attente de
+ * confirmation U2F (u2f_reset()), à chaque entrée dans le mode — sur le
  * modèle exact de otp_hid_init() dans mode_otp.c : l'ordre d'évaluation des
  * arguments de usb_device_install() n'étant pas spécifié en C,
  * mode_fido_hs_config() peut être appelé avant mode_fido_fs_config(), donc
- * les deux réarment.
+ * les deux réarment. u2f_reset() suit la même logique que ctaphid_reset() :
+ * une confirmation armée pour une session USB précédente (REGISTER ou
+ * AUTHENTICATE en attente d'appui) ne doit pas survivre à une
+ * déconnexion/reconnexion, ni s'appliquer à la requête d'un hôte différent.
  */
 const uint8_t *mode_fido_fs_config(void)
 {
     ctaphid_reset(&s_asm);
+    u2f_reset();
     s_last_cid   = 0;
     s_tx.len     = 0;
     s_tx.sent    = 0;
@@ -629,6 +668,7 @@ const uint8_t *mode_fido_fs_config(void)
 const uint8_t *mode_fido_hs_config(void)
 {
     ctaphid_reset(&s_asm);
+    u2f_reset();
     s_last_cid   = 0;
     s_tx.len     = 0;
     s_tx.sent    = 0;

@@ -37,7 +37,8 @@ static void test_every_state_has_a_screen(void)
  * exactement le cas que screen_op_label() existe pour distinguer. */
 static void test_every_op_has_a_distinct_label(void)
 {
-    const sec_op_t ops[] = { SEC_OP_UNKNOWN, SEC_OP_SIGN, SEC_OP_DECRYPT, SEC_OP_AUTH, SEC_OP_OTP };
+    const sec_op_t ops[] = { SEC_OP_UNKNOWN, SEC_OP_SIGN, SEC_OP_DECRYPT, SEC_OP_AUTH, SEC_OP_OTP,
+                             SEC_OP_FIDO_REGISTER, SEC_OP_FIDO_AUTH };
     const unsigned n = sizeof(ops) / sizeof(ops[0]);
     for (unsigned i = 0; i < n; i++) {
         const char *a = screen_view_of(USB_MODE_PGP, true, ops[i], LED_EVENT_NONE).line;
