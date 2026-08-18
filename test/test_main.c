@@ -13,6 +13,7 @@ extern void test_apdu(void);
 extern void test_ctaphid(void);
 extern void test_cbor_enc(void);
 extern void test_ctap2(void);
+extern void test_fido_key(void);
 extern void test_otp_proto(void);
 extern void test_openpgp_do(void);
 extern void test_openpgp_card(void);
@@ -38,6 +39,7 @@ int main(void)
     test_ctaphid();
     test_cbor_enc();
     test_ctap2();
+    test_fido_key();
     test_otp_proto();
     test_openpgp_do();
     test_openpgp_card();
