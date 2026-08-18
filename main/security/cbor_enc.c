@@ -90,6 +90,10 @@ void cbor_uint(cbor_w_t *w, uint64_t v)
 void cbor_bytes(cbor_w_t *w, const uint8_t *p, size_t n)
 {
     if (!w) return;
+    /* Meme convention que cbor_text() : un pointeur nul vaut longueur nulle,
+     * jamais un memcpy(dst, NULL, n) — comportement indefini des que n>0
+     * (revue finale de branche, mineur porte depuis la tache 4). */
+    if (p == NULL) n = 0;
     cbor_write_header(w, 2, (uint64_t)n);
     w_put(w, p, n);
 }
