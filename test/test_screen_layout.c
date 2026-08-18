@@ -415,6 +415,49 @@ static void test_op_short_out_of_range_says_unknown(void)
 }
 
 /* ------------------------------------------------------------------------- */
+/* Echeance de decompte : OpenPGP/OTP en ont une vraie, FIDO non.             */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * OpenPGP/OTP : une requete, une reponse a exactement quinze secondes — la
+ * barre de decompte dit vrai. FIDO : le client U2F relance sa requete toutes
+ * les ~117 ms jusqu'a son propre delai ; chaque relance rearme
+ * sec_confirm_arm() et repousse la fenetre. Une barre qui se vide sur ce
+ * flux annoncerait une echeance qui ne survient jamais tant que la
+ * proprietaire n'appuie pas.
+ *
+ * Piege a eviter (recurrent sur ce projet) : comparer chaque operation a une
+ * constante isolee laisserait passer un predicat qui rend `true` PARTOUT, ou
+ * qui confond une famille avec l'autre par erreur d'enum — les deux moities
+ * de ce test resteraient vertes independamment. Cette fonction compare donc
+ * les deux familles ENTRE ELLES : toute paire (echeance reelle, FIDO) doit
+ * differer, pas seulement chaque cote valoir ce qu'on attend de lui.
+ */
+static void test_op_has_deadline_distinguishes_fido_from_the_rest(void)
+{
+    const sec_op_t with_deadline[] = { SEC_OP_UNKNOWN, SEC_OP_SIGN, SEC_OP_DECRYPT,
+                                        SEC_OP_AUTH, SEC_OP_OTP };
+    const sec_op_t no_deadline[]   = { SEC_OP_FIDO_REGISTER, SEC_OP_FIDO_AUTH };
+
+    for (unsigned i = 0; i < sizeof(with_deadline) / sizeof(with_deadline[0]); i++) {
+        TEST_ASSERT(screen_op_has_deadline(with_deadline[i]) == true,
+                    "une operation a requete unique a une vraie echeance");
+    }
+    for (unsigned j = 0; j < sizeof(no_deadline) / sizeof(no_deadline[0]); j++) {
+        TEST_ASSERT(screen_op_has_deadline(no_deadline[j]) == false,
+                    "une operation FIDO se reamorce et n'a pas d'echeance affichable");
+    }
+
+    /* Le coeur du test : chaque paire (avec echeance, FIDO) doit differer. */
+    for (unsigned i = 0; i < sizeof(with_deadline) / sizeof(with_deadline[0]); i++) {
+        for (unsigned j = 0; j < sizeof(no_deadline) / sizeof(no_deadline[0]); j++) {
+            TEST_ASSERT(screen_op_has_deadline(with_deadline[i]) != screen_op_has_deadline(no_deadline[j]),
+                        "une operation a echeance et une operation FIDO doivent differer");
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------- */
 /* Logo errant de la veille.                                                  */
 /* ------------------------------------------------------------------------- */
 
@@ -629,6 +672,7 @@ void test_screen_layout(void)
     TEST_RUN(test_op_short_fits_the_double_height_font);
     TEST_RUN(test_op_short_maps_each_operation);
     TEST_RUN(test_op_short_out_of_range_says_unknown);
+    TEST_RUN(test_op_has_deadline_distinguishes_fido_from_the_rest);
     TEST_RUN(test_wander_stays_within_bounds);
     TEST_RUN(test_wander_reaches_both_ends);
     TEST_RUN(test_wander_is_symmetric);

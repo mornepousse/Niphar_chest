@@ -36,6 +36,12 @@ static const char *TAG = "screen";
  * deux doivent avancer du meme pas, d'ou la derivation plutot qu'un 12 en dur. */
 #define SCREEN_BIG_CHAR_PX  (2u * SCREEN_CHAR_PX)
 
+/* Hauteur d'un glyphe en police double hauteur : la police source fait 7
+ * lignes (screen_glyph_t.rows[7]), doublees par draw_char_2x(). Sert a
+ * recentrer verticalement le libelle FIDO quand la barre et le chiffre sont
+ * absents — voir SCREEN_WAIT dans render_frame(). */
+#define SCREEN_BIG_CHAR_H   14u
+
 /* Hauteur du bandeau inverse : 7 lignes de glyphe plus une marge de chaque
  * cote, arrondi a la page suivante. */
 #define SCREEN_BAND_H       10
@@ -418,25 +424,45 @@ static void render_frame(const hmi_snapshot_t *snap, uint32_t now)
     switch (v.kind) {
 
     /* Confirmation : la seule information dont la lecture a une consequence
-     * (quelle operation on autorise) en double hauteur, la barre en pleine
-     * largeur, et les secondes en chiffre sous elle. La barre dit qu'il reste du
-     * temps, le chiffre dit combien — deux generations de cles ont ete perdues
-     * sur des expirations invisibles. */
+     * (quelle operation on autorise) en double hauteur ; la barre en pleine
+     * largeur et les secondes en chiffre dessous SEULEMENT si l'operation a
+     * une vraie echeance (screen_op_has_deadline(), hmi/screen_layout.h). Sur
+     * OpenPGP/OTP, requete unique, la barre dit qu'il reste du temps et le
+     * chiffre dit combien — deux generations de cles ont ete perdues sur des
+     * expirations invisibles. Sur FIDO, le client relance et rearme la
+     * fenetre a chaque tentative : une barre qui se vide y annoncerait une
+     * echeance qui ne survient jamais tant que rien n'est confirme — c'est
+     * l'affichage qui mentirait, pas le reamorcage (qui, lui, est l'usage U2F
+     * normal et se garde). */
     case SCREEN_WAIT: {
         draw_band(0, v.title);
-        draw_text_2x_centered(20 + shift, screen_op_short(snap->op), true);
 
-        const uint16_t pm = screen_bar_permille(snap->armed_at_ms, now);
-        draw_bar(4, 42, (int)BOARD_OLED_WIDTH - 8, 8, pm);
+        if (screen_op_has_deadline(snap->op)) {
+            draw_text_2x_centered(20 + shift, screen_op_short(snap->op), true);
 
-        char secs[8];
-        const uint16_t s = screen_seconds_left(snap->armed_at_ms, now);
-        secs[0] = (char)('0' + (s / 10u) % 10u);
-        secs[1] = (char)('0' + s % 10u);
-        secs[2] = ' ';
-        secs[3] = 's';
-        secs[4] = '\0';
-        draw_text_centered(54, (s >= 10u) ? secs : &secs[1], true);
+            const uint16_t pm = screen_bar_permille(snap->armed_at_ms, now);
+            draw_bar(4, 42, (int)BOARD_OLED_WIDTH - 8, 8, pm);
+
+            char secs[8];
+            const uint16_t s = screen_seconds_left(snap->armed_at_ms, now);
+            secs[0] = (char)('0' + (s / 10u) % 10u);
+            secs[1] = (char)('0' + s % 10u);
+            secs[2] = ' ';
+            secs[3] = 's';
+            secs[4] = '\0';
+            draw_text_centered(54, (s >= 10u) ? secs : &secs[1], true);
+        } else {
+            /* Pas de barre ni de chiffre : bandeau et libelle seuls dans les
+             * 64 px de haut. Recentrer verticalement l'espace libere par la
+             * barre et le chiffre absents plutot que de laisser un trou en
+             * bas — screen_span()/screen_center_x() (hmi/screen_layout.h)
+             * sont deja reutilises sur l'axe Y ailleurs dans ce fichier
+             * (render_standby(), le logo errant) : centrer une longueur dans
+             * un espace disponible ne depend pas de l'axe. */
+            const uint16_t avail = screen_span(BOARD_OLED_HEIGHT, SCREEN_BAND_H);
+            const uint16_t y0    = SCREEN_BAND_H + screen_center_x(avail, SCREEN_BIG_CHAR_H);
+            draw_text_2x_centered((int)y0 + shift, screen_op_short(snap->op), true);
+        }
         break;
     }
 

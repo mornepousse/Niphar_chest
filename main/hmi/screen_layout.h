@@ -206,6 +206,43 @@ static inline uint16_t screen_seconds_left(uint32_t armed_at_ms, uint32_t now_ms
     return (uint16_t)((remaining + 999u) / 1000u);
 }
 
+/*
+ * Cette operation a-t-elle une vraie echeance affichable ?
+ *
+ * OpenPGP (SIGN/DECRYPT/AUTH) et OTP partagent un protocole a REQUETE UNIQUE :
+ * l'hote envoie une commande, attend, et la carte repond 0x6985 exactement a
+ * SEC_CONFIRM_TIMEOUT_MS — mesure et consigne dans docs/HARDWARE.md. La barre
+ * de decompte et le chiffre de secondes disent alors quelque chose de vrai.
+ *
+ * FIDO (U2F_REGISTER/U2F_AUTHENTICATE) suit un protocole DIFFERENT par
+ * construction : le client relance sa requete toutes les ~117 ms jusqu'a son
+ * propre delai, et l'authentificateur repond toujours 0x6985 tant que rien
+ * n'est confirme — c'est l'usage U2F normal, pas un defaut. Chaque relance
+ * appelle handle_register()/handle_authenticate() (main/security/u2f.c), qui
+ * rearme sec_confirm_arm() : la fenetre de quinze secondes repart a chaque
+ * fois. Une barre qui se vide sur ce flux annoncerait donc une echeance qui
+ * ne survient jamais — le seul element de l'ecran qui mentirait sur l'etat
+ * reel, observe sur dalle : « le timer tourne en boucle si j'appuie sur
+ * rien ». Ce n'est pas le reamorcage qu'on corrige (il est correct et se
+ * garde), c'est l'affichage d'une echeance qui n'existe pas.
+ *
+ * Une valeur hors des deux operations FIDO rend `true`, comme SEC_OP_UNKNOWN
+ * ou toute future operation a requete unique : le defaut sur ce predicat est
+ * de croire a l'echeance, jamais l'inverse — un `false` a tort masquerait la
+ * barre sur une operation qui en a reellement une, ce qui est le sens
+ * dangereux (cf. screen_seconds_left() plus haut, meme principe).
+ */
+static inline bool screen_op_has_deadline(sec_op_t op)
+{
+    switch (op) {
+    case SEC_OP_FIDO_REGISTER:
+    case SEC_OP_FIDO_AUTH:
+        return false;
+    default:
+        return true;
+    }
+}
+
 /* Coche, croix, ou rien. Une bascule de mode n'est pas un verdict : dessiner
  * une coche parce que le mode a change dirait qu'une operation a ete
  * autorisee. */
