@@ -490,6 +490,112 @@ par opération » reste vraie ; elle ne se lit simplement pas sur ce compteur.
   fabrication) ne s'applique pas à cette carte, voir « Cette carte ne résiste
   pas au dump de flash » ci-dessus.
 
+## FIDO2 / U2F — 2026-08-18
+
+Clôture du plan `.superpowers/sdd/2026-08-17-fido2-plan-1/` (huit tâches,
+branche `fido2-u2f`). Portée : un authentificateur **U2F** fonctionnel sur les
+trois cartes ; `authenticatorGetInfo` (CTAP2) répond mais aucune commande de
+créance CTAP2 n'existe — le décodeur CBOR de `makeCredential`/`getAssertion`
+est reporté au plan 2.
+
+### Mesuré sur matériel
+
+Tout ce qui suit vient de la carte-clé WT9932P4-TINY (`sec source` →
+« bouton en façade », `main/security/sec_gate.c:31,37`) — pas du kit de dev,
+pas d'une console.
+
+- `U2F_VERSION` → `"U2F_V2"` + `SW=0x9000`.
+- `U2F_REGISTER` sans confirmation → `SW=0x6985` (« conditions of use not
+  satisfied »), après expiration du délai de présence.
+- `AUTHENTICATE` sur un *key handle* inconnu → `SW=0x6A80` — rejeté par
+  `fido_key_check()` avant tout branchement crypto.
+- INS inconnu → `SW=0x6D00`.
+- **Capture de 124 `U2F_REGISTER` consécutifs sous `fido2-cred -M`
+  (libfido2)** : un INIT puis 124 requêtes sur ~15 s à ~117 ms d'intervalle,
+  toutes répondues `0x6985`, jamais un refus de commande — la preuve que
+  `fido2-cred` emprunte le bon chemin de bout en bout et que seul le bouton
+  manque. Effet de bord : 124 répétitions sans écart d'état, test de charge
+  gratuit sur le chemin REGISTER.
+- **Autotest crypto au démarrage du mode** (`u2f_selftest()`,
+  `main/security/u2f.c:414`) : dérivation credential → clé publique,
+  signature, vérification signature/clé publique, encodage DER, signature
+  d'attestation, vérification clé d'attestation ↔ certificat embarqué — tout
+  le chemin de signature, sans jamais passer par le bouton. Log au
+  démarrage du mode FIDO : `selftest: PASS (credential + attestation)`.
+- **Marge de pile d'`usb_task` : 3532 octets libres sur 6144, MESURÉE**
+  (`uxTaskGetStackHighWaterMark()`, `main/usb/mode_fido.c:648-654`) — pas
+  estimée par analogie. La pile avait été portée de 4096 à 6144 « par
+  analogie avec `ccid_worker` » (tâche 7, avant mesure) ; c'est l'autotest
+  ci-dessus qui a rendu la mesure possible en exerçant réellement le chemin
+  de signature. 57 % de marge, mesure conservatrice puisque le selftest
+  vérifie la signature — chose que la production ne fait jamais.
+
+### PAS mesuré, et pourquoi — le point le plus important de cette section
+
+**Le chemin de signature n'a jamais produit une seule signature réelle.**
+Le bouton de confirmation en façade est électriquement ouvert (voir
+« Défaut ouvert — bascules de mode spontanées » plus bas dans ce document,
+même défaut que celui qui bloque aussi la confirmation OpenPGP) : toute
+requête U2F qui exige une présence physique expire et rend `0x6985`, y
+compris les 124 captures ci-dessus. Aucun hôte n'a donc jamais reçu de
+signature U2F réelle de cette carte.
+
+**Conséquence pour qui répare la soudure du bouton** : le premier
+enregistrement U2F réussi sur cette carte sera la **première exécution
+réelle** de ce code hors autotest — dérivation, signature et encodage DER
+sur des données choisies par un hôte, pas sur le message fixe du selftest.
+L'autotest atténue le risque (il prouve que le chemin ne déborde pas et que
+la crypto est cohérente sur SES données), il ne le supprime pas : un hôte
+adverse ou simplement différent peut exercer des tailles ou des contenus
+que le selftest n'a jamais vus.
+
+### Décisions dont la conséquence se voit
+
+**`CTAPHID_CAPFLAG_CBOR` est retiré du dernier octet d'INIT**
+(`main/usb/mode_fido.c:158-190`), donc `fido2-token -I` ne décrit plus la
+clé (`caps: 0x00`). **Ce n'est pas une panne.**
+
+`libfido2` décide CTAP1 vs CTAP2 sur ce bit de transport, jamais sur le
+contenu de `versions` (`fido_dev_is_fido2()`, `src/dev.c:515`) : une fois le
+bit posé et `authenticatorGetInfo` répondant, la bibliothèque s'engage sur
+CTAP2 pour toute la session et n'essaie plus jamais `u2f_register()`
+(`src/cred.c:217-232`) — même après un échec de `makeCredential`. C'est
+exactement ce qui a été observé sur matériel avant ce retrait :
+`fido2-cred -M` échouait par `FIDO_ERR_INVALID_COMMAND` au lieu d'emprunter
+U2F. `authenticatorGetInfo` reste implémenté et correct dans `ctap2.c`, il
+répond simplement toujours par CTAPHID, jamais annoncé comme disponible aux
+clients CTAP2.
+
+Il reviendra quand `authenticatorMakeCredential` **et**
+`authenticatorGetAssertion` existeront tous les deux (plan 2) — jamais
+avant, jamais pour faire réapparaître `fido2-token -I` seul.
+
+### AAGUID — identifiant de modèle, jamais d'exemplaire
+
+`76365535-e558-4f54-b32d-5fc79426a628` (`main/security/ctap2.c:24`) est fixe
+et **identique sur tous les exemplaires** de cette carte. Il ne doit jamais
+varier d'une carte à l'autre : un AAGUID par exemplaire serait un
+identifiant corrélable entre sites relying party différents — exactement ce
+que WebAuthn cherche à éviter en distinguant AAGUID (modèle, public) de
+*credential ID* (exemplaire × site, privé). Le régénérer par carte
+transformerait un standard de confidentialité en outil de traçage.
+
+### La clé maîtresse vit en NVS en clair, pas en eFuse
+
+Écart assumé du plan, documenté en tête de `main/security/fido_master.c`,
+pas un oubli. La spécification prévoyait K_maître dans un bloc eFuse en
+lecture protégée, derrière le périphérique HMAC matériel du P4 ; griller un
+eFuse est **irréversible**, et la propriétaire ne l'a pas autorisé.
+
+Conséquence concrète : un dump de la partition NVS (voir « L'hôte peut
+forcer le mode download » et « Cette carte ne résiste pas au dump de
+flash » plus haut/bas dans ce document) révèle la clé maîtresse en clair,
+donc **tous les identifiants** (*credential ID*) qui en sont dérivés — pas
+seulement celui d'une session. Un eFuse en lecture protégée aurait rendu
+cette extraction impossible même avec un accès physique complet ; ici,
+elle ne coûte qu'un dump de flash. Le passage à l'eFuse reste un travail
+séparé, à demander explicitement.
+
 ### Écran OLED SSD1306 — 2026-08-17
 
 Ajouté sur la carte-clé uniquement. Ni le kit ni le coffre n'en portent : la

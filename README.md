@@ -43,3 +43,12 @@ Trois cartes, un seul firmware (voir [`docs/HARDWARE.md`](docs/HARDWARE.md)) :
       l'énumération USB, l'échange CR-HMAC réel reste à tester faute
       d'outillage HID sur le poste de dev
 - [ ] Flash du C6 embarqué via esp-hosted (radio du P4, optionnel)
+- [x] **U2F sur CTAPHID** — INIT/PING/MSG câblés, `U2F_VERSION`,
+      `U2F_REGISTER`/`AUTHENTICATE` validés sur matériel (WT9932P4-TINY) y
+      compris via `fido2-cred -M` (libfido2, 124 captures), autotest crypto
+      au démarrage (`PASS`) et marge de pile mesurée (3532/6144 o) ; **aucune
+      signature réelle produite** — le bouton de confirmation en façade est
+      électriquement ouvert (voir [`docs/HARDWARE.md`](docs/HARDWARE.md#fido2--u2f--2026-08-18)).
+      `authenticatorGetInfo` (CTAP2) répond mais n'est pas annoncé aux
+      clients CTAP2 (`CTAPHID_CAPFLAG_CBOR` retiré) : `makeCredential`/
+      `getAssertion` restent à écrire, plan 2.
