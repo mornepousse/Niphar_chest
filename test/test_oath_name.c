@@ -32,6 +32,20 @@ static void test_noms_distincts_restent_distincts(void)
          * l'empreinte ne portait que sur la queue, ces deux noms rendraient
          * la meme chaine — c'est exactement le trou que corrige la ronde 1. */
         { "Ban\x01que" "XXXXXXXXXXXX", "Ban\x02que" "XXXXXXXXXXXX" },
+        /* Ronde 3 : cible directement le poids de l'empreinte (Horner sur
+         * l'issuer entier), pas seulement l'idee generale de collision. Meme
+         * prefixe visible de 9 caracteres (« SERVICE12 »), meme dernier
+         * octet (« X », poids base^0 = 1), et un AVANT-dernier octet qui
+         * differe de PRECISEMENT 12 (« A »=0x41=65 contre « M »=0x4D=77) — le
+         * seul octet dont le poids est base^1. Avec une base 33,
+         * 33*12 = 396 = 11*36 ≡ 0 (mod 36) : l'empreinte entiere ne bouge
+         * pas, collision garantie quel que soit le reste du nom. Avec 31,
+         * 31*12 = 372 ≡ 12 (mod 36) : non nul, empreintes distinctes. Ne pas
+         * changer ces caracteres sans refaire le calcul — n'importe quelle
+         * autre paire distante de 12 a cette position rejoue la meme preuve,
+         * mais une distance differente (ou une position differente) ne la
+         * rejoue PAS forcement. */
+        { "SERVICE12AX", "SERVICE12MX" },
     };
     for (unsigned i = 0; i < sizeof(paires) / sizeof(paires[0]); i++) {
         char a[OATH_NAME_DISPLAY_MAX], b[OATH_NAME_DISPLAY_MAX];
