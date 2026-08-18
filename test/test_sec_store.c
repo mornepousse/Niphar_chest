@@ -50,10 +50,67 @@ static void test_bounds(void)
                 "type=EMPTY rejected");
 }
 
+/* Seize slots, pas quatre : douze comptes TOTP plus de la marge. Le test
+ * compare la borne HAUTE valide et la première INVALIDE — vérifier seulement
+ * que le slot 15 marche laisserait passer un magasin de 64 slots. */
+static void test_seize_slots_et_pas_un_de_plus(void)
+{
+    sec_store_init();
+    const uint8_t key[4] = { 1, 2, 3, 4 };
+    TEST_ASSERT(sec_store_set_slot(15, SEC_SLOT_HMAC_SHA1, "dernier", key, 4),
+                "le slot 15 existe");
+    TEST_ASSERT(!sec_store_set_slot(16, SEC_SLOT_HMAC_SHA1, "trop", key, 4),
+                "le slot 16 n'existe pas");
+}
+
+/* Un nom YKOATH s'ecrit « Issuer:compte@domaine » : seize caracteres ne
+ * suffisaient pas. Le test verifie qu'un nom long survit ENTIER, et qu'un nom
+ * trop long est tronque avec son terminateur — pas qu'il deborde. */
+static void test_nom_long_conserve(void)
+{
+    sec_store_init();
+    const uint8_t key[4] = { 1, 2, 3, 4 };
+    const char *nom = "GitHub:mae.pugin@exemple-tres-long.org";
+    TEST_ASSERT(sec_store_set_slot(0, SEC_SLOT_HMAC_SHA1, nom, key, 4),
+                "un nom de 38 caracteres est accepte");
+    TEST_ASSERT(strcmp(sec_store_label(0), nom) == 0,
+                "le nom long est conserve entier");
+
+    char trop_long[128];
+    memset(trop_long, 'x', sizeof(trop_long));
+    trop_long[sizeof(trop_long) - 1] = '\0';
+    TEST_ASSERT(sec_store_set_slot(1, SEC_SLOT_HMAC_SHA1, trop_long, key, 4),
+                "un nom trop long est accepte, tronque");
+    TEST_ASSERT(strlen(sec_store_label(1)) == SEC_LABEL_LEN - 1,
+                "tronque a SEC_LABEL_LEN-1, terminateur compris");
+}
+
+/* Le nombre de chiffres est porte par le slot : six ou huit selon le compte.
+ * Compare deux slots ENTRE EUX — verifier qu'un slot rend 6 ne prouve pas que
+ * la valeur est lue du slot plutot que d'une constante. */
+static void test_digits_par_slot(void)
+{
+    sec_store_init();
+    const uint8_t key[4] = { 1, 2, 3, 4 };
+    sec_store_set_slot(0, SEC_SLOT_HMAC_SHA1, "a", key, 4);
+    sec_store_set_slot(1, SEC_SLOT_HMAC_SHA1, "b", key, 4);
+    TEST_ASSERT(sec_store_set_digits(0, 6), "6 chiffres accepte");
+    TEST_ASSERT(sec_store_set_digits(1, 8), "8 chiffres accepte");
+    TEST_ASSERT(sec_store_digits(0) != sec_store_digits(1),
+                "deux slots portent des valeurs distinctes");
+    TEST_ASSERT_EQ(sec_store_digits(0), 6, "slot 0 rend bien 6");
+    TEST_ASSERT_EQ(sec_store_digits(1), 8, "slot 1 rend bien 8");
+    TEST_ASSERT(!sec_store_set_digits(0, 5), "5 chiffres refuse");
+    TEST_ASSERT(!sec_store_set_digits(0, 9), "9 chiffres refuse");
+}
+
 void test_sec_store(void)
 {
     TEST_SUITE("sec_store");
     TEST_RUN(test_set_get);
     TEST_RUN(test_clear);
     TEST_RUN(test_bounds);
+    TEST_RUN(test_seize_slots_et_pas_un_de_plus);
+    TEST_RUN(test_nom_long_conserve);
+    TEST_RUN(test_digits_par_slot);
 }

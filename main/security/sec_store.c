@@ -59,6 +59,20 @@ bool sec_store_get_secret(uint8_t idx, uint8_t *out, uint8_t *out_len)
     return true;
 }
 
+bool sec_store_set_digits(uint8_t idx, uint8_t digits)
+{
+    if (idx >= SEC_N_SLOTS) return false;
+    if (digits != 6 && digits != 8) return false;
+    if (s_slots[idx].type == SEC_SLOT_EMPTY) return false;
+    s_slots[idx].digits = digits;
+    return sec_store_persist();
+}
+
+uint8_t sec_store_digits(uint8_t idx)
+{
+    return (idx < SEC_N_SLOTS) ? s_slots[idx].digits : 0;
+}
+
 #ifndef TEST_HOST
 #include "esp_log.h"
 #include "nvs.h"                /* ESP_ERR_NVS_NOT_FOUND */
@@ -68,7 +82,7 @@ static const char *TAG = "sec_store";
 static bool sec_store_persist(void)
 {
     esp_err_t err = nvs_save_blob_with_total(STORAGE_NAMESPACE, "sec_slots", s_slots,
-                                             sizeof(s_slots), "sec_slots_ver", 1);
+                                             sizeof(s_slots), "sec_slots_ver", 2);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "persist failed: %s", esp_err_to_name(err));
         return false;
