@@ -30,10 +30,14 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
  * parce que le bullet sec_confirm_reset() plus bas affirmait que reset() ne
  * tourne jamais que sur la meme tache que arm() — vrai avant le correctif I4
  * de usb/usb_mode.c, faux depuis : la fonction de bascule de mode USB
- * (usb/usb_mode.c, ligne ~160) appelle desormais sec_confirm_reset()
- * directement, depuis hmi_task ou la tache REPL selon la carte, AVANT tout
- * mode_*_stop() — donc PENDANT que ccid_worker (PGP) ou usb_task (OTP, FIDO)
- * peuvent encore etre au milieu d'un arm()/poll(). Cette fois la fausse
+ * (usb/usb_mode.c) appelle desormais sec_confirm_reset() directement, depuis
+ * hmi_task ou la tache REPL selon la carte — un contexte distinct de
+ * ccid_worker (PGP) et de usb_task (OTP, FIDO). L'ORDRE exact de cet appel
+ * vis-a-vis des mode_*_stop()/usb_device_uninstall() est un detail de
+ * usb_mode.c, pas de ce fichier, et il a deja bouge une fois sans que la
+ * conclusion ci-dessous change : quel que soit cet ordre, ccid_worker ou
+ * usb_task peuvent encore etre au milieu d'un arm()/poll() au moment ou
+ * reset() s'execute sur son propre contexte. Cette fois la fausse
  * premisse ne pouvait pas se reparer
  * par un argument plus fin comme les trois fois precedentes (peek() contre
  * un seul ecrivain reste bornee, meme torn read) : reset() et arm()/poll()
@@ -215,16 +219,22 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
  *     exact tant que dongle_confirm() etait le SEUL appelant. Depuis le
  *     correctif I4 de usb/usb_mode.c, un second appelant existe : la
  *     fonction de bascule de mode USB y appelle sec_confirm_reset()
- *     directement, depuis hmi_task ou la tache REPL, AVANT tout mode_*_stop()
- *     — donc PENDANT que la personnalite qu'on est en train de quitter peut
- *     encore etre au milieu d'un arm()/poll() sur SA propre tache
- *     (ccid_worker pour PGP, usb_task pour OTP et FIDO). Aucune de ces
- *     taches n'est hmi_task ni la tache REPL : la premisse ne pouvait donc
- *     plus etre vraie pour aucune des trois personnalites, pas seulement
- *     OTP/FIDO comme un premier examen le suggerait — le fait que
- *     dongle_confirm() se re-teste lui-meme contre un drapeau d'arret
- *     (s_shutdown, voir ccid_shutdown()) borne la fenetre reelle pour PGP
- *     mais ne change rien a la premisse ELLE-MEME, qui reste fausse.
+ *     directement, depuis hmi_task ou la tache REPL — jamais depuis
+ *     ccid_worker (PGP) ni usb_task (OTP, FIDO), quel que soit l'ordre exact
+ *     de cet appel vis-a-vis des mode_*_stop()/usb_device_uninstall() (un
+ *     detail de usb_mode.c qui a deja bouge une fois, voir son historique,
+ *     sans que ce paragraphe ait besoin de changer). Ce qui compte ici
+ *     n'est pas CET ordre mais le fait que ce second appelant tourne sur une
+ *     tache differente de celle qui execute arm()/poll() pour la
+ *     personnalite qu'on est en train de quitter — elle peut donc encore
+ *     etre au milieu d'un arm()/poll() sur SA propre tache au moment ou
+ *     reset() s'execute. Aucune de ces taches n'est hmi_task ni la tache
+ *     REPL : la premisse ne pouvait donc plus etre vraie pour aucune des
+ *     trois personnalites, pas seulement OTP/FIDO comme un premier examen le
+ *     suggerait — le fait que dongle_confirm() se re-teste lui-meme contre
+ *     un drapeau d'arret (s_shutdown, voir ccid_shutdown()) borne la fenetre
+ *     reelle pour PGP mais ne change rien a la premisse ELLE-MEME, qui reste
+ *     fausse.
  *
  *     Le raisonnement « premier champ pose la visibilite » qui suivait
  *     (reset() ecrit IDLE en premier, donc un peek() dechire ne peut jamais
