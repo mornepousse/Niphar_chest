@@ -552,20 +552,38 @@ Créer `test/test_oath_proto.c` :
 #include "security/oath_proto.h"
 
 /*
- * Vecteur de la RFC 4226, annexe D : secret ASCII « 12345678901234567890 »,
- * compteur 0 -> code 755224. On verifie le code DYNAMIQUE, pas les six
- * chiffres : la carte ne fait pas le modulo, ykman s'en charge.
- * hmac ci-dessous = HMAC-SHA1(secret, 8 octets a zero), constante de la RFC.
+ * Vecteurs de la RFC 4226, annexe D : secret ASCII « 12345678901234567890 ».
+ * DEUX compteurs, pas un — un seul vecteur ne distingue pas une troncature
+ * juste d'une constante heureuse. On verifie le code DYNAMIQUE, pas les six
+ * chiffres : la carte ne fait pas le modulo, ykman s'en charge (_format_code,
+ * oath.py:259).
+ *
+ * Valeurs RECALCULEES, pas recopiees de memoire :
+ *   compteur 0 -> hmac cc93cf...e4b0, dbc 1284755224, code 755224
+ *   compteur 1 -> hmac 75a48a...33ab, dbc 1094287082, code 287082
+ * Le plan avait initialement apparie le hmac du compteur 1 au code du
+ * compteur 0 : le test aurait echoue et fait « corriger » du code juste.
  */
 static void test_troncature_rfc4226(void)
 {
-    const uint8_t hmac[20] = {
+    const uint8_t hmac0[20] = {
+        0xcc,0x93,0xcf,0x18,0x50,0x8d,0x94,0x93,0x4c,0x64,
+        0xb6,0x5d,0x8b,0xa7,0x66,0x7f,0xb7,0xcd,0xe4,0xb0
+    };
+    const uint8_t hmac1[20] = {
         0x75,0xa4,0x8a,0x19,0xd4,0xcb,0xe1,0x00,0x64,0x4e,
         0x8a,0xc1,0x39,0x7e,0xea,0x74,0x7a,0x2d,0x33,0xab
     };
-    uint32_t dbc = oath_dynamic_binary(hmac, sizeof(hmac));
-    TEST_ASSERT_EQ(dbc % 1000000u, 755224u, "vecteur RFC 4226 compteur 0");
-    TEST_ASSERT((dbc & 0x80000000u) == 0, "le bit de poids fort est masque");
+    const uint32_t d0 = oath_dynamic_binary(hmac0, sizeof(hmac0));
+    const uint32_t d1 = oath_dynamic_binary(hmac1, sizeof(hmac1));
+
+    TEST_ASSERT_EQ(d0, 1284755224u, "vecteur RFC 4226 compteur 0 — code dynamique");
+    TEST_ASSERT_EQ(d1, 1094287082u, "vecteur RFC 4226 compteur 1 — code dynamique");
+    TEST_ASSERT_EQ(d0 % 1000000u, 755224u, "compteur 0 -> 755224 apres modulo hote");
+    TEST_ASSERT_EQ(d1 % 1000000u, 287082u, "compteur 1 -> 287082 apres modulo hote");
+    TEST_ASSERT(d0 != d1, "deux compteurs donnent deux codes distincts");
+    TEST_ASSERT((d0 & 0x80000000u) == 0, "le bit de poids fort est masque");
+    TEST_ASSERT((d1 & 0x80000000u) == 0, "le bit de poids fort est masque");
 }
 
 /* L'offset vient du dernier quartet : deux HMAC differant SEULEMENT par ce
