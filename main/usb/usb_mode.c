@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
+#include "sec_confirm.h"
 #include "usb/mode_fido.h"
 #include "usb/mode_otp.h"
 #include "usb/mode_pgp.h"
@@ -138,6 +139,25 @@ esp_err_t usb_mode_set(usb_mode_t mode)
     }
 
     ESP_LOGI(TAG, "mode USB : %s -> %s", usb_mode_name(s_mode), usb_mode_name(mode));
+
+    /*
+     * I4 (revue finale de branche) : purge TOUTE confirmation armée avant de
+     * démonter quoi que ce soit, un seul endroit symétrique pour les trois
+     * personnalités (CCID, OTP, FIDO) plutôt qu'un appel dupliqué dans
+     * chaque *_stop(). ccid_worker() (security/ccid.c) appelait déjà
+     * sec_confirm_reset() sur son propre chemin d'arrêt ; mode_otp_stop() et
+     * mode_fido_stop() n'avaient pas d'équivalent, donc l'écran pouvait
+     * afficher jusqu'à SEC_CONFIRM_TIMEOUT_MS (15 s) l'opération d'un mode
+     * qui vient d'être désinstallé — un libellé faux, pas une permission
+     * fausse (les slots sec_confirm sont disjoints par personnalité et
+     * arm() écrase l'état précédent, donc aucun octroi croisé n'en
+     * découle), mais exactement la classe d'erreur que sec_confirm.c
+     * documente exister pour empêcher. Placé ici, avant les *_stop()
+     * ci-dessous, et seulement une fois passé le court-circuit « même mode »
+     * plus haut : un appel qui ne change rien au mode ne démonte rien et ne
+     * doit donc pas couper une confirmation en cours pour CE mode-là.
+     */
+    sec_confirm_reset();
 
     /*
      * Le worker CCID d'abord, la pile USB ensuite. Il survit à tous les
