@@ -567,6 +567,24 @@ static void test_capacite_de_sortie_respectee(void)
     memset(zone, 0x5A, sizeof(zone));
     TEST_ASSERT_EQ(oath_dispatch(&a, zone, 1, &ctx), 0, "cap<2 -> rien d'ecrit");
     TEST_ASSERT(zone[0] == 0x5A, "premier octet intact");
+
+    /* Le LIST ci-dessus est arrete par la borne d'oath_emit_chunk et n'atteint
+     * jamais sw_only. Or c'est sw_only qui ecrit la majorite des reponses : il
+     * lui faut son propre cas a cap==1, sans quoi « if (cap < 2) » pourrait
+     * devenir « if (cap < 1) » — un debordement d'un octet sur CHAQUE mot
+     * d'etat — sans qu'un seul test bouge. Un INS inconnu est le chemin le
+     * plus court jusqu'a lui. */
+    uint8_t inconnu[5] = { 0x00, 0x7F, 0x00, 0x00, 0x00 };
+    apdu_t b;
+    TEST_ASSERT(apdu_parse(inconnu, sizeof(inconnu), &b), "APDU d'INS inconnu analysee");
+    memset(zone, 0x5A, sizeof(zone));
+    TEST_ASSERT_EQ(oath_dispatch(&b, zone, 1, &ctx), 0, "mot d'etat seul : cap<2 -> 0");
+    TEST_ASSERT(zone[0] == 0x5A && zone[1] == 0x5A,
+                "et pas un octet ecrit, pas meme le premier");
+    /* Temoin positif : a cap==2, le meme chemin ecrit VRAIMENT son mot d'etat.
+     * Sans lui, « ne rien ecrire jamais » passerait l'assertion ci-dessus. */
+    TEST_ASSERT_EQ(oath_dispatch(&b, zone, 2, &ctx), 2, "a cap==2, le mot d'etat tient");
+    TEST_ASSERT(zone[0] == 0x6D && zone[1] == 0x00, "6D00 : INS inconnu");
 }
 
 /* ---- petits echafaudages, pour que les cas disent le protocole et non la
@@ -1041,7 +1059,11 @@ static void test_put_secret_trop_long_prime_sur_magasin_plein(void)
     }
     oath_select_ok(&ctx);
 
-    uint8_t d[3 + 2 + 2 + 65], out[32];
+    /* Deux TLV complets : (2 + 3) pour le nom, (2 + 2 + 65) pour la clef. Le
+     * dimensionnement precedent oubliait les deux octets d'en-tete du premier
+     * et debordait de deux octets — invisible sans sanitiseur, trouve en
+     * passant le harnais sous ASan. */
+    uint8_t d[(2 + 3) + (2 + 2 + 65)], out[32];
     uint8_t clef[2 + 65];
     clef[0] = OATH_ALGO_TOTP_SHA1; clef[1] = 6;
     memset(&clef[2], 0xCD, 65);
@@ -1213,6 +1235,15 @@ static void test_select_verifie_l_aid(void)
 
     n = oath_cmd(&ctx, 0xA4, 0x04, 0x00, k_aid, sizeof(k_aid), out, sizeof(out));
     TEST_ASSERT(n > 2 && ctx.selected, "l'AID YKOATH, lui, arme l'applet");
+
+    /* Le bon AID mais une capacite trop courte pour la reponse : l'applet ne
+     * doit PAS s'armer sur une reponse que l'hote n'a pas pu recevoir. Sans
+     * cette propriete, l'hote croirait l'applet non selectionne pendant que la
+     * clef, elle, accepterait ses PUT et ses DELETE. */
+    memset(&ctx, 0, sizeof(ctx));
+    n = oath_cmd(&ctx, 0xA4, 0x04, 0x00, k_aid, sizeof(k_aid), out, 8);
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x84), "6A84 : la reponse de SELECT ne tient pas");
+    TEST_ASSERT(!ctx.selected, "et l'applet n'est pas arme pour autant");
 }
 
 /* Minor : la classe n'etait jamais examinee. */
@@ -1244,6 +1275,18 @@ static void test_rename_refuse_un_doublon(void)
     TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : ce nom est deja pris");
     TEST_ASSERT(strcmp(sec_store_label(0), "A:b") == 0, "le premier compte est intact");
     TEST_ASSERT(strcmp(sec_store_label(1), "C:d") == 0, "le second compte est intact");
+
+    /* Le doublon se cherche dans TOUT le magasin, y compris sur le slot qu'on
+     * est en train de renommer : l'exception « occupe != slot » est ce qui
+     * distingue « ce nom est deja pris » de « ce nom est deja le sien ».
+     * Sans elle, renommer un compte en lui-meme — ce que fait ykman quand on
+     * corrige la casse ou l'emetteur sans toucher au compte — rendrait 6A80. */
+    l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+    l = tlv_at(d, l, OATH_TAG_NAME, "A:b", 3);
+    n = oath_cmd(&ctx, 0x05, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : renommer un compte en lui-meme passe");
+    TEST_ASSERT(strcmp(sec_store_label(0), "A:b") == 0, "et le compte porte toujours son nom");
+    TEST_ASSERT_EQ(sec_store_count(), 2, "sans avoir cree ni perdu de compte");
 }
 
 
@@ -1422,6 +1465,11 @@ static void test_l_appui_confirme_agit_sur_le_bon_compte(void)
         char nom[16];
         snprintf(nom, sizeof(nom), "S%02u:c", (unsigned)i);
         slot_totp_secret(i, nom, (uint8_t)(0x10 + i));
+        /* Six chiffres PARTOUT au depart : c'est ce qui rend observable, plus
+         * bas, que le remplacement ecrit les huit chiffres sur le slot vise et
+         * pas sur un autre. Sans ce fond commun, sec_store_digits(0) vaudrait
+         * 0 et un « 8 » ecrit au mauvais endroit ne se distinguerait pas. */
+        TEST_ASSERT(sec_store_set_digits(i, 6), "six chiffres au depart");
     }
     oath_select_ok(&ctx);
     uint8_t d[96], out[32];
@@ -1456,6 +1504,15 @@ static void test_l_appui_confirme_agit_sur_le_bon_compte(void)
                 "le slot 0 n'a PAS ete ecrase par le remplacement");
     TEST_ASSERT(slot_intact(1, "S01:c", 0x11), "le slot 1 est intact");
     TEST_ASSERT(slot_intact(4, "S04:c", 0x14), "le slot 4 est intact");
+    /* Le nombre de chiffres s'ecrit par un appel SEPARE de celui du secret :
+     * il a donc son propre index a se tromper, et slot_intact ne le regarde
+     * pas. Un sec_store_set_digits(0, …) code en dur donnerait un magasin ou
+     * le compte remplace garde six chiffres pendant qu'un voisin en gagne
+     * huit — donc des codes faux des deux cotes, sans aucune erreur. */
+    TEST_ASSERT_EQ(sec_store_digits(2), 8, "les huit chiffres sont alles au slot 2");
+    TEST_ASSERT_EQ(sec_store_digits(0), 6, "le slot 0 garde ses six chiffres");
+    TEST_ASSERT_EQ(sec_store_digits(1), 6, "le slot 1 garde ses six chiffres");
+    TEST_ASSERT_EQ(sec_store_digits(4), 6, "le slot 4 garde ses six chiffres");
 }
 
 /*
@@ -1560,6 +1617,264 @@ static void test_touch_commit_rend_zero_sur_calculate(void)
     TEST_ASSERT_EQ(ctx.touch_slot, 2, "le slot vise reste disponible");
 }
 
+/*
+ * L'etiquette mise en attente par un REPLACE doit etre terminee PAR LA COPIE
+ * elle-meme, pas par un nettoyage distant.
+ *
+ * Le scenario, joue en entier parce que c'est le seul qui montre la faute :
+ * un REPLACE arme sur un nom long, ABANDONNE, puis un REPLACE sur un nom
+ * court, confirme. Si la copie ne termine pas sa destination, le second nom
+ * herite de la queue du premier — l'ecran annonce « A:b » et le secret part
+ * sur « A:bviceLongtemps… », un compte qui n'existe pour personne. Aucun mot
+ * d'etat ne le dit : les deux commandes rendent 9000.
+ */
+static void test_l_etiquette_du_remplacement_ne_garde_pas_de_queue(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    /* Deux noms de longueurs tres differentes, et le court n'est PAS un
+     * prefixe du long : la queue eventuelle sera donc lisible telle quelle. */
+    static const char lng[] = "ServiceLongtempsProvisionne:mae@exemple.org";
+    slot_totp_secret(0, lng, 0x11);
+    slot_totp_secret(1, "A:b", 0x22);
+    oath_select_ok(&ctx);
+    uint8_t d[160], out[256], sec[SEC_SECRET_MAX], sl = 0;
+
+    /* 1. REPLACE arme sur le nom long. */
+    uint8_t l = put_body(d, lng, (uint8_t)strlen(lng), 6, 0x33, 20);
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "le nom long demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_slot, 0, "le slot du nom long est vise");
+    TEST_ASSERT(strcmp(ctx.touch_put_label, lng) == 0,
+                "l'etiquette longue est en attente, entiere");
+
+    /* 2. ABANDON : toute commande suivante retire la demande. */
+    n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(n > 2, "la commande intermediaire repond");
+
+    /* 3. REPLACE arme sur le nom court. */
+    l = put_body(d, "A:b", 3, 6, 0x44, 20);
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "le nom court demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_slot, 1, "c'est le slot du nom court qui est vise");
+    /* La longueur, pas seulement le contenu des trois premiers octets : une
+     * chaine « A:b\0viceLongtemps… » satisferait un strcmp et serait pourtant
+     * le bug — c'est la queue APRES le nul qui repart en magasin des que la
+     * terminaison saute. */
+    TEST_ASSERT_EQ(strlen(ctx.touch_put_label), 3,
+                   "l'etiquette en attente fait exactement trois octets");
+    TEST_ASSERT(strcmp(ctx.touch_put_label, "A:b") == 0, "et vaut « A:b »");
+    {
+        bool queue = false;
+        for (unsigned i = 3; i < SEC_LABEL_LEN; i++)
+            if (ctx.touch_put_label[i] != 0) queue = true;
+        TEST_ASSERT(!queue, "rien ne subsiste du nom long au-dela du nul");
+    }
+
+    /* 4. Confirme : c'est le nom court qui est persiste. */
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : remplace apres appui");
+    TEST_ASSERT(sec_store_label(1) != NULL && strcmp(sec_store_label(1), "A:b") == 0,
+                "le compte persiste porte « A:b », pas la queue du nom long");
+    TEST_ASSERT(sec_store_get_secret(1, sec, &sl) && sl == 20 && sec[0] == 0x44,
+                "le nouveau secret est bien alle sur le compte court");
+    TEST_ASSERT(slot_intact(0, lng, 0x11),
+                "le compte long n'a ete ni renomme ni touche");
+    TEST_ASSERT_EQ(sec_store_count(), 2, "toujours deux comptes, pas trois");
+
+    /* 5. Hygiene : une demande REFUSEE ne laisse pas le nom du compte vise en
+     * RAM. C'est la seule propriete qui distingue le memset d'oath_touch_clear
+     * de la terminaison locale — sans elle, le retirer passerait inapercu. */
+    l = put_body(d, lng, (uint8_t)strlen(lng), 6, 0x55, 20);
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "l'appui est demande");
+    n = oath_touch_commit(&ctx, false, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x69, 0x85), "6985 : remplacement refuse");
+    {
+        bool reste = false;
+        for (unsigned i = 0; i < SEC_LABEL_LEN; i++)
+            if (ctx.touch_put_label[i] != 0) reste = true;
+        TEST_ASSERT(!reste, "l'etiquette de la demande refusee est effacee du contexte");
+    }
+    TEST_ASSERT(slot_intact(0, lng, 0x11), "et le compte refuse est intact");
+}
+
+/*
+ * REPLACE sur l'etiquette la PLUS LONGUE que le magasin sache porter
+ * (SEC_LABEL_LEN - 1 = 63 octets). C'est la seule longueur ou une copie d'un
+ * octet de trop ecrit hors de ctx->touch_put_label : a 3 ou 43 octets, un
+ * `+2` reste dans le tampon et ne se voit nulle part.
+ *
+ * LIMITE : le harnais hote ne compile pas sous sanitiseur, il ne PEUT donc pas
+ * constater ce debordement d'un octet — c'est un controle ASan/valgrind, et
+ * c'est dit dans le rapport de tache. Ce cas fait deux choses quand meme :
+ * il donne au sanitiseur quelque chose a attraper (jusqu'ici aucun test ne
+ * franchissait ce chemin), et il verifie la borne exacte du nom — 63 accepte,
+ * 64 refuse — qui, elle, mord dans le harnais.
+ */
+static void test_remplacement_d_une_etiquette_de_longueur_maximale(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    char nom[SEC_LABEL_LEN];
+    for (unsigned i = 0; i < SEC_LABEL_LEN - 1; i++) nom[i] = (char)('a' + (i % 26));
+    nom[SEC_LABEL_LEN - 1] = '\0';
+    TEST_ASSERT_EQ(strlen(nom), SEC_LABEL_LEN - 1, "nom de longueur maximale");
+
+    slot_totp_secret(0, nom, 0x11);
+    oath_select_ok(&ctx);
+    uint8_t d[192], out[32], sec[SEC_SECRET_MAX], sl = 0;
+
+    uint8_t l = put_body(d, nom, (uint8_t)strlen(nom), 8, 0x77, 32);
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH,
+                   "le nom le plus long est reconnu, et demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_slot, 0, "le slot vise est retrouve");
+    TEST_ASSERT_EQ(strlen(ctx.touch_put_label), SEC_LABEL_LEN - 1,
+                   "l'etiquette en attente tient en entier");
+    TEST_ASSERT(strcmp(ctx.touch_put_label, nom) == 0, "et sans alteration");
+
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : remplace apres appui");
+    TEST_ASSERT(sec_store_label(0) != NULL && strcmp(sec_store_label(0), nom) == 0,
+                "les 63 octets d'etiquette sont persistes entiers");
+    TEST_ASSERT(sec_store_get_secret(0, sec, &sl) && sl == 32 && sec[0] == 0x77,
+                "le nouveau secret a pris");
+    TEST_ASSERT_EQ(sec_store_digits(0), 8, "et les chiffres avec");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "toujours un seul compte");
+
+    /* Un octet de plus n'est plus une etiquette : SEC_LABEL_LEN octets ne
+     * laissent pas la place au nul. Le refus se fait AVANT toute ecriture. */
+    char trop[SEC_LABEL_LEN + 1];
+    memset(trop, 'z', SEC_LABEL_LEN);
+    trop[SEC_LABEL_LEN] = '\0';
+    l = put_body(d, trop, SEC_LABEL_LEN, 6, 0x88, 20);
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : un octet de trop n'est plus un nom");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "aucun appui arme");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "et rien n'a ete cree");
+}
+
+/*
+ * oath_dispatch retire la demande d'appui en TETE de chaque commande. Sans
+ * cette ligne, une demande armee survit a une commande intermediaire et
+ * l'appui l'execute quand meme : l'hote arme un RESET, se ravise, envoie tout
+ * autre chose — et le premier appui de Mae, donne pour cette autre chose,
+ * vide le magasin.
+ *
+ * La commande intermediaire est un LIST : elle repond sans rien armer
+ * elle-meme, donc ce qui reste dans le contexte apres elle vient forcement de
+ * la demande precedente.
+ */
+static void test_une_commande_intermediaire_annule_l_appui_arme(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    for (uint8_t i = 0; i < 5; i++) {
+        char nom[16];
+        snprintf(nom, sizeof(nom), "S%02u:c", (unsigned)i);
+        slot_totp_secret(i, nom, (uint8_t)(0x10 + i));
+    }
+    oath_select_ok(&ctx);
+    uint8_t d[128], out[256];
+
+    /* --- DELETE arme, puis une commande sans rapport --- */
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "S03:c", 5);
+    uint16_t n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "DELETE demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_DELETE, "la demande est armee");
+    n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(n > 2, "la commande intermediaire repond");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "la demande d'effacement est retiree");
+    TEST_ASSERT_EQ(ctx.touch_count, 0, "et n'annonce plus aucun compte");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x69, 0x85), "6985 : l'appui ne suit plus aucune demande");
+    TEST_ASSERT(slot_intact(3, "S03:c", 0x13), "le compte vise est toujours la");
+    TEST_ASSERT_EQ(sec_store_count(), 5, "aucun compte n'a disparu");
+
+    /* --- RESET arme, puis une commande sans rapport --- */
+    n = oath_cmd(&ctx, 0x04, 0xDE, 0xAD, NULL, 0, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "RESET demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_count, 5, "cinq comptes annonces");
+    n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(n > 2, "la commande intermediaire repond");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "la demande de RESET est retiree");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x69, 0x85), "6985 : un appui tardif ne vide pas le magasin");
+    TEST_ASSERT_EQ(sec_store_count(), 5, "les cinq comptes sont intacts");
+
+    /* --- REPLACE arme, puis une commande sans rapport --- */
+    l = put_body(d, "S00:c", 5, 8, 0xEE, 24);
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "REPLACE demande l'appui");
+    n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(n > 2, "la commande intermediaire repond");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "la demande de remplacement est retiree");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x69, 0x85), "6985 : le remplacement abandonne ne s'applique pas");
+    TEST_ASSERT(slot_intact(0, "S00:c", 0x10), "l'ancien secret est intact");
+}
+
+/*
+ * Defense en profondeur : le slot vise est REVERIFIE au moment d'appliquer.
+ * Entre la demande et l'appui, le magasin a pu changer — et l'index retenu
+ * pourrait alors designer un slot CR-HMAC du mode OTP. Un appui donne pour un
+ * compte OATH effacerait, ou ecraserait, le secret KeePassXC.
+ *
+ * Le scenario n'est pas atteignable par le transport d'aujourd'hui (ccid.c
+ * bloque l'hote pendant l'attente) ; c'est bien pour cela que la garde est une
+ * defense en profondeur, et c'est aussi pourquoi rien ne l'exercait. Il se
+ * fabrique donc ici en mutant le magasin directement entre les deux appels,
+ * ce qui est exactement le cas que la garde doit encaisser.
+ */
+static void test_le_slot_est_revalide_au_moment_d_appliquer(void)
+{
+    uint8_t crh[20];
+    memset(crh, 0x5A, sizeof(crh));
+    oath_ctx_t ctx;
+    uint8_t d[96], out[32], sec[SEC_SECRET_MAX], sl = 0;
+
+    /* --- DELETE --- */
+    sec_store_init();
+    slot_totp_secret(2, "A:b", 0x11);
+    oath_select_ok(&ctx);
+
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+    uint16_t n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "DELETE demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_slot, 2, "le slot vise est le 2");
+    TEST_ASSERT(sec_store_set_slot(2, SEC_SLOT_HMAC_SHA1, "A:b", crh, sizeof(crh)),
+                "le slot 2 cesse d'etre un compte OATH entre la demande et l'appui");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "6A82 : ce n'est plus un compte de cet applet");
+    TEST_ASSERT_EQ(sec_store_type(2), SEC_SLOT_HMAC_SHA1, "le slot n'a pas ete efface");
+    TEST_ASSERT(sec_store_get_secret(2, sec, &sl) && sl == 20 && sec[0] == 0x5A,
+                "le secret CR-HMAC est intact");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "la demande est consommee malgre le refus");
+
+    /* --- REPLACE --- */
+    sec_store_init();
+    slot_totp_secret(2, "A:b", 0x11);
+    oath_select_ok(&ctx);
+
+    l = put_body(d, "A:b", 3, 8, 0xBB, 32);
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "REPLACE demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_slot, 2, "le slot vise est le 2");
+    TEST_ASSERT(sec_store_set_slot(2, SEC_SLOT_HMAC_SHA1, "A:b", crh, sizeof(crh)),
+                "le slot 2 cesse d'etre un compte OATH entre la demande et l'appui");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "6A82 : le remplacement ne s'applique pas");
+    TEST_ASSERT_EQ(sec_store_type(2), SEC_SLOT_HMAC_SHA1, "le slot est reste CR-HMAC");
+    sl = 0;
+    TEST_ASSERT(sec_store_get_secret(2, sec, &sl) && sl == 20 && sec[0] == 0x5A,
+                "le secret CR-HMAC n'a pas ete ecrase par celui du remplacement");
+    /* set_slot remet les chiffres a zero : s'ils valent 8, c'est que le
+     * remplacement s'est applique malgre la garde. */
+    TEST_ASSERT_EQ(sec_store_digits(2), 0, "les chiffres du remplacement non plus");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "la demande est consommee malgre le refus");
+}
+
 void test_oath_proto(void)
 {
     TEST_SUITE("oath_proto");
@@ -1605,4 +1920,8 @@ void test_oath_proto(void)
     TEST_RUN(test_put_ne_prend_pas_le_slot_du_mode_otp);
     TEST_RUN(test_put_et_rename_ne_reprennent_pas_une_etiquette_du_mode_otp);
     TEST_RUN(test_touch_commit_rend_zero_sur_calculate);
+    TEST_RUN(test_l_etiquette_du_remplacement_ne_garde_pas_de_queue);
+    TEST_RUN(test_remplacement_d_une_etiquette_de_longueur_maximale);
+    TEST_RUN(test_une_commande_intermediaire_annule_l_appui_arme);
+    TEST_RUN(test_le_slot_est_revalide_au_moment_d_appliquer);
 }

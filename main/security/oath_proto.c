@@ -64,8 +64,23 @@ uint16_t oath_tlv_put(uint8_t *out, uint16_t cap, uint8_t tag,
 #define SW_NOT_SUPPORTED   0x6A81u
 #define SW_NOT_FOUND       0x6A82u
 #define SW_FULL            0x6A84u
-/* Persistance partielle : l'operation a deja pris effet mais n'a pas pu
- * s'achever. 6A80 mentirait — la trame de l'hote etait bonne. */
+/*
+ * Persistance partielle : l'operation a DEJA pris effet en RAM mais n'a pas pu
+ * s'achever. 6A80 mentirait — la trame de l'hote etait bonne, c'est le
+ * stockage qui a lache, et l'hote qui rejouerait sa trame ne reparerait rien.
+ *
+ * sec_store_set_slot et sec_store_clear_slot font leur memset AVANT de
+ * persister : quand elles rendent false, le seul echec possible est celui de
+ * la NVS, et l'etat RAM est deja mute. Tous leurs echecs valent donc 6581.
+ *
+ * LIMITE ASSUMEE : cette distinction n'est atteignable par AUCUN test du
+ * harnais hote — sec_store_persist() y rend inconditionnellement true (voir
+ * sec_store.c, branche TEST_HOST), et toutes les autres causes de refus de
+ * sec_store_* sont deja filtrees en amont ici. La fermer demanderait un faux
+ * magasin dont la persistance peut echouer sur commande. Les quatre sites
+ * marques « SW_MEMORY » ci-dessous sont donc justes par lecture, pas par
+ * epreuve : les changer ne rend aucun test rouge.
+ */
 #define SW_MEMORY          0x6581u
 #define SW_CLA_UNSUPPORTED 0x6E00u
 #define SW_INS_UNKNOWN     0x6D00u
@@ -110,6 +125,12 @@ static bool oath_slot_is_oath(uint8_t idx)
 /*
  * Retire la demande d'appui en attente. Le secret d'un PUT differe est efface
  * ici : il n'a rien a faire en RAM une fois la demande abandonnee ou honoree.
+ *
+ * Le memset de l'etiquette releve de la MEME hygiene, pas de la correction :
+ * le nom du compte vise par une demande abandonnee ne survit pas a son
+ * abandon. La chaine, elle, est terminee sur place par oath_do_put — ne
+ * jamais faire dependre sa validite de cet effacement-ci, un nettoyage
+ * distant se retire un jour sans qu'on voie le rapport.
  */
 static void oath_touch_clear(oath_ctx_t *ctx)
 {
@@ -424,11 +445,22 @@ static uint16_t oath_do_put(const apdu_t *cmd, uint8_t *out, uint16_t cap,
          * l'appliquer : sec_store_set_slot commence par un memset du slot, et
          * lui passer un pointeur vers ce meme slot lirait une zone qu'il est
          * en train d'ecraser. */
-        /* Seuls les octets ecrits sont recopies : `label` est un tampon de
-         * pile de 64 octets dont seuls strlen+1 sont renseignes, et en copier
-         * la totalite emporterait des residus de pile dans une structure a
-         * plus longue duree de vie. */
-        memcpy(ctx->touch_put_label, label, strlen(label) + 1u);
+        /*
+         * La terminaison est LOCALE a cette copie : la destination est remise
+         * a zero ici, juste avant, puis seuls les octets ecrits de `label`
+         * sont recopies (c'est un tampon de pile de 64 octets dont seuls
+         * strlen+1 sont renseignes — en copier la totalite emporterait des
+         * residus de pile dans une structure a plus longue duree de vie).
+         *
+         * Depender du memset d'oath_touch_clear pour terminer la chaine
+         * rendait celle-ci valide PAR ACCIDENT, a distance : un REPLACE arme
+         * sur un nom long puis abandonne, suivi d'un REPLACE sur un nom court,
+         * laissait la queue du premier derriere le second — l'ecran annoncait
+         * un compte et un autre nom etait persiste, avec le secret dedans.
+         */
+        const size_t etiq_len = strlen(label);
+        memset(ctx->touch_put_label, 0, sizeof(ctx->touch_put_label));
+        memcpy(ctx->touch_put_label, label, etiq_len);
         return OATH_SW_NEEDS_TOUCH;
     }
 
@@ -447,8 +479,10 @@ static uint16_t oath_do_put(const apdu_t *cmd, uint8_t *out, uint16_t cap,
     }
     if (slot >= SEC_N_SLOTS) return sw_only(out, cap, SW_FULL);
 
+    /* Un echec ici n'est pas une mauvaise trame : sec_store_set_slot a deja
+     * ecrit le slot en RAM et n'a echoue qu'a le persister (voir SW_MEMORY). */
     if (!sec_store_set_slot(slot, type, label, &key[2], (uint8_t)secret_len))
-        return sw_only(out, cap, SW_WRONG_DATA);
+        return sw_only(out, cap, SW_MEMORY);
     oath_store_changed(ctx);
     /* Le compte est deja persiste : un echec ici le laisse sans son nombre de
      * chiffres. C'est une panne de stockage, pas une mauvaise trame. */
@@ -528,7 +562,9 @@ static uint16_t oath_do_rename(const apdu_t *cmd, uint8_t *out, uint16_t cap,
      * memoire une fois recopie. */
     memset(secret, 0, sizeof(secret));
     oath_store_changed(ctx);
-    if (!ok) return sw_only(out, cap, SW_WRONG_DATA);
+    /* Meme raison : l'etiquette est deja changee en RAM quand set_slot rend
+     * false, seule la persistance a manque. */
+    if (!ok) return sw_only(out, cap, SW_MEMORY);
     /* Un echec de persistance ici laisserait le compte renomme mais sans son
      * nombre de chiffres. 6A80 mentirait sur ce qui s'est passe : la trame de
      * l'hote etait bonne, c'est le stockage qui a lache. */
@@ -596,7 +632,11 @@ uint16_t oath_touch_commit(oath_ctx_t *ctx, bool granted, uint8_t *out, uint16_t
                                               put_label, put_secret, put_len);
         memset(put_secret, 0, sizeof(put_secret));
         if (!ok_slot) return sw_only(out, cap, SW_NOT_FOUND);
-        if (!ok)      return sw_only(out, cap, SW_WRONG_DATA);
+        /* C'est le site le plus grave des quatre : quand set_slot rend false,
+         * l'ANCIEN secret est deja detruit en RAM. Repondre 6A80 enverrait
+         * l'hote rejouer une trame qu'il croirait mal formee, alors que le
+         * compte est deja perdu. */
+        if (!ok)      return sw_only(out, cap, SW_MEMORY);
         oath_store_changed(ctx);
         if (!sec_store_set_digits(cible, put_digits))
             return sw_only(out, cap, SW_MEMORY);
@@ -623,7 +663,9 @@ uint16_t oath_touch_commit(oath_ctx_t *ctx, bool granted, uint8_t *out, uint16_t
         if (!sec_store_clear_slot(i)) ok = false;
     }
     oath_store_changed(ctx);
-    return sw_only(out, cap, ok ? SW_OK : SW_WRONG_DATA);
+    /* Les slots sont deja vides en RAM quand clear_slot rend false : le refus
+     * porte sur la persistance, pas sur la trame. */
+    return sw_only(out, cap, ok ? SW_OK : SW_MEMORY);
 }
 
 uint16_t oath_dispatch(const apdu_t *cmd, uint8_t *out, uint16_t cap,
