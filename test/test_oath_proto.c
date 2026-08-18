@@ -226,6 +226,8 @@ static void test_select_et_calculate_all_ne_se_confondent_pas(void)
     uint16_t n1 = oath_dispatch(&a1, o1, sizeof(o1), &ctx);
     uint16_t n2 = oath_dispatch(&a2, o2, sizeof(o2), &ctx);
 
+    TEST_ASSERT(n1 >= 2 && n2 >= 2, "les deux reponses portent au moins un mot d'etat");
+    if (n1 < 2 || n2 < 2) return;
     TEST_ASSERT(n1 != n2 || memcmp(o1, o2, n1) != 0,
                 "SELECT et CALCULATE ALL ne rendent pas la meme chose");
     /* Precision de la garde ci-dessus : ce n'est pas seulement « different »,
@@ -481,39 +483,6 @@ static void test_put_magasin_plein(void)
     TEST_ASSERT_EQ(sec_store_count(), SEC_N_SLOTS, "aucun compte ecrase");
 }
 
-/* DELETE et RESET : ce qui disparait doit vraiment disparaitre, et un nom
- * inconnu ne doit pas passer pour une suppression reussie. */
-static void test_delete_et_reset(void)
-{
-    sec_store_init();
-    oath_ctx_t ctx; memset(&ctx, 0, sizeof(ctx)); ctx.selected = true;
-    const uint8_t key[20] = { 0 };
-    TEST_ASSERT(sec_store_set_slot(0, 0x21, "A:b", key, sizeof(key)), "slot 0");
-    TEST_ASSERT(sec_store_set_slot(1, 0x21, "C:d", key, sizeof(key)), "slot 1");
-
-    uint8_t d[] = { OATH_TAG_NAME, 0x03, 'A', ':', 'b' };
-    uint8_t cmd[5 + sizeof(d)];
-    cmd[0] = 0x00; cmd[1] = 0x02; cmd[2] = 0x00; cmd[3] = 0x00;
-    cmd[4] = (uint8_t)sizeof(d);
-    memcpy(&cmd[5], d, sizeof(d));
-    uint8_t out[16]; apdu_t a;
-    TEST_ASSERT(apdu_parse(cmd, sizeof(cmd), &a), "DELETE analyse");
-    uint16_t n = oath_dispatch(&a, out, sizeof(out), &ctx);
-    TEST_ASSERT(n == 2 && out[0] == 0x90 && out[1] == 0x00, "9000 : supprime");
-    TEST_ASSERT_EQ(sec_store_count(), 1, "il reste un compte");
-
-    /* Le meme DELETE une seconde fois : le nom n'existe plus. */
-    n = oath_dispatch(&a, out, sizeof(out), &ctx);
-    TEST_ASSERT(n == 2 && out[0] == 0x6A && out[1] == 0x82,
-                "6A82 : deux suppressions du meme nom ne reussissent pas deux fois");
-
-    uint8_t rst[5] = { 0x00, 0x04, 0xDE, 0xAD, 0x00 };
-    TEST_ASSERT(apdu_parse(rst, sizeof(rst), &a), "RESET analyse");
-    n = oath_dispatch(&a, out, sizeof(out), &ctx);
-    TEST_ASSERT(n == 2 && out[0] == 0x90 && out[1] == 0x00, "9000 : reset");
-    TEST_ASSERT_EQ(sec_store_count(), 0, "le magasin est vide");
-}
-
 /* RENAME porte DEUX TLV 0x71 de suite : lire le premier deux fois renommerait
  * un compte en lui-meme, sans que rien ne le signale. */
 static void test_rename_lit_le_second_nom(void)
@@ -600,6 +569,588 @@ static void test_capacite_de_sortie_respectee(void)
     TEST_ASSERT(zone[0] == 0x5A, "premier octet intact");
 }
 
+/* ---- petits echafaudages, pour que les cas disent le protocole et non la
+ * fabrication d'APDU ---------------------------------------------------- */
+
+/* Fabrique une APDU courte et l'aiguille. */
+static uint16_t oath_cmd_cla(oath_ctx_t *ctx, uint8_t cla, uint8_t ins,
+                             uint8_t p1, uint8_t p2,
+                             const uint8_t *data, uint8_t lc,
+                             uint8_t *out, uint16_t cap)
+{
+    uint8_t buf[5 + 255];
+    uint16_t len;
+    apdu_t a;
+    buf[0] = cla; buf[1] = ins; buf[2] = p1; buf[3] = p2;
+    if (lc == 0) { buf[4] = 0x00; len = 5; }
+    else { buf[4] = lc; memcpy(&buf[5], data, lc); len = (uint16_t)(5 + lc); }
+    if (!apdu_parse(buf, len, &a)) {
+        TEST_ASSERT(false, "APDU de test analysable");
+        return 0;
+    }
+    return oath_dispatch(&a, out, cap, ctx);
+}
+
+static uint16_t oath_cmd(oath_ctx_t *ctx, uint8_t ins, uint8_t p1, uint8_t p2,
+                         const uint8_t *data, uint8_t lc,
+                         uint8_t *out, uint16_t cap)
+{
+    return oath_cmd_cla(ctx, 0x00, ins, p1, p2, data, lc, out, cap);
+}
+
+/* memmem est une extension GNU : on l'evite pour que le harnais reste
+ * compilable partout. */
+static bool bytes_contain(const uint8_t *h, uint16_t hn, const char *n, uint16_t nn)
+{
+    if (nn == 0 || hn < nn) return false;
+    for (uint16_t i = 0; i + nn <= hn; i++)
+        if (memcmp(&h[i], n, nn) == 0) return true;
+    return false;
+}
+
+static bool sw_is(const uint8_t *out, uint16_t n, uint8_t hi, uint8_t lo)
+{
+    return n == 2 && out[0] == hi && out[1] == lo;
+}
+
+static uint8_t tlv_at(uint8_t *b, uint8_t at, uint8_t tag, const void *v, uint8_t l)
+{
+    b[at] = tag; b[at + 1] = l;
+    if (l) memcpy(&b[at + 2], v, l);
+    return (uint8_t)(at + 2 + l);
+}
+
+/* AID YKOATH complet — celui qu'envoie ykman. */
+static const uint8_t k_aid[7] = { 0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01 };
+
+/* Selectionne l'applet pour de vrai, avec un sel reconnaissable. */
+static void oath_select_ok(oath_ctx_t *ctx)
+{
+    uint8_t out[64];
+    memset(ctx, 0, sizeof(*ctx));
+    for (unsigned i = 0; i < OATH_SALT_LEN; i++) ctx->salt[i] = (uint8_t)(0xA0 + i);
+    uint16_t n = oath_cmd(ctx, 0xA4, 0x04, 0x00, k_aid, sizeof(k_aid), out, sizeof(out));
+    TEST_ASSERT(n > 2 && ctx->selected, "applet selectionne");
+}
+
+/* Provisionne un compte TOTP/SHA1 valide. */
+static void slot_totp(uint8_t idx, const char *nom)
+{
+    const uint8_t key[20] = { 0 };
+    TEST_ASSERT(sec_store_set_slot(idx, OATH_ALGO_TOTP_SHA1, nom, key, sizeof(key)),
+                "slot TOTP provisionne");
+}
+
+/*
+ * C1 — le magasin est PARTAGE avec le mode OTP : otp_hid.c mappe les slots 0
+ * et 1 sur les secrets CR-HMAC de KeePassXC. Un slot CR-HMAC doit etre
+ * INVISIBLE a l'applet OATH, sans quoi l'hote le liste, l'efface, ou pire :
+ * fait signer un defi de huit octets qu'il choisit par cette clef-la.
+ * ykman le refuserait de toute facon — oath.py fait OATH_TYPE(0xF0 & data[0])
+ * et leve sur 0x01.
+ */
+static void test_slots_cr_hmac_invisibles_a_oath(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    const uint8_t key[20] = { 0 };
+    TEST_ASSERT(sec_store_set_slot(0, SEC_SLOT_HMAC_SHA1, "keepassxc", key, sizeof(key)),
+                "slot CR-HMAC provisionne");
+    slot_totp(1, "A:b");
+    oath_select_ok(&ctx);
+
+    uint8_t out[256];
+    uint16_t n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(n > 2, "LIST rend le compte OATH");
+    TEST_ASSERT(!bytes_contain(out, n, "keepassxc", 9),
+                "LIST ne remonte pas le slot CR-HMAC");
+    TEST_ASSERT(bytes_contain(out, n, "A:b", 3), "LIST remonte bien le compte OATH");
+
+    n = oath_cmd(&ctx, 0xA4, 0x00, 0x01, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(!bytes_contain(out, n, "keepassxc", 9),
+                "CALCULATE ALL ne remonte pas le slot CR-HMAC");
+
+    uint8_t d[32];
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "keepassxc", 9);
+    n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "DELETE d'un slot CR-HMAC : inconnu");
+    TEST_ASSERT_EQ(sec_store_type(0), SEC_SLOT_HMAC_SHA1, "le secret CR-HMAC survit");
+
+    /* CALCULATE : c'est la sortie partielle qui compte, pas seulement la
+     * suppression — un defi de huit octets choisi par l'hote ne doit jamais
+     * atteindre la clef CR-HMAC. */
+    l = tlv_at(d, 0, OATH_TAG_NAME, "keepassxc", 9);
+    { const uint8_t c8[8] = { 0 }; l = tlv_at(d, l, OATH_TAG_CHALLENGE, c8, 8); }
+    n = oath_cmd(&ctx, 0xA2, 0x00, 0x01, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82),
+                "CALCULATE sur un slot CR-HMAC : inconnu, jamais d'appui arme");
+
+    /* RESET confirme : il efface les comptes OATH, pas le reste du magasin. */
+    n = oath_cmd(&ctx, 0x04, 0xDE, 0xAD, NULL, 0, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "RESET demande l'appui");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "RESET confirme");
+    TEST_ASSERT_EQ(sec_store_type(0), SEC_SLOT_HMAC_SHA1,
+                   "RESET n'a pas touche au secret CR-HMAC");
+    TEST_ASSERT_EQ(sec_store_type(1), SEC_SLOT_EMPTY, "le compte OATH a disparu");
+}
+
+/*
+ * C2 — oath.py:318 envoie RESET avec P1=0xDE, P2=0xAD. Ces deux octets SONT
+ * le verrou : c'est leur seule raison d'etre. Un RESET qui ne les lit pas
+ * efface le magasin sur une trame de quatre octets.
+ */
+static void test_reset_exige_de_ad(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    slot_totp(0, "A:b");
+    oath_select_ok(&ctx);
+    uint8_t out[32];
+
+    const uint8_t mauvais[][2] = { { 0x00, 0x00 }, { 0xDE, 0x00 }, { 0x00, 0xAD },
+                                   { 0xAD, 0xDE } };
+    for (unsigned i = 0; i < sizeof(mauvais) / sizeof(mauvais[0]); i++) {
+        uint16_t n = oath_cmd(&ctx, 0x04, mauvais[i][0], mauvais[i][1], NULL, 0,
+                              out, sizeof(out));
+        TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : verrou DE/AD absent");
+        TEST_ASSERT_EQ(sec_store_count(), 1, "le magasin survit a un RESET sans verrou");
+        TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "aucun appui arme");
+    }
+
+    uint16_t n = oath_cmd(&ctx, 0x04, 0xDE, 0xAD, NULL, 0, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "DE/AD : la commande est recevable");
+}
+
+/*
+ * Decision de revue : RESET et DELETE detruisent des secrets, donc exigent le
+ * meme geste physique que CALCULATE. Le code d'operation doit les distinguer —
+ * l'ecran dira « EFFACER » et non « CODE OTP ».
+ */
+static void test_delete_et_reset_exigent_l_appui(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    slot_totp(0, "A:b");
+    slot_totp(1, "C:d");
+    oath_select_ok(&ctx);
+    uint8_t out[32], d[16];
+
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+    uint16_t n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "DELETE demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_DELETE, "operation distincte de CALCULATE");
+    TEST_ASSERT_EQ(ctx.touch_slot, 0, "le slot vise est retenu");
+    TEST_ASSERT_EQ(sec_store_count(), 2, "rien n'est efface avant l'appui");
+
+    /* Appui refuse : le compte doit survivre. */
+    n = oath_touch_commit(&ctx, false, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x69, 0x85), "6985 : appui refuse");
+    TEST_ASSERT_EQ(sec_store_count(), 2, "un refus n'efface rien");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "la demande est retiree");
+
+    /* Et une confirmation qui ne suit aucune demande n'efface rien non plus. */
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x69, 0x85), "6985 : rien en attente");
+    TEST_ASSERT_EQ(sec_store_count(), 2, "aucun effacement sans demande");
+
+    n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "DELETE re-demande l'appui");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : supprime apres appui");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "il reste un compte");
+
+    /* Un nom inconnu se refuse AVANT l'appui : faire clignoter la clef pour
+     * un compte inexistant apprendrait a confirmer sans regarder. */
+    n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "6A82 : nom deja supprime");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "aucun appui arme pour rien");
+
+    /* RESET, meme exigence. */
+    n = oath_cmd(&ctx, 0x04, 0xDE, 0xAD, NULL, 0, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "RESET demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_RESET, "operation RESET distincte");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "rien n'est efface avant l'appui");
+    n = oath_touch_commit(&ctx, false, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x69, 0x85), "6985 : RESET refuse");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "le magasin survit au refus");
+    n = oath_cmd(&ctx, 0x04, 0xDE, 0xAD, NULL, 0, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "RESET re-demande l'appui");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : magasin remis a neuf");
+    TEST_ASSERT_EQ(sec_store_count(), 0, "le magasin est vide");
+}
+
+/*
+ * I1 — ces trois champs decident QUEL secret sort apres l'appui. Ils sont
+ * l'unique sortie utile de CALCULATE, et rien ne les observait : trois
+ * mutations (slot fige a 0, defi non recopie, defi inverse) survivaient.
+ */
+static void test_calculate_renseigne_le_contexte_d_appui(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    /* Slot 3, pas 0 : un « touch_slot = 0 » code en dur passerait sur le slot 0. */
+    slot_totp(0, "Zero:z");
+    slot_totp(3, "Trois:t");
+    oath_select_ok(&ctx);
+
+    const uint8_t defi[8] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
+    uint8_t d[32], out[32];
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "Trois:t", 7);
+    l = tlv_at(d, l, OATH_TAG_CHALLENGE, defi, 8);
+
+    uint16_t n = oath_cmd(&ctx, 0xA2, 0x00, 0x01, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "l'appui est demande");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_CALCULATE, "operation CALCULATE");
+    TEST_ASSERT_EQ(ctx.touch_slot, 3, "le slot vise est le bon, pas le premier");
+    /* Octet par octet, et dans l'ORDRE : un defi recopie a l'envers donnerait
+     * un code d'un tout autre pas de temps. */
+    for (unsigned i = 0; i < 8; i++)
+        TEST_ASSERT_EQ(ctx.touch_challenge[i], defi[i], "octet du defi, dans l'ordre");
+    TEST_ASSERT(ctx.touch_truncate, "P2=01 : ykman veut un 0x76 tronque");
+
+    /* P2=00 : reponse complete. Le champ doit suivre P2, pas rester fige. */
+    memset(&ctx.touch_challenge, 0, sizeof(ctx.touch_challenge));
+    n = oath_cmd(&ctx, 0xA2, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "l'appui est demande");
+    TEST_ASSERT(!ctx.touch_truncate, "P2=00 : reponse complete, 0x75");
+    TEST_ASSERT_EQ(ctx.touch_challenge[0], 0x11, "le defi est bien recopie a chaque fois");
+}
+
+/*
+ * I2 — le tampon differe survivait a DELETE, PUT et RENAME : apres un LIST
+ * puis une suppression, SEND REMAINING servait encore le compte supprime.
+ */
+static void test_pending_purge_par_chaque_mutation(void)
+{
+    uint8_t out[300], d[96];
+
+    /* --- DELETE --- */
+    sec_store_init();
+    oath_ctx_t ctx;
+    for (uint8_t i = 0; i < 12; i++) {
+        char nom[40];
+        snprintf(nom, sizeof(nom), "ServiceNumero%02u:compte@exemple.org", (unsigned)i);
+        slot_totp(i, nom);
+    }
+    oath_select_ok(&ctx);
+    uint16_t n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(out[n - 2] == 0x61 && ctx.pending_len > 0, "un reste est en attente");
+
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "ServiceNumero05:compte@exemple.org", 34);
+    n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "DELETE demande l'appui");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "supprime");
+    TEST_ASSERT_EQ(ctx.pending_len, 0, "le differe est purge par DELETE");
+    n = oath_cmd(&ctx, 0xA5, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82),
+                "SEND REMAINING ne sert plus le compte supprime");
+
+    /* --- PUT --- */
+    sec_store_init();
+    for (uint8_t i = 0; i < 12; i++) {
+        char nom[40];
+        snprintf(nom, sizeof(nom), "ServiceNumero%02u:compte@exemple.org", (unsigned)i);
+        slot_totp(i, nom);
+    }
+    oath_select_ok(&ctx);
+    n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(ctx.pending_len > 0, "un reste est en attente");
+    {
+        uint8_t clef[2 + 20];
+        clef[0] = OATH_ALGO_TOTP_SHA1; clef[1] = 6;
+        memset(&clef[2], 0xAB, 20);
+        l = tlv_at(d, 0, OATH_TAG_NAME, "Neuf:n", 6);
+        l = tlv_at(d, l, OATH_TAG_KEY, clef, sizeof(clef));
+    }
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "PUT accepte");
+    TEST_ASSERT_EQ(ctx.pending_len, 0, "le differe est purge par PUT");
+
+    /* --- RENAME --- */
+    sec_store_init();
+    for (uint8_t i = 0; i < 12; i++) {
+        char nom[40];
+        snprintf(nom, sizeof(nom), "ServiceNumero%02u:compte@exemple.org", (unsigned)i);
+        slot_totp(i, nom);
+    }
+    oath_select_ok(&ctx);
+    n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(ctx.pending_len > 0, "un reste est en attente");
+    l = tlv_at(d, 0, OATH_TAG_NAME, "ServiceNumero05:compte@exemple.org", 34);
+    l = tlv_at(d, l, OATH_TAG_NAME, "Renomme:r", 9);
+    n = oath_cmd(&ctx, 0x05, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "RENAME accepte");
+    TEST_ASSERT_EQ(ctx.pending_len, 0, "le differe est purge par RENAME");
+}
+
+/*
+ * I3 — le coffre n'a que cr_hmac_sha1. Un compte provisionne en SHA-256 (que
+ * ykman propose) serait accepte, persiste, et rendrait ETERNELLEMENT des codes
+ * faux sans qu'aucune erreur ne le dise. Refus explicite plutot que mensonge
+ * silencieux.
+ */
+static void test_put_n_accepte_que_totp_sha1(void)
+{
+    uint8_t out[32], d[64];
+    const uint8_t refuses[] = { 0x22, 0x23, 0x2F, 0x20, 0x11, 0x31 };
+
+    for (unsigned i = 0; i < sizeof(refuses); i++) {
+        sec_store_init();
+        oath_ctx_t ctx;
+        oath_select_ok(&ctx);
+        uint8_t clef[2 + 20];
+        clef[0] = refuses[i]; clef[1] = 6;
+        memset(&clef[2], 0xAB, 20);
+        uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+        l = tlv_at(d, l, OATH_TAG_KEY, clef, sizeof(clef));
+        uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+        TEST_ASSERT(sw_is(out, n, 0x6A, 0x81), "6A81 : algorithme hors portee");
+        TEST_ASSERT_EQ(sec_store_count(), 0, "rien n'a ete persiste");
+    }
+
+    /* Temoin positif : 0x21 (TOTP/SHA1) passe. Sans lui, « tout refuser »
+     * satisferait la boucle ci-dessus. */
+    sec_store_init();
+    oath_ctx_t ctx;
+    oath_select_ok(&ctx);
+    uint8_t clef[2 + 20];
+    clef[0] = OATH_ALGO_TOTP_SHA1; clef[1] = 6;
+    memset(&clef[2], 0xAB, 20);
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+    l = tlv_at(d, l, OATH_TAG_KEY, clef, sizeof(clef));
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "0x21 accepte");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "le compte est persiste");
+    TEST_ASSERT_EQ(sec_store_type(0), OATH_ALGO_TOTP_SHA1, "le type persiste est 0x21");
+}
+
+/*
+ * I4 — chaque borne testee LA OU elle agit, pas la ou une garde en aval rend
+ * par hasard le meme mot d'etat.
+ */
+
+/* La malformation prime sur la capacite : magasin plein ET secret trop long
+ * doit rendre 6A80 (donnee invalide), pas 6A84 (plus de place). Sans cet
+ * ordre, la garde de longueur serait indistinguable de celle de sec_store. */
+static void test_put_secret_trop_long_prime_sur_magasin_plein(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    for (uint8_t i = 0; i < SEC_N_SLOTS; i++) {
+        char nom[16];
+        snprintf(nom, sizeof(nom), "S%02u:c", (unsigned)i);
+        slot_totp(i, nom);
+    }
+    oath_select_ok(&ctx);
+
+    uint8_t d[3 + 2 + 2 + 65], out[32];
+    uint8_t clef[2 + 65];
+    clef[0] = OATH_ALGO_TOTP_SHA1; clef[1] = 6;
+    memset(&clef[2], 0xCD, 65);
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "ZZZ", 3);
+    l = tlv_at(d, l, OATH_TAG_KEY, clef, sizeof(clef));
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80),
+                "6A80 : la longueur se refuse avant de chercher un slot");
+    TEST_ASSERT_EQ(sec_store_count(), SEC_N_SLOTS, "aucun compte ecrase");
+}
+
+/* Les chiffres se valident AVANT toute ecriture : les valider apres laisserait
+ * un slot ecrit puis un refus, c'est-a-dire un compte a demi provisionne. */
+static void test_put_chiffres_valides_avant_ecriture(void)
+{
+    const uint8_t mauvais[] = { 0, 1, 5, 7, 9, 10, 255 };
+    for (unsigned i = 0; i < sizeof(mauvais); i++) {
+        sec_store_init();
+        oath_ctx_t ctx;
+        oath_select_ok(&ctx);
+        uint8_t d[64], out[32];
+        uint8_t clef[2 + 20];
+        clef[0] = OATH_ALGO_TOTP_SHA1; clef[1] = mauvais[i];
+        memset(&clef[2], 0xAB, 20);
+        uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+        l = tlv_at(d, l, OATH_TAG_KEY, clef, sizeof(clef));
+        uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+        TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : chiffres hors {6,8}");
+        TEST_ASSERT_EQ(sec_store_count(), 0,
+                       "AUCUN slot ecrit — pas de compte a demi provisionne");
+    }
+    /* Huit chiffres, l'autre valeur legitime : elle doit passer. */
+    sec_store_init();
+    oath_ctx_t ctx;
+    oath_select_ok(&ctx);
+    uint8_t d[64], out[32];
+    uint8_t clef[2 + 20];
+    clef[0] = OATH_ALGO_TOTP_SHA1; clef[1] = 8;
+    memset(&clef[2], 0xAB, 20);
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+    l = tlv_at(d, l, OATH_TAG_KEY, clef, sizeof(clef));
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "huit chiffres acceptes");
+    TEST_ASSERT_EQ(sec_store_digits(0), 8, "les chiffres sont persistes");
+}
+
+/* La correspondance de nom est EXACTE : un prefixe ne doit pas ouvrir le
+ * compte qui le prolonge. */
+static void test_nom_partiel_ne_correspond_pas(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    slot_totp(0, "GitHub:mae@exemple.org");
+    oath_select_ok(&ctx);
+    uint8_t d[64], out[32];
+
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "GitHub", 6);
+    uint16_t n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "un prefixe n'est pas le compte");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "le compte survit");
+
+    /* Un nom plus LONG que l'etiquette ne doit pas correspondre non plus. */
+    l = tlv_at(d, 0, OATH_TAG_NAME, "GitHub:mae@exemple.orgX", 23);
+    n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "un sur-nom n'est pas le compte");
+
+    /* Temoin : le nom exact, lui, correspond. */
+    l = tlv_at(d, 0, OATH_TAG_NAME, "GitHub:mae@exemple.org", 22);
+    n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "le nom exact correspond");
+}
+
+/*
+ * Un octet nul dans le nom serait tronque par le strncpy de sec_store : deux
+ * comptes distincts cote hote deviendraient le meme cote clef, et le second
+ * ecraserait le premier en silence.
+ */
+static void test_put_refuse_l_octet_nul_dans_le_nom(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    oath_select_ok(&ctx);
+    uint8_t d[64], out[32];
+    uint8_t clef[2 + 20];
+    clef[0] = OATH_ALGO_TOTP_SHA1; clef[1] = 6;
+    memset(&clef[2], 0xAB, 20);
+
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "A\0B", 3);
+    l = tlv_at(d, l, OATH_TAG_KEY, clef, sizeof(clef));
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : octet nul dans le nom");
+    TEST_ASSERT_EQ(sec_store_count(), 0,
+                   "rien n'est ecrit — sinon l'etiquette serait « A » tout court");
+}
+
+/* CALCULATE ALL n'existe que sur P2=01 : deviner l'intention d'un autre P2
+ * serait pire que la refuser. */
+static void test_calculate_all_exige_p2_01(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    slot_totp(0, "A:b");
+    oath_select_ok(&ctx);
+    uint8_t out[64];
+
+    uint16_t n = oath_cmd(&ctx, 0xA4, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : 0xA4 ni SELECT ni CALCULATE ALL");
+    n = oath_cmd(&ctx, 0xA4, 0x00, 0x02, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : P2=02 n'est pas CALCULATE ALL");
+    /* Temoin : P2=01 repond bien. */
+    n = oath_cmd(&ctx, 0xA4, 0x00, 0x01, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(n > 2, "P2=01 rend la liste");
+}
+
+/* SEND REMAINING sans reste en attente n'est pas « fin de transfert » : c'est
+ * une reprise de rien, et 9000 ferait croire a l'hote a une reponse vide. */
+static void test_send_remaining_sans_reste(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    oath_select_ok(&ctx);
+    uint8_t out[64];
+    uint16_t n = oath_cmd(&ctx, 0xA5, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "6A82 : rien a reprendre");
+    TEST_ASSERT(!(out[0] == 0x90 && out[1] == 0x00),
+                "surtout pas 9000 : ce n'est pas une reponse vide");
+}
+
+/*
+ * I5 — verifier la PRESENCE du 0x71 ne suffit pas : l'emettre a longueur nulle
+ * laisserait tout vert, et _get_device_id() calculerait alors le meme
+ * identifiant sur toutes les unites.
+ */
+static void test_select_contenu_de_la_version_et_du_sel(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    oath_select_ok(&ctx);
+
+    uint8_t out[64];
+    /* Re-selection : oath_select_ok a deja arme le contexte avec un sel
+     * reconnaissable, on relit la reponse pour l'inspecter. */
+    uint16_t n = oath_cmd(&ctx, 0xA4, 0x04, 0x00, k_aid, sizeof(k_aid), out, sizeof(out));
+    TEST_ASSERT(n > 2, "le SELECT rend des donnees");
+    const uint16_t body = (uint16_t)(n - 2);
+
+    const uint8_t *v = NULL; uint16_t vl = 0;
+    TEST_ASSERT(oath_tlv_find(out, body, OATH_TAG_VERSION, &v, &vl), "0x79 present");
+    TEST_ASSERT_EQ(vl, 3, "trois octets de version");
+    TEST_ASSERT(vl == 3 && v[0] == 0x05 && v[1] == 0x07 && v[2] == 0x01,
+                "version 5.7.1, pas trois octets quelconques");
+
+    TEST_ASSERT(oath_tlv_find(out, body, OATH_TAG_NAME, &v, &vl), "0x71 present");
+    TEST_ASSERT_EQ(vl, OATH_SALT_LEN, "le sel fait huit octets, pas zero");
+    TEST_ASSERT(vl == OATH_SALT_LEN && memcmp(v, ctx.salt, OATH_SALT_LEN) == 0,
+                "le sel rendu est celui du contexte, pas une constante");
+}
+
+/* Minor : n'importe quel AID armait l'applet. */
+static void test_select_verifie_l_aid(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx; memset(&ctx, 0, sizeof(ctx));
+    uint8_t out[64];
+    const uint8_t autre[7] = { 0xA0, 0x00, 0x00, 0x06, 0x47, 0x2F, 0x00 };
+    uint16_t n = oath_cmd(&ctx, 0xA4, 0x04, 0x00, autre, sizeof(autre), out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "6A82 : cet AID n'est pas le notre");
+    TEST_ASSERT(!ctx.selected, "un AID etranger n'arme pas l'applet");
+
+    n = oath_cmd(&ctx, 0xA4, 0x04, 0x00, k_aid, sizeof(k_aid), out, sizeof(out));
+    TEST_ASSERT(n > 2 && ctx.selected, "l'AID YKOATH, lui, arme l'applet");
+}
+
+/* Minor : la classe n'etait jamais examinee. */
+static void test_cla_non_nulle_refusee(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    slot_totp(0, "A:b");
+    oath_select_ok(&ctx);
+    uint8_t out[64];
+    uint16_t n = oath_cmd_cla(&ctx, 0x80, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6E, 0x00), "6E00 : classe non supportee");
+}
+
+/* Minor : un doublon d'etiquette rendrait le second slot inatteignable — donc
+ * indelebile, puisque toute commande passe par le nom. */
+static void test_rename_refuse_un_doublon(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    slot_totp(0, "A:b");
+    slot_totp(1, "C:d");
+    oath_select_ok(&ctx);
+    uint8_t d[32], out[32];
+
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+    l = tlv_at(d, l, OATH_TAG_NAME, "C:d", 3);
+    uint16_t n = oath_cmd(&ctx, 0x05, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : ce nom est deja pris");
+    TEST_ASSERT(strcmp(sec_store_label(0), "A:b") == 0, "le premier compte est intact");
+    TEST_ASSERT(strcmp(sec_store_label(1), "C:d") == 0, "le second compte est intact");
+}
+
 void test_oath_proto(void)
 {
     TEST_SUITE("oath_proto");
@@ -619,8 +1170,23 @@ void test_oath_proto(void)
     TEST_RUN(test_calculate_nom_inconnu);
     TEST_RUN(test_put_borne_les_entrees_hote);
     TEST_RUN(test_put_magasin_plein);
-    TEST_RUN(test_delete_et_reset);
     TEST_RUN(test_rename_lit_le_second_nom);
     TEST_RUN(test_calculate_all_ne_rend_aucun_code);
     TEST_RUN(test_capacite_de_sortie_respectee);
+    TEST_RUN(test_slots_cr_hmac_invisibles_a_oath);
+    TEST_RUN(test_reset_exige_de_ad);
+    TEST_RUN(test_delete_et_reset_exigent_l_appui);
+    TEST_RUN(test_calculate_renseigne_le_contexte_d_appui);
+    TEST_RUN(test_pending_purge_par_chaque_mutation);
+    TEST_RUN(test_put_n_accepte_que_totp_sha1);
+    TEST_RUN(test_put_secret_trop_long_prime_sur_magasin_plein);
+    TEST_RUN(test_put_chiffres_valides_avant_ecriture);
+    TEST_RUN(test_nom_partiel_ne_correspond_pas);
+    TEST_RUN(test_put_refuse_l_octet_nul_dans_le_nom);
+    TEST_RUN(test_calculate_all_exige_p2_01);
+    TEST_RUN(test_send_remaining_sans_reste);
+    TEST_RUN(test_select_contenu_de_la_version_et_du_sel);
+    TEST_RUN(test_select_verifie_l_aid);
+    TEST_RUN(test_cla_non_nulle_refusee);
+    TEST_RUN(test_rename_refuse_un_doublon);
 }

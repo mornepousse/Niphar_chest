@@ -62,6 +62,15 @@ uint16_t oath_tlv_put(uint8_t *out, uint16_t cap, uint8_t tag,
 #define OATH_CHALLENGE_LEN 8
 
 /*
+ * Le SEUL type de compte accepte : TOTP (quartet haut 0x20) sur HMAC-SHA1
+ * (quartet bas 0x01). Le coffre n'embarque que cr_hmac_sha1 ; accepter un
+ * compte SHA-256 — que ykman propose — le persisterait pour lui rendre
+ * ETERNELLEMENT des codes faux, sans qu'aucune erreur ne le dise. Un refus
+ * explicite vaut mieux qu'un mensonge silencieux.
+ */
+#define OATH_ALGO_TOTP_SHA1 0x21u
+
+/*
  * Signal rendu par oath_dispatch quand la commande exige un appui physique.
  * oath_proto reste pur : c'est mode_oath.c qui appellera dongle_confirm().
  *
@@ -70,6 +79,18 @@ uint16_t oath_tlv_put(uint8_t *out, uint16_t cap, uint8_t tag,
  * par « capacite insuffisante, rien d'ecrit ».
  */
 #define OATH_SW_NEEDS_TOUCH 0x0001u
+
+/*
+ * Quelle operation attend l'appui. Le code doit etre DISTINCT par operation :
+ * l'ecran a dire « EFFACER » et non « CODE OTP », et un geste donne pour un
+ * code n'est pas un geste donne pour une destruction.
+ */
+typedef enum {
+    OATH_TOUCH_NONE = 0,
+    OATH_TOUCH_CALCULATE,
+    OATH_TOUCH_DELETE,
+    OATH_TOUCH_RESET,
+} oath_touch_op_t;
 
 typedef struct {
     bool     selected;                    /* l'applet a-t-il ete selectionne ? */
@@ -83,6 +104,7 @@ typedef struct {
      * defi il vient d'accepter — deux analyses de la meme donnee hote, donc
      * deux occasions de diverger sur ce qui a ete valide.
      */
+    oath_touch_op_t touch_op;
     uint8_t  touch_slot;
     uint8_t  touch_challenge[OATH_CHALLENGE_LEN];
     bool     touch_truncate;              /* P2=01 : ykman veut un 0x76 */
@@ -97,3 +119,17 @@ typedef struct {
  */
 uint16_t oath_dispatch(const apdu_t *cmd, uint8_t *out, uint16_t cap,
                        oath_ctx_t *ctx);
+
+/*
+ * Execute l'operation destructrice mise en attente par oath_dispatch, une fois
+ * l'appui obtenu (`granted`) ou refuse. Ecrit un mot d'etat dans `out` et rend
+ * sa longueur.
+ *
+ * Un refus, ou l'absence de demande en attente, rend 6985 et ne touche a rien :
+ * une confirmation ne peut donc pas etre rejouee, ni arriver « en avance » sur
+ * une demande qui n'a pas eu lieu.
+ *
+ * OATH_TOUCH_CALCULATE ne passe PAS par ici et rend 0 : achever un CALCULATE
+ * demande le HMAC, qui n'est pas de la logique pure et reste a l'appelant.
+ */
+uint16_t oath_touch_commit(oath_ctx_t *ctx, bool granted, uint8_t *out, uint16_t cap);
