@@ -48,6 +48,7 @@ usb mode none       # rien exposé — l'état de repos
 usb mode storage     # microSD en MSC
 usb mode pgp          # carte OpenPGP en CCID
 usb mode otp          # clé CR-HMAC en HID
+usb mode fido          # authentificateur U2F/CTAP-HID
 ```
 
 Chaque bascule désinstalle d'abord le mode courant (`usb_device_uninstall()`
@@ -65,22 +66,33 @@ matériel : [`docs/HARDWARE.md`](docs/HARDWARE.md#validation-openpgp-ccid--2026-
 
 ## Build
 
-Deux cartes. Elles ne divergent que sur le lien S3↔coffre, absent du kit ; tout
-le reste (microSD, USB) est commun et vit dans `main/board_common.h`.
+Trois cartes. `jc_devkit` et `niphar_chest` ne divergent que sur le lien
+S3↔coffre, absent du kit ; tout le reste (microSD, USB) est commun et vit dans
+`main/board_common.h`. `wt9932_key` est la troisième — la clé de sécurité
+autonome (WT9932P4-TINY), sans lien S3 ni microSD, avec boutons et LED en
+façade — voir [`docs/HARDWARE.md`](docs/HARDWARE.md) pour son brochage.
 
 | carte | lien S3 | matériel |
 |---|---|---|
-| `jc_devkit` *(défaut)* | non | le kit, seul matériel existant |
+| `jc_devkit` | non | le kit, premier matériel qui a existé |
 | `niphar_chest` | oui | le coffre, pas encore fabriqué |
+| `wt9932_key` *(variant courant, `.tripwire-variant`)* | non | la clé autonome, seul matériel réellement flashé au quotidien |
 
 ```bash
 source ~/esp/esp-idf/export.sh
-idf.py -B build_jc_devkit -DBOARD=jc_devkit -DSDKCONFIG=build_jc_devkit/sdkconfig build
+idf.py -B build_wt9932_key -DBOARD=wt9932_key -DSDKCONFIG=build_wt9932_key/sdkconfig build
 ```
 
-Le défaut est le kit, et le sens de l'erreur compte : flasher du `jc_devkit` sur
-un coffre ne fait que priver du lien, l'inverse enverrait du SPI dans le bus I2C
-du codec audio du kit.
+`.tripwire-variant` (committé, lu par `.esp-dev.yml`) porte le nom de la carte
+que `/esp-build`/`/esp-flash`/`/esp-cycle` construisent et flashent par
+défaut — **vérifier sa valeur avant de flasher** : un défaut périmé y a déjà
+fait flasher le firmware `jc_devkit` (sans écran) sur la carte-clé, un
+incident documenté dans `docs/HARDWARE.md`. Le sens de l'erreur reste
+asymétrique entre cartes à lien S3 : flasher du `jc_devkit` sur un coffre ne
+fait que priver du lien, l'inverse enverrait du SPI dans le bus I2C du codec
+audio du kit — `wt9932_key` n'a ni l'un ni l'autre bus, donc n'est concerné
+que par la première règle générale (jamais GPIO24/25, jamais de deep-sleep
+permanent).
 
 Aucun source n'inclut un chemin de carte : `${BOARD_DIR}` est en tête des
 includes, donc `#include "board.h"` résout vers la carte sélectionnée.
