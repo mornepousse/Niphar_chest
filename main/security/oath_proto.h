@@ -89,6 +89,7 @@ typedef enum {
     OATH_TOUCH_NONE = 0,
     OATH_TOUCH_CALCULATE,
     OATH_TOUCH_DELETE,
+    OATH_TOUCH_REPLACE,   /* PUT sur un nom deja present : detruit l'ancien secret */
     OATH_TOUCH_RESET,
 } oath_touch_op_t;
 
@@ -105,9 +106,34 @@ typedef struct {
      * deux occasions de diverger sur ce qui a ete valide.
      */
     oath_touch_op_t touch_op;
+    /*
+     * DEPENDANCE AU TRANSPORT : `touch_slot` est un INDEX, pas une identite.
+     * Entre la demande et l'appui, rien dans ce fichier n'empeche le slot
+     * d'avoir change de compte — la propriete tient parce que ccid.c bloque
+     * l'hote pendant l'attente de confirmation. oath_touch_commit revérifie
+     * qu'il s'agit toujours d'un slot OATH, mais pas qu'il s'agit du MEME
+     * compte. Quiconque rendrait cette attente non bloquante doit porter ici
+     * une identite (le nom), sans quoi l'ecran afficherait un compte et un
+     * autre partirait.
+     */
     uint8_t  touch_slot;
+    /* Combien de comptes l'operation en attente detruit. L'ecran doit le dire :
+     * un seul appui pour douze secrets merite un nombre affiche. Le porter ici
+     * evite a l'affichage de recompter le magasin — deux comptages du meme
+     * etat sont deux occasions de diverger. */
+    uint8_t  touch_count;
     uint8_t  touch_challenge[OATH_CHALLENGE_LEN];
     bool     touch_truncate;              /* P2=01 : ykman veut un 0x76 */
+    /*
+     * Compte mis en attente par un PUT qui ECRASE. Il porte un secret en
+     * clair : oath_touch_commit et toute commande suivante l'effacent, pour
+     * qu'il ne traine pas en RAM au-dela de la confirmation qu'il attend.
+     */
+    uint8_t  touch_put_type;
+    uint8_t  touch_put_digits;
+    uint8_t  touch_put_secret_len;
+    uint8_t  touch_put_secret[SEC_SECRET_MAX];
+    char     touch_put_label[SEC_LABEL_LEN];
 } oath_ctx_t;
 
 /*
@@ -128,6 +154,14 @@ uint16_t oath_dispatch(const apdu_t *cmd, uint8_t *out, uint16_t cap,
  * Un refus, ou l'absence de demande en attente, rend 6985 et ne touche a rien :
  * une confirmation ne peut donc pas etre rejouee, ni arriver « en avance » sur
  * une demande qui n'a pas eu lieu.
+ *
+ * ATTENTION — cette fonction CROIT son parametre `granted`. Elle ne verifie
+ * aucun appui : elle detruit des secrets sur la foi d'un booleen. C'est le
+ * decoupage voulu (oath_proto reste pur et testable, la garantie vit dans le
+ * transport), mais il impose que le SEUL appelant soit le mode USB, apres un
+ * appui reel et par le meme chemin d'abandon (`s_shutdown` de ccid.c) que
+ * dongle_confirm(). L'appeler avec `true` depuis ailleurs — un test manuel,
+ * une commande console — vide le magasin sans qu'un geste ait ete demande.
  *
  * OATH_TOUCH_CALCULATE ne passe PAS par ici et rend 0 : achever un CALCULATE
  * demande le HMAC, qui n'est pas de la logique pure et reste a l'appelant.

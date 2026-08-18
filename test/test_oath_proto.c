@@ -1151,6 +1151,171 @@ static void test_rename_refuse_un_doublon(void)
     TEST_ASSERT(strcmp(sec_store_label(1), "C:d") == 0, "le second compte est intact");
 }
 
+/* Fabrique le corps d'un PUT : nom, puis 0x73 = [type][chiffres][secret]. */
+static uint8_t put_body(uint8_t *d, const char *nom, uint8_t nom_len,
+                        uint8_t digits, uint8_t remplissage, uint8_t secret_len)
+{
+    uint8_t clef[2 + SEC_SECRET_MAX];
+    clef[0] = OATH_ALGO_TOTP_SHA1;
+    clef[1] = digits;
+    memset(&clef[2], remplissage, secret_len);
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, nom, nom_len);
+    return tlv_at(d, l, OATH_TAG_KEY, clef, (uint8_t)(2 + secret_len));
+}
+
+/*
+ * Creer un compte ne detruit rien : douze appuis a la migration depuis Proton
+ * seraient douze occasions d'apprendre a confirmer sans regarder. Un PUT sur un
+ * nom inconnu passe donc directement.
+ */
+static void test_put_qui_cree_ne_demande_pas_l_appui(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    oath_select_ok(&ctx);
+    uint8_t d[96], out[32];
+
+    uint8_t l = put_body(d, "A:b", 3, 6, 0xAA, 20);
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : creation sans appui");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "aucun appui arme pour une creation");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "le compte est cree");
+
+    uint8_t sec[SEC_SECRET_MAX]; uint8_t sl = 0;
+    TEST_ASSERT(sec_store_get_secret(0, sec, &sl), "secret relisible");
+    TEST_ASSERT_EQ(sl, 20, "longueur du secret");
+    TEST_ASSERT_EQ(sec[0], 0xAA, "c'est bien le secret envoye");
+}
+
+/*
+ * Un PUT sur un nom DEJA PRESENT remplace le slot : il detruit un secret aussi
+ * surement qu'un DELETE, en moins visible. Il exige donc l'appui — avec une
+ * operation distincte, parce que « REMPLACER » et « EFFACER » ne se refusent
+ * pas pour les memes raisons.
+ *
+ * La propriete qui compte n'est pas le mot d'etat : c'est qu'un remplacement
+ * NON confirme laisse l'ancien secret intact. Un test qui ne verifierait que
+ * le mot d'etat raterait exactement ca.
+ */
+static void test_put_qui_ecrase_exige_l_appui(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    uint8_t d[96], out[32], sec[SEC_SECRET_MAX], sl = 0;
+
+    /* Compte existant : secret 0xAA sur 20 octets, six chiffres. */
+    const uint8_t ancien[20] = { 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+                                 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+                                 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA };
+    TEST_ASSERT(sec_store_set_slot(0, OATH_ALGO_TOTP_SHA1, "A:b", ancien, 20),
+                "compte existant provisionne");
+    TEST_ASSERT(sec_store_set_digits(0, 6), "six chiffres au depart");
+    oath_select_ok(&ctx);
+
+    /* Meme nom, autre secret, autre nombre de chiffres. */
+    uint8_t l = put_body(d, "A:b", 3, 8, 0xBB, 32);
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "ecraser demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_REPLACE, "operation REPLACE");
+    TEST_ASSERT(ctx.touch_op != OATH_TOUCH_DELETE,
+                "distincte d'EFFACER : l'ecran ne dit pas la meme chose");
+    TEST_ASSERT_EQ(ctx.touch_slot, 0, "le slot vise est retenu");
+    TEST_ASSERT_EQ(ctx.touch_count, 1, "un compte concerne");
+
+    /* Avant tout appui : rien n'a bouge. */
+    TEST_ASSERT(sec_store_get_secret(0, sec, &sl), "secret relisible");
+    TEST_ASSERT_EQ(sl, 20, "l'ancienne longueur tient");
+    TEST_ASSERT_EQ(sec[0], 0xAA, "l'ancien secret tient");
+    TEST_ASSERT_EQ(sec_store_digits(0), 6, "les anciens chiffres tiennent");
+
+    /* Appui REFUSE : l'ancien secret doit survivre en entier. */
+    n = oath_touch_commit(&ctx, false, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x69, 0x85), "6985 : remplacement refuse");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "toujours un seul compte");
+    TEST_ASSERT(sec_store_get_secret(0, sec, &sl), "secret relisible");
+    TEST_ASSERT_EQ(sl, 20, "longueur inchangee apres refus");
+    for (unsigned i = 0; i < 20; i++)
+        TEST_ASSERT_EQ(sec[i], 0xAA, "octet de l'ancien secret intact");
+    TEST_ASSERT_EQ(sec_store_digits(0), 6, "chiffres inchanges apres refus");
+    TEST_ASSERT(strcmp(sec_store_label(0), "A:b") == 0, "etiquette inchangee");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "la demande est retiree");
+    /* Le secret refuse ne doit pas trainer en RAM : il attendait une
+     * confirmation qui n'est pas venue. */
+    TEST_ASSERT_EQ(ctx.touch_put_secret_len, 0, "longueur du secret en attente remise a zero");
+    {
+        bool reste = false;
+        for (unsigned i = 0; i < SEC_SECRET_MAX; i++)
+            if (ctx.touch_put_secret[i] != 0) reste = true;
+        TEST_ASSERT(!reste, "le secret refuse est efface du contexte");
+    }
+
+    /* Une confirmation qui ne suit plus rien ne doit pas rejouer le
+     * remplacement abandonne. */
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x69, 0x85), "6985 : rien en attente");
+    TEST_ASSERT(sec_store_get_secret(0, sec, &sl) && sec[0] == 0xAA,
+                "l'ancien secret n'a pas ete remplace apres coup");
+
+    /* Appui ACCORDE : le remplacement prend effet, en entier. */
+    l = put_body(d, "A:b", 3, 8, 0xBB, 32);
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "l'appui est redemande");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : remplace apres appui");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "toujours un seul compte, pas deux");
+    TEST_ASSERT(sec_store_get_secret(0, sec, &sl), "secret relisible");
+    TEST_ASSERT_EQ(sl, 32, "la nouvelle longueur a pris");
+    for (unsigned i = 0; i < 32; i++)
+        TEST_ASSERT_EQ(sec[i], 0xBB, "octet du nouveau secret");
+    TEST_ASSERT_EQ(sec_store_digits(0), 8, "les nouveaux chiffres ont pris");
+    TEST_ASSERT(strcmp(sec_store_label(0), "A:b") == 0, "l'etiquette est conservee");
+    TEST_ASSERT_EQ(ctx.pending_len, 0, "le differe est purge par le remplacement");
+}
+
+/*
+ * Un seul appui detruit douze secrets sur un RESET : l'ecran doit pouvoir dire
+ * COMBIEN. Le contexte le porte, pour que la tache 5 n'ait pas a reanalyser le
+ * magasin — deux comptages du meme etat, deux occasions de diverger.
+ */
+static void test_le_contexte_annonce_combien_de_comptes(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    const uint8_t key[20] = { 0 };
+    /* Un slot CR-HMAC parmi eux : il ne part pas au RESET, donc il ne doit pas
+     * etre compte non plus. */
+    TEST_ASSERT(sec_store_set_slot(0, SEC_SLOT_HMAC_SHA1, "keepassxc", key, 20),
+                "slot CR-HMAC");
+    for (uint8_t i = 1; i <= 5; i++) {
+        char nom[16];
+        snprintf(nom, sizeof(nom), "S%02u:c", (unsigned)i);
+        slot_totp(i, nom);
+    }
+    oath_select_ok(&ctx);
+    uint8_t out[32], d[32];
+
+    uint16_t n = oath_cmd(&ctx, 0x04, 0xDE, 0xAD, NULL, 0, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "RESET demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_count, 5,
+                   "cinq comptes OATH partiront, pas six : le CR-HMAC reste");
+
+    /* Et le compte annonce est bien celui qui part. */
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "RESET confirme");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "il ne reste que le slot CR-HMAC");
+
+    /* DELETE n'en detruit qu'un : le champ doit suivre l'operation, pas rester
+     * fige sur la derniere valeur. */
+    sec_store_init();
+    slot_totp(0, "A:b");
+    slot_totp(1, "C:d");
+    oath_select_ok(&ctx);
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+    n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "DELETE demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_count, 1, "un seul compte concerne");
+}
+
 void test_oath_proto(void)
 {
     TEST_SUITE("oath_proto");
@@ -1189,4 +1354,7 @@ void test_oath_proto(void)
     TEST_RUN(test_select_verifie_l_aid);
     TEST_RUN(test_cla_non_nulle_refusee);
     TEST_RUN(test_rename_refuse_un_doublon);
+    TEST_RUN(test_put_qui_cree_ne_demande_pas_l_appui);
+    TEST_RUN(test_put_qui_ecrase_exige_l_appui);
+    TEST_RUN(test_le_contexte_annonce_combien_de_comptes);
 }

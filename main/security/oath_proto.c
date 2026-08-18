@@ -105,6 +105,19 @@ static bool oath_slot_is_oath(uint8_t idx)
 }
 
 /*
+ * Retire la demande d'appui en attente. Le secret d'un PUT differe est efface
+ * ici : il n'a rien a faire en RAM une fois la demande abandonnee ou honoree.
+ */
+static void oath_touch_clear(oath_ctx_t *ctx)
+{
+    ctx->touch_op    = OATH_TOUCH_NONE;
+    ctx->touch_count = 0;
+    ctx->touch_put_secret_len = 0;
+    memset(ctx->touch_put_secret, 0, sizeof(ctx->touch_put_secret));
+    memset(ctx->touch_put_label, 0, sizeof(ctx->touch_put_label));
+}
+
+/*
  * Toute mutation du magasin invalide une reponse deja decoupee : sans cette
  * purge, un SEND REMAINING servirait encore le compte qu'on vient d'effacer.
  */
@@ -319,6 +332,7 @@ static uint16_t oath_do_calculate(const apdu_t *cmd, uint8_t *out, uint16_t cap,
     if (chal_len != OATH_CHALLENGE_LEN) return sw_only(out, cap, SW_WRONG_DATA);
 
     ctx->touch_op       = OATH_TOUCH_CALCULATE;
+    ctx->touch_count    = 1;
     ctx->touch_slot     = slot;
     ctx->touch_truncate = (cmd->p2 == 0x01u);
     memcpy(ctx->touch_challenge, chal, OATH_CHALLENGE_LEN);
@@ -365,13 +379,34 @@ static uint16_t oath_do_put(const apdu_t *cmd, uint8_t *out, uint16_t cap,
     if (secret_len > SEC_SECRET_MAX) return sw_only(out, cap, SW_WRONG_DATA);
     if (digits != 6 && digits != 8)  return sw_only(out, cap, SW_WRONG_DATA);
 
-    /* Un nom deja connu se remplace — c'est ce que fait ykman quand on
-     * reprovisionne un compte — sinon on prend le premier slot libre. */
-    uint8_t slot = oath_find_slot(name, name_len);
-    if (slot >= SEC_N_SLOTS) {
-        for (uint8_t i = 0; i < SEC_N_SLOTS; i++) {
-            if (sec_store_type(i) == SEC_SLOT_EMPTY) { slot = i; break; }
-        }
+    /*
+     * Un nom deja connu se REMPLACE — c'est ce que fait ykman quand on
+     * reprovisionne un compte. Mais remplacer detruit l'ancien secret aussi
+     * surement qu'un DELETE, en moins visible : cela exige l'appui. Creer un
+     * compte qui n'existait pas ne detruit rien et passe directement — sans
+     * quoi la migration des douze comptes depuis Proton demanderait douze
+     * appuis, soit douze occasions d'apprendre a confirmer sans regarder.
+     */
+    const uint8_t existant = oath_find_slot(name, name_len);
+    if (existant < SEC_N_SLOTS) {
+        ctx->touch_op    = OATH_TOUCH_REPLACE;
+        ctx->touch_slot  = existant;
+        ctx->touch_count = 1;
+        ctx->touch_put_type       = type;
+        ctx->touch_put_digits     = digits;
+        ctx->touch_put_secret_len = (uint8_t)secret_len;
+        memcpy(ctx->touch_put_secret, &key[2], secret_len);
+        /* L'etiquette se recopie ici et n'est pas relue du slot au moment de
+         * l'appliquer : sec_store_set_slot commence par un memset du slot, et
+         * lui passer un pointeur vers ce meme slot lirait une zone qu'il est
+         * en train d'ecraser. */
+        memcpy(ctx->touch_put_label, label, sizeof(ctx->touch_put_label));
+        return OATH_SW_NEEDS_TOUCH;
+    }
+
+    uint8_t slot = SEC_N_SLOTS;
+    for (uint8_t i = 0; i < SEC_N_SLOTS; i++) {
+        if (sec_store_type(i) == SEC_SLOT_EMPTY) { slot = i; break; }
     }
     if (slot >= SEC_N_SLOTS) return sw_only(out, cap, SW_FULL);
 
@@ -399,8 +434,9 @@ static uint16_t oath_do_delete(const apdu_t *cmd, uint8_t *out, uint16_t cap,
     const uint8_t slot = oath_find_slot(name, name_len);
     if (slot >= SEC_N_SLOTS) return sw_only(out, cap, SW_NOT_FOUND);
 
-    ctx->touch_op   = OATH_TOUCH_DELETE;
-    ctx->touch_slot = slot;
+    ctx->touch_op    = OATH_TOUCH_DELETE;
+    ctx->touch_slot  = slot;
+    ctx->touch_count = 1;
     return OATH_SW_NEEDS_TOUCH;
 }
 
@@ -470,6 +506,11 @@ static uint16_t oath_do_reset(const apdu_t *cmd, uint8_t *out, uint16_t cap,
     if (cmd->p1 != OATH_RESET_P1 || cmd->p2 != OATH_RESET_P2)
         return sw_only(out, cap, SW_WRONG_DATA);
     ctx->touch_op = OATH_TOUCH_RESET;
+    /* Combien de comptes partent : l'ecran doit l'annoncer, un seul appui
+     * detruisant ici jusqu'a seize secrets d'un coup. */
+    ctx->touch_count = 0;
+    for (uint8_t i = 0; i < SEC_N_SLOTS; i++)
+        if (oath_slot_is_oath(i)) ctx->touch_count++;
     return OATH_SW_NEEDS_TOUCH;
 }
 
@@ -483,11 +524,39 @@ uint16_t oath_touch_commit(oath_ctx_t *ctx, bool granted, uint8_t *out, uint16_t
     if (op == OATH_TOUCH_CALCULATE) return 0;
 
     /* La demande se consomme dans TOUS les autres cas : une confirmation ne
-     * doit pas pouvoir etre rejouee sur une deuxieme commande. */
-    ctx->touch_op = OATH_TOUCH_NONE;
+     * doit pas pouvoir etre rejouee sur une deuxieme commande. Copie locale
+     * d'abord — oath_touch_clear efface le secret en attente. */
+    uint8_t  put_type   = ctx->touch_put_type;
+    uint8_t  put_digits = ctx->touch_put_digits;
+    uint8_t  put_len    = ctx->touch_put_secret_len;
+    uint8_t  put_secret[SEC_SECRET_MAX];
+    char     put_label[SEC_LABEL_LEN];
+    memcpy(put_secret, ctx->touch_put_secret, sizeof(put_secret));
+    memcpy(put_label,  ctx->touch_put_label,  sizeof(put_label));
+    oath_touch_clear(ctx);
 
-    if (op == OATH_TOUCH_NONE || !granted)
+    if (op == OATH_TOUCH_NONE || !granted) {
+        memset(put_secret, 0, sizeof(put_secret));
         return sw_only(out, cap, SW_COND_NOT_SAT);
+    }
+
+    if (op == OATH_TOUCH_REPLACE) {
+        /* Meme defense en profondeur que pour DELETE : le slot doit toujours
+         * appartenir a cet applet. */
+        const bool ok_slot = ctx->touch_slot < SEC_N_SLOTS
+                             && oath_slot_is_oath(ctx->touch_slot);
+        const bool ok = ok_slot
+                        && sec_store_set_slot(ctx->touch_slot, put_type,
+                                              put_label, put_secret, put_len);
+        memset(put_secret, 0, sizeof(put_secret));
+        if (!ok_slot) return sw_only(out, cap, SW_NOT_FOUND);
+        if (!ok)      return sw_only(out, cap, SW_WRONG_DATA);
+        oath_store_changed(ctx);
+        if (!sec_store_set_digits(ctx->touch_slot, put_digits))
+            return sw_only(out, cap, SW_WRONG_DATA);
+        return sw_only(out, cap, SW_OK);
+    }
+    memset(put_secret, 0, sizeof(put_secret));
 
     if (op == OATH_TOUCH_DELETE) {
         /* Le magasin a pu changer entre la demande et l'appui : on re-verifie
@@ -519,7 +588,7 @@ uint16_t oath_dispatch(const apdu_t *cmd, uint8_t *out, uint16_t cap,
     /* Une demande d'appui ne vaut que pour la commande qui vient de la poser :
      * toute commande suivante l'annule, sans quoi une confirmation tardive
      * s'appliquerait a une demande que l'hote a deja abandonnee. */
-    ctx->touch_op = OATH_TOUCH_NONE;
+    oath_touch_clear(ctx);
 
     /* La classe n'etait jamais examinee. YKOATH n'utilise que CLA=00 ; tout
      * autre octet vient d'un protocole que nous ne parlons pas. */
