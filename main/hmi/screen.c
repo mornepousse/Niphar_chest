@@ -786,9 +786,19 @@ static esp_err_t ssd1306_display(bool on)
  * continu, et l'instantane est exactement ce qui determine le contenu. Aucune
  * modification de hmi.{c,h} n'a donc ete necessaire.
  *
- * Comparaison champ par champ et non memcmp() : le bourrage d'une structure
- * n'est pas initialise de facon garantie, et un memcmp() verrait des
- * changements imaginaires — l'ecran ne s'eteindrait jamais.
+ * Comparaison champ par champ et non memcmp() SUR LA STRUCTURE : le bourrage
+ * d'une structure n'est pas initialise de facon garantie, et un memcmp()
+ * global verrait des changements imaginaires — l'ecran ne s'eteindrait
+ * jamais. Le memcmp() sur `label` seul, lui, est sur : c'est un tableau
+ * d'octets sans bourrage, et hmi.c le remplit EN ENTIER a chaque tick
+ * (memcpy de sizeof(snap.label), hmi.c) — jamais partiellement.
+ *
+ * `label` fait partie de la comparaison depuis la re-revue de la tache 6 : il
+ * y manquait, alors que le paragraphe ci-dessus pose que l'instantane EST ce
+ * qui determine le contenu. Deux armements successifs sans passage par
+ * l'etat de repos — deux comptes differents demandes coup sur coup — ne
+ * different que par lui : l'ecran changeait de nom sans que le compteur
+ * d'anti-remanence ne voie d'activite.
  */
 static bool snap_differs(const hmi_snapshot_t *a, const hmi_snapshot_t *b)
 {
@@ -797,7 +807,8 @@ static bool snap_differs(const hmi_snapshot_t *a, const hmi_snapshot_t *b)
         || a->armed_at_ms     != b->armed_at_ms
         || a->op              != b->op
         || a->event           != b->event
-        || a->event_at_ms     != b->event_at_ms;
+        || a->event_at_ms     != b->event_at_ms
+        || memcmp(a->label, b->label, sizeof(a->label)) != 0;
 }
 
 static void screen_task(void *arg)

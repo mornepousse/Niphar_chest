@@ -137,6 +137,23 @@ typedef struct {
 } oath_ctx_t;
 
 /*
+ * Le slot `idx` appartient-il a CET applet ?
+ *
+ * Le magasin est PARTAGE avec le mode OTP, dont les slots CR-HMAC
+ * (SEC_SLOT_HMAC_SHA1) n'appartiennent pas a OATH : sans ce filtre, l'hote
+ * listerait ces secrets, les effacerait, et ferait signer par leur clef un
+ * defi de huit octets qu'il choisit.
+ *
+ * Publique parce que le transport doit poser la MEME question au moment
+ * d'achever un CALCULATE (usb/mode_oath.c) : le slot memorise dans
+ * `touch_slot` est un INDEX, pas une identite, et il est revalide apres
+ * l'appui. Une seconde copie de ce predicat cote transport finirait par
+ * diverger de celle-ci — et c'est elle qui tient la frontiere entre les deux
+ * modes.
+ */
+bool oath_slot_is_oath(uint8_t idx);
+
+/*
  * Traite une commande APDU. Ecrit la reponse (mot d'etat compris) dans `out` et
  * rend sa longueur. Ne bloque jamais et ne touche a aucun peripherique.
  *

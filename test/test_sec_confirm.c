@@ -353,6 +353,91 @@ static void test_etiquette_jamais_nulle(void)
     TEST_ASSERT(label[0] == '\0', "NULL en entree ressort en chaine vide, jamais en charabia");
 }
 
+/*
+ * L'etiquette de LONGUEUR MAXIMALE, bout en bout : armee par
+ * sec_confirm_arm_named() puis relue par sec_confirm_peek_labeled().
+ *
+ * Ce cas existe parce que le seul cas bout en bout precedent utilise
+ * « GITHUB » — six caracteres dans un tampon de douze, dont les six zeros de
+ * marge MASQUENT une troncature : un memcpy d'un octet trop court dans
+ * peek_labeled() recopierait encore un zero a la place du zero manquant, et
+ * aucun test ne rougirait. Un nom qui deborde remplit les douze octets (neuf
+ * caracteres d'issuer, l'empreinte, le marqueur, le terminateur) : il ne
+ * reste alors aucune marge pour absorber l'octet perdu.
+ *
+ * Le tampon de sortie est pre-empoisonne : c'est ce qui fait que l'octet non
+ * ecrit se VOIT, au lieu de ressembler a un terminateur legitime.
+ */
+static void test_etiquette_de_longueur_maximale_est_recopiee_entiere(void)
+{
+    /* Assez long pour que oath_name_display() tronque : au-dela des dix
+     * caracteres visibles de la police double hauteur. */
+    const char *long_nom = "ServiceExtremementLong:mae@exemple.org";
+
+    char attendu[OATH_NAME_DISPLAY_MAX];
+    oath_name_display(long_nom, (uint16_t)strlen(long_nom), attendu, sizeof(attendu));
+    /* Le cas ne vaut que s'il remplit REELLEMENT le tampon : sans cette
+     * verification, un changement de OATH_NAME_DISPLAY_MAX ou du marqueur
+     * rendrait ce test aussi aveugle que celui qu'il complete, en silence. */
+    TEST_ASSERT_EQ(strlen(attendu), OATH_NAME_DISPLAY_MAX - 1u,
+                   "le cas de reference occupe tout le tampon, terminateur compris");
+
+    char label[OATH_NAME_DISPLAY_MAX + 4];
+    memset(label, 0x5A, sizeof(label));
+
+    sec_confirm_reset();
+    sec_confirm_arm_named(1, SEC_OP_OATH_CODE, long_nom, 1000);
+    sec_confirm_peek_labeled(1000, NULL, label);
+
+    TEST_ASSERT(memcmp(label, attendu, OATH_NAME_DISPLAY_MAX) == 0,
+                "les douze octets de l'etiquette arrivent, terminateur compris");
+    for (unsigned k = OATH_NAME_DISPLAY_MAX; k < sizeof(label); k++) {
+        TEST_ASSERT((unsigned char)label[k] == 0x5Au,
+                    "rien n'est ecrit au-dela de OATH_NAME_DISPLAY_MAX");
+    }
+}
+
+/*
+ * poll() efface s_op a la consommation ET a l'expiration ; l'etiquette DOIT
+ * partir en meme temps. Elle nomme l'operation qui vient de disparaitre : la
+ * laisser derriere, c'est republier a chaque tick de l'IHM le nom d'un compte
+ * que plus rien n'attend — et, le jour ou un ecran affichera l'etiquette hors
+ * de l'ecran d'attente, nommer un compte sans qu'aucune operation ne le vise.
+ *
+ * L'invariant n'etait couvert dans AUCUN sens : ni la survie de l'etiquette,
+ * ni son effacement. Ajouter le clear ne faisait donc rougir aucun test, et
+ * le retirer non plus.
+ *
+ * Les deux chemins de sortie de poll() sont verifies separement : ils sont
+ * ecrits deux fois dans le .c, donc une correction posee sur un seul d'entre
+ * eux est le defaut le plus probable.
+ */
+static void test_poll_efface_aussi_l_etiquette(void)
+{
+    char label[OATH_NAME_DISPLAY_MAX];
+
+    /* Chemin « consommee ». */
+    sec_confirm_reset();
+    sec_confirm_arm_named(0xF0u, SEC_OP_OATH_CODE, "GITHUB", 1000);
+    sec_confirm_peek_labeled(1000, NULL, label);
+    TEST_ASSERT(strcmp(label, "GITHUB") == 0, "armee : l'etiquette est bien la avant");
+    TEST_ASSERT_EQ(sec_confirm_poll(1000, NULL), SEC_CONFIRM_PENDING, "encore en attente");
+    sec_confirm_authorize(1050);
+    TEST_ASSERT_EQ(sec_confirm_poll(1100, NULL), SEC_CONFIRM_AUTHORIZED, "consommee par poll()");
+    memset(label, 'X', sizeof(label));   /* pollue : le peek doit ecraser */
+    sec_confirm_peek_labeled(1100, NULL, label);
+    TEST_ASSERT(label[0] == '\0', "poll() consommee emporte l'etiquette");
+
+    /* Chemin « expiree ». */
+    sec_confirm_reset();
+    sec_confirm_arm_named(0xF0u, SEC_OP_OATH_DELETE, "GITLAB", 1000);
+    TEST_ASSERT_EQ(sec_confirm_poll(1000 + SEC_CONFIRM_TIMEOUT_MS, NULL),
+                   SEC_CONFIRM_TIMEDOUT, "expiree par poll()");
+    memset(label, 'X', sizeof(label));
+    sec_confirm_peek_labeled(1000 + SEC_CONFIRM_TIMEOUT_MS, NULL, label);
+    TEST_ASSERT(label[0] == '\0', "poll() expiree emporte l'etiquette");
+}
+
 /* sec_confirm_arm() reste le raccourci d'une etiquette vide : les appelants
  * qui n'ont rien a nommer (SIGN, DECRYPT, AUTH, OTP, FIDO) ne doivent rien
  * changer a leur appel pour continuer a fonctionner. */
@@ -391,5 +476,7 @@ void test_sec_confirm(void)
     TEST_RUN(test_peek_labeled_tolerates_null_out_params);
     TEST_RUN(test_etiquette_suit_l_armement);
     TEST_RUN(test_etiquette_jamais_nulle);
+    TEST_RUN(test_poll_efface_aussi_l_etiquette);
+    TEST_RUN(test_etiquette_de_longueur_maximale_est_recopiee_entiere);
     TEST_RUN(test_arm_sans_nom_laisse_l_etiquette_vide);
 }

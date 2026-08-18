@@ -209,6 +209,18 @@ static SemaphoreHandle_t s_defer_lock;
  * confirmation incluses). Lu par ccid_shutdown() pour attendre qu'il ressorte. */
 static volatile bool     s_worker_active;
 
+/*
+ * Qui repond aux XfrBlock. NULL = l'applet OpenPGP, le DEFAUT — c'est le
+ * chemin valide sur materiel, et il doit rester celui qu'on obtient quand
+ * personne n'a rien pose. Voir ccid_set_applet() dans ccid.h.
+ *
+ * volatile : pose par la tache qui bascule le mode (usb_mode.c), lu par le
+ * worker CCID. La bascule n'a lieu qu'apres ccid_shutdown(), qui attend que
+ * le worker soit au repos — il n'y a donc jamais d'ecriture concurrente d'une
+ * commande en vol.
+ */
+static ccid_applet_fn_t volatile s_applet;
+
 /* XfrBlock context saved by ccid_dispatch for the worker to echo back. */
 static uint8_t           s_cur_slot;
 static uint8_t           s_cur_seq;
@@ -358,7 +370,13 @@ static void ccid_process_xfrblock(void)
     uint32_t dwLength = (uint32_t)s_out_buf[1]
                       | ((uint32_t)s_out_buf[2] << 8);
 
-    uint16_t apdu_n = openpgp_card_apdu(
+    /* Lu UNE fois dans une locale : relire s_applet entre le test et l'appel
+     * laisserait, en theorie, deux applets se partager une meme commande. */
+    const ccid_applet_fn_t applet = s_applet;
+    uint16_t apdu_n = (applet != NULL)
+        ? applet(&s_out_buf[CCID_HDR_LEN], (uint16_t)dwLength,
+                 &s_in_buf[CCID_HDR_LEN], CCID_BUF_SZ - CCID_HDR_LEN)
+        : openpgp_card_apdu(
                           &s_out_buf[CCID_HDR_LEN], (uint16_t)dwLength,
                           &s_in_buf[CCID_HDR_LEN], CCID_BUF_SZ - CCID_HDR_LEN);
 
@@ -427,11 +445,11 @@ static bool dongle_sign(const uint8_t d[32],
  * Arms sec_confirm, then polls every 20 ms.  While waiting, fires a CCID
  * time-extension (WTX) frame every CCID_WTX_PERIOD_MS so scdaemon does not
  * time out.  Returns 1 if authorised by touch, 2 if denied / timed out. */
-static int dongle_confirm(sec_op_t op)
+static int dongle_confirm_named(sec_op_t op, const char *label)
 {
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     const uint32_t deadline = now + SEC_CONFIRM_TIMEOUT_MS;
-    sec_confirm_arm(CCID_CONFIRM_SLOT, op, now);
+    sec_confirm_arm_named(CCID_CONFIRM_SLOT, op, label, now);
     uint32_t last_wtx = now;
     uint8_t  slot     = 0;
 
@@ -468,6 +486,24 @@ static int dongle_confirm(sec_op_t op)
             last_wtx = now;
         }
     }
+}
+
+/*
+ * Enveloppe du chemin OpenPGP, validee sur materiel : elle passe NULL, donc
+ * l'ecran n'affiche que le libelle d'operation, exactement comme avant. Le
+ * corps est PARTAGE et non recopie — c'est lui qui teste s_shutdown, et une
+ * seconde boucle d'attente finirait par en diverger (voir la divergence
+ * BLOQUANT 1 en tete de fichier).
+ */
+static int dongle_confirm(sec_op_t op)
+{
+    return dongle_confirm_named(op, NULL);
+}
+
+/* Meme corps, ouvert aux modes qui ont un compte a nommer (usb/mode_oath.c). */
+int ccid_confirm_named(sec_op_t op, const char *label)
+{
+    return dongle_confirm_named(op, label);
 }
 
 /* Derive the public key for READ PUBLIC KEY (INS 0x47 P1=0x81) — gpg keytocard
@@ -589,6 +625,13 @@ static void ccid_drv_init(void)
     /* Nouvelle pile USB installée : la fenêtre de démontage est refermée, les
      * callbacks peuvent de nouveau être postés (divergence BLOQUANT 1). */
     s_shutdown  = false;
+    /* Et l'aiguillage repart sur son défaut. Un applet posé par le mode
+     * précédent qui survivrait ici répondrait à la place du suivant : c'est
+     * au mode qui vient d'être installé de se déclarer, jamais à l'absence
+     * de nettoyage de décider. Sûr ici, et seulement ici : ce callback tourne
+     * dans usb_device_install(), donc AVANT le mode_*_start() qui pose
+     * l'applet. */
+    s_applet    = NULL;
     /* Wire the real Phase-1 hooks (P-256 sign + sec_confirm UIF gate). */
     openpgp_card_init(&s_dongle_hooks);
 }
@@ -792,6 +835,11 @@ void ccid_init(void)
  * le coffre coincé dans un mode dont le worker ne sort pas. */
 #define CCID_SHUTDOWN_WAIT_MS   2000u
 #define CCID_SHUTDOWN_POLL_MS     10u
+
+void ccid_set_applet(ccid_applet_fn_t applet)
+{
+    s_applet = applet;
+}
 
 void ccid_shutdown(void)
 {

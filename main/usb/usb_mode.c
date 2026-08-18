@@ -6,6 +6,7 @@
 
 #include "sec_confirm.h"
 #include "usb/mode_fido.h"
+#include "usb/mode_oath.h"
 #include "usb/mode_otp.h"
 #include "usb/mode_pgp.h"
 #include "usb/mode_storage.h"
@@ -198,6 +199,14 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         mode_fido_stop();
     }
 
+    /* Le mode OATH partage le worker CCID avec le mode PGP : même contrainte
+     * d'ordre, pour la même raison. Il débranche en plus son applet et efface
+     * son contexte — qui peut porter un secret en clair mis en attente par un
+     * PUT non confirmé. Voir mode_oath_stop(). */
+    if (s_mode == USB_MODE_OATH) {
+        mode_oath_stop();
+    }
+
     /* À partir d'ici la pile est démontée ou en train de l'être : plus rien
      * n'est garanti tant qu'une installation n'a pas réussi. */
     s_mode_known = false;
@@ -293,7 +302,7 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         strings = mode_otp_strings(&string_count);
         fs_cfg = mode_otp_fs_config();
         hs_cfg = mode_otp_hs_config();
-    } else {
+    } else if (mode == USB_MODE_FIDO) {
         /* USB_MODE_FIDO : l'authentificateur U2F/CTAP-HID (plan FIDO2,
          * tâche 3). Rien à initialiser ici non plus — mode_fido_fs_config()/
          * hs_config() réarme l'assembleur CTAP-HID au passage, voir
@@ -301,6 +310,15 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         strings = mode_fido_strings(&string_count);
         fs_cfg = mode_fido_fs_config();
         hs_cfg = mode_fido_hs_config();
+    } else {
+        /* USB_MODE_OATH : les comptes TOTP sur CCID (plan OATH, tâche 6).
+         * Comme pour PGP, rien à initialiser ici — mode_oath_fs_config()/
+         * hs_config() force le démarrage du worker CCID au passage. Le magasin
+         * et l'applet, eux, attendent que l'installation ait réussi : voir
+         * mode_oath_start() plus bas. */
+        strings = mode_oath_strings(&string_count);
+        fs_cfg = mode_oath_fs_config();
+        hs_cfg = mode_oath_hs_config();
     }
 
     err = usb_device_install(fs_cfg, hs_cfg, strings, string_count);
@@ -339,6 +357,18 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         /* Après coup, jamais avant : sur le modèle exact du OTP ci-dessus.
          * Voir mode_fido_start() dans mode_fido.c. */
         mode_fido_start();
+    }
+
+    if (mode == USB_MODE_OATH) {
+        /*
+         * Après coup, jamais avant, et pour une raison plus dure que pour les
+         * autres : usb_device_install() vient de faire tourner ccid_drv_init(),
+         * qui remet l'aiguillage d'applet sur son défaut (OpenPGP). Poser
+         * l'applet OATH plus tôt le ferait écraser, et l'hôte parlerait à la
+         * carte OpenPGP en croyant parler à l'applet OATH. Voir
+         * mode_oath_start() et ccid_set_applet() dans security/ccid.h.
+         */
+        mode_oath_start();
     }
 
     s_mode = mode;

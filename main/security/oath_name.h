@@ -41,3 +41,33 @@
  * deux noms proches, pas d'une usurpation deliberee.
  */
 void oath_name_display(const char *raw, uint16_t raw_len, char *out, uint8_t out_sz);
+
+/*
+ * Taille du tampon a passer a oath_reset_label() : « 255 COMPTES » plus son
+ * terminateur, soit la plus longue forme qu'un uint8_t puisse produire. Le
+ * magasin s'arrete a SEC_N_SLOTS comptes, donc dix caracteres en pratique —
+ * mais dimensionner sur le type plutot que sur la constante du jour evite
+ * qu'un agrandissement du magasin ne fasse deborder ici en silence.
+ */
+#define OATH_RESET_LABEL_MAX 12
+
+/*
+ * Ecrit dans `out` l'etiquette d'un RESET OATH : combien de comptes l'appui
+ * va detruire — « 12 COMPTES », « 1 COMPTE ».
+ *
+ * POURQUOI ICI, et pas formatee sur place dans le mode USB : cette chaine
+ * traverse ensuite oath_name_display() comme n'importe quelle etiquette
+ * venue de l'hote (sec_confirm_arm_named() l'y passe sans distinction
+ * d'origine). Elle est donc soumise a la coupe au premier ':', au retrait
+ * d'un prefixe numerique suivi de '/', et a la troncature a dix caracteres
+ * visibles. Une forme mal choisie ressortirait amputee ou vide, et l'ecran
+ * annoncerait un effacement total SANS dire combien de comptes partent.
+ * Cette contrainte se PROUVE — test_reset_label_traverse_l_affichage_intact,
+ * qui fait le passage bout en bout — ce qui exige que le formatage soit de
+ * la logique pure, donc ici plutot que dans usb/mode_oath.c.
+ *
+ * `out` est toujours une chaine terminee. Si `out_sz` ne suffit pas, `out`
+ * recoit la chaine VIDE : jamais un nombre ampute, qui ferait autoriser
+ * l'effacement de seize comptes en croyant en effacer un.
+ */
+void oath_reset_label(uint8_t count, char *out, uint8_t out_sz);

@@ -1875,6 +1875,129 @@ static void test_le_slot_est_revalide_au_moment_d_appliquer(void)
     TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "la demande est consommee malgre le refus");
 }
 
+
+/*
+ * Un compte TOTP SANS SECRET est un compte dont n'importe qui calcule les
+ * codes. La seule chose qui l'empeche est la garde `key_len < 3` de
+ * oath_do_put : deux octets d'en-tete PLUS au moins un octet de secret.
+ *
+ * Rien ne la couvrait : `key_len == 2` donne `secret_len == 0`, et
+ * sec_store_set_slot accepte un secret vide (secret_len == 0 avec un pointeur
+ * non nul est un cas licite pour lui). La mutation `< 3` -> `< 2` survivait
+ * donc a toute la suite.
+ */
+static void test_put_refuse_un_compte_sans_secret(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    oath_select_ok(&ctx);
+    uint8_t out[64];
+
+    /* 0x71 « A:b », puis 0x73 de DEUX octets : type et chiffres, rien apres. */
+    uint8_t body[2 + 3 + 2 + 2];
+    uint16_t k = 0;
+    body[k++] = OATH_TAG_NAME; body[k++] = 3;
+    memcpy(&body[k], "A:b", 3); k = (uint16_t)(k + 3);
+    body[k++] = OATH_TAG_KEY;  body[k++] = 2;
+    body[k++] = OATH_ALGO_TOTP_SHA1; body[k++] = 6;
+
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, body, (uint8_t)k, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : un 0x73 sans octet de secret");
+    TEST_ASSERT_EQ(sec_store_count(), 0, "et surtout : aucun compte n'est cree");
+
+    /* Le meme PUT avec UN octet de secret passe : c'est ce qui prouve que la
+     * borne est a la bonne place, et non qu'elle refuse tout. Compare aux
+     * DEUX resultats plutot qu'au seul refus ci-dessus — une garde qui
+     * refuserait aussi le cas valide serait tout aussi fausse. */
+    uint8_t body_ok[2 + 3 + 2 + 3];
+    k = 0;
+    body_ok[k++] = OATH_TAG_NAME; body_ok[k++] = 3;
+    memcpy(&body_ok[k], "A:b", 3); k = (uint16_t)(k + 3);
+    body_ok[k++] = OATH_TAG_KEY;  body_ok[k++] = 3;
+    body_ok[k++] = OATH_ALGO_TOTP_SHA1; body_ok[k++] = 6; body_ok[k++] = 0xAB;
+
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, body_ok, (uint8_t)k, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : un octet de secret suffit");
+    TEST_ASSERT_EQ(sec_store_count(), 1, "le compte, lui, est bien cree");
+}
+
+/*
+ * Le SELECT borne son Lc a la taille de l'AID AVANT de comparer. Sans cette
+ * borne, `memcmp(cmd->data, k_oath_aid, cmd->lc)` lirait au-dela d'un tableau
+ * statique de sept octets des que l'hote annonce un AID plus long — une
+ * lecture hors bornes declenchable depuis l'hote, sur la toute premiere
+ * commande de la session.
+ *
+ * Le refus est verifie ET l'applet doit rester desarme : un SELECT qui
+ * echoue ne doit pas ouvrir la porte aux PUT et aux DELETE.
+ */
+static void test_select_refuse_un_aid_plus_long_que_le_notre(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx; memset(&ctx, 0, sizeof(ctx));
+    uint8_t out[64];
+
+    /* L'AID YKOATH entier, plus un huitieme octet. */
+    uint8_t trop_long[8];
+    memcpy(trop_long, k_aid, sizeof(k_aid));
+    trop_long[7] = 0x00;
+
+    uint16_t n = oath_cmd(&ctx, 0xA4, 0x04, 0x00, trop_long, sizeof(trop_long),
+                          out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "6A82 : un AID plus long que le notre");
+    TEST_ASSERT(!ctx.selected, "et l'applet reste desarme");
+
+    /* Lc nul : l'autre bord de la meme garde. */
+    memset(&ctx, 0, sizeof(ctx));
+    n = oath_cmd(&ctx, 0xA4, 0x04, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "6A82 : un SELECT sans AID du tout");
+    TEST_ASSERT(!ctx.selected, "et l'applet reste desarme");
+}
+
+/*
+ * La capacite EXACTE de la reponse au SELECT, des deux cotes de la frontiere.
+ *
+ * Le corps fait quinze octets (0x79 : 2 + 3 ; 0x71 : 2 + OATH_SALT_LEN), plus
+ * deux de mot d'etat : dix-sept. A seize, la garde `n + 2 > cap` doit refuser
+ * par 6A84 ; a dix-sept, la reponse doit passer entiere. Le test existant sur
+ * la capacite utilise huit octets — loin de la frontiere — donc la mutation
+ * `>` -> `>=`, comme `+2` -> `+1`, y survivait : la premiere refuserait le cas
+ * valide, la seconde ecrirait un octet HORS du tampon que la couche CCID lui
+ * passe.
+ */
+static void test_select_capacite_a_la_frontiere(void)
+{
+    const uint16_t attendu = (uint16_t)(2u + 3u + 2u + OATH_SALT_LEN + 2u);
+
+    sec_store_init();
+    oath_ctx_t ctx; memset(&ctx, 0, sizeof(ctx));
+    uint8_t out[64];
+
+    /* Un octet de moins que necessaire : refus, sans ecrire au-dela. */
+    memset(out, 0x5A, sizeof(out));
+    uint16_t n = oath_cmd(&ctx, 0xA4, 0x04, 0x00, k_aid, sizeof(k_aid),
+                          out, (uint16_t)(attendu - 1u));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x84), "6A84 : un octet de trop peu");
+    TEST_ASSERT(!ctx.selected, "un SELECT refuse n'arme pas l'applet");
+    for (uint16_t k = 2; k < sizeof(out); k++) {
+        TEST_ASSERT((unsigned char)out[k] == 0x5Au,
+                    "le refus n'ecrit que son mot d'etat");
+    }
+
+    /* La capacite exacte : la reponse passe entiere, pas un octet de plus. */
+    memset(&ctx, 0, sizeof(ctx));
+    memset(out, 0x5A, sizeof(out));
+    n = oath_cmd(&ctx, 0xA4, 0x04, 0x00, k_aid, sizeof(k_aid), out, attendu);
+    TEST_ASSERT_EQ(n, attendu, "la capacite exacte suffit, au dernier octet pres");
+    TEST_ASSERT(ctx.selected, "et l'applet s'arme");
+    TEST_ASSERT(out[attendu - 2u] == 0x90 && out[attendu - 1u] == 0x00,
+                "9000 en queue de reponse");
+    for (uint16_t k = attendu; k < sizeof(out); k++) {
+        TEST_ASSERT((unsigned char)out[k] == 0x5Au,
+                    "rien n'est ecrit au-dela de la capacite annoncee");
+    }
+}
+
 void test_oath_proto(void)
 {
     TEST_SUITE("oath_proto");
@@ -1911,6 +2034,9 @@ void test_oath_proto(void)
     TEST_RUN(test_send_remaining_sans_reste);
     TEST_RUN(test_select_contenu_de_la_version_et_du_sel);
     TEST_RUN(test_select_verifie_l_aid);
+    TEST_RUN(test_put_refuse_un_compte_sans_secret);
+    TEST_RUN(test_select_refuse_un_aid_plus_long_que_le_notre);
+    TEST_RUN(test_select_capacite_a_la_frontiere);
     TEST_RUN(test_cla_non_nulle_refusee);
     TEST_RUN(test_rename_refuse_un_doublon);
     TEST_RUN(test_put_qui_cree_ne_demande_pas_l_appui);

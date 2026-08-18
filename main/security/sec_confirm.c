@@ -389,6 +389,13 @@ sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot)
         (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS) {
         s_state = SEC_CONFIRM_IDLE;
         s_op    = SEC_OP_UNKNOWN;
+        /* L'etiquette part avec l'operation qu'elle nomme, sur les DEUX
+         * chemins de sortie. La laisser derriere republierait a chaque tick de
+         * l'IHM le nom d'un compte que plus rien n'attend. Corrige a la
+         * re-revue de la tache 6 : le champ etait vide par reset() et par
+         * arm(), jamais par poll() — alors que son commentaire de definition
+         * affirmait le contraire. */
+        s_label[0] = '\0';
         SEC_CONFIRM_UNLOCK();
         return SEC_CONFIRM_TIMEDOUT;
     }
@@ -396,6 +403,7 @@ sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot)
         if (out_slot) *out_slot = s_slot;
         s_state = SEC_CONFIRM_IDLE;
         s_op    = SEC_OP_UNKNOWN;
+        s_label[0] = '\0';   /* meme raison qu'au chemin d'expiration ci-dessus */
         SEC_CONFIRM_UNLOCK();
         return SEC_CONFIRM_AUTHORIZED;
     }

@@ -59,6 +59,11 @@ static inline const char *screen_mode_name(usb_mode_t mode)
     case USB_MODE_PGP:     return "OpenPGP";
     case USB_MODE_OTP:     return "Cle OTP";
     case USB_MODE_FIDO:    return "Cle FIDO2";
+    /* « TOTP » et non « Comptes TOTP » : ce nom se dessine en police double
+     * hauteur, dont 128 px ne laissent passer que dix caracteres. Distinct de
+     * « Cle OTP » juste au-dessus, qui designe le defi/reponse CR-HMAC — deux
+     * modes voisins par le nom mais pas par le protocole. */
+    case USB_MODE_OATH:    return "TOTP";
     case USB_MODE_STORAGE: return "Disque";
     /* Une valeur hors enum (USB_MODE_COUNT, ou un futur mode ajoute avant
      * COUNT sans mise a jour de ce switch) ne doit pas se faire passer pour

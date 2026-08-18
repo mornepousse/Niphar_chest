@@ -29,6 +29,7 @@ typedef enum {
     USB_MODE_PGP,        /* la carte OpenPGP (CCID) — tâche 10 */
     USB_MODE_OTP,        /* la clé CR-HMAC (HID) — tâche 11 */
     USB_MODE_FIDO,       /* l'authentificateur U2F/CTAP-HID (HID) — plan FIDO2, tâche 3 */
+    USB_MODE_OATH,       /* les comptes TOTP YKOATH (CCID) — plan OATH, tâche 6 */
     USB_MODE_COUNT,
 } usb_mode_t;
 

@@ -92,3 +92,41 @@ void oath_name_display(const char *raw, uint16_t raw_len, char *out, uint8_t out
     out[n++] = '?';   /* marqueur : il reste du nom non montre */
     out[n] = '\0';
 }
+
+void oath_reset_label(uint8_t count, char *out, uint8_t out_sz)
+{
+    if (out == NULL || out_sz == 0) return;
+    out[0] = '\0';
+
+    /*
+     * « COMPTE » au singulier pour zero comme pour un : c'est l'accord
+     * francais, et « 0 COMPTES » se lirait comme une faute de plus a un
+     * moment ou l'ecran doit inspirer confiance. Ecrit sans <stdio.h> :
+     * snprintf tire tout le formateur de la libc dans le firmware pour trois
+     * chiffres et un mot.
+     */
+    const char *mot = (count <= 1u) ? " COMPTE" : " COMPTES";
+
+    /* Chiffres a l'envers, puis retournes : jusqu'a trois pour un uint8_t. */
+    char chiffres[3];
+    uint8_t nb = 0;
+    uint8_t v = count;
+    do {
+        chiffres[nb++] = (char)('0' + (v % 10u));
+        v = (uint8_t)(v / 10u);
+    } while (v != 0u);
+
+    uint16_t lm = 0;
+    while (mot[lm] != '\0') lm++;
+
+    /* Refus franc plutot que troncature : « 1 » a la place de « 16 » ferait
+     * autoriser l'effacement de seize comptes en croyant en effacer un. La
+     * chaine vide, elle, laisse l'ecran sur le seul libelle d'operation
+     * (« RESET OATH ») — moins informatif, mais jamais faux. */
+    if ((uint16_t)nb + lm + 1u > (uint16_t)out_sz) return;
+
+    uint8_t n = 0;
+    for (uint8_t k = nb; k > 0u; k--) out[n++] = chiffres[k - 1u];
+    for (uint16_t k = 0; k < lm; k++) out[n++] = mot[k];
+    out[n] = '\0';
+}

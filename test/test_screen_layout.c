@@ -104,7 +104,8 @@ static void test_center_x_never_wraps_when_text_is_wider(void)
 /*
  * Erreur de conception corrigee (2026-08-18) : screen_mode_count() rendait le
  * nombre de VALEURS de usb_mode_t (5), alors que le cycle de cette carte
- * (usb_mode_cycle.h : pgp -> otp -> fido -> pgp) ne fait que TROIS crans —
+ * (usb_mode_cycle.h : pgp -> otp -> fido -> oath -> pgp) ne fait que QUATRE
+ * crans —
  * elle n'a pas de microSD, et USB_MODE_NONE n'y revient jamais. Compter les
  * modes de l'enum et compter les crans du cycle sont deux choses
  * differentes ; la confusion etait invisible tant qu'un cycle couvrait tous
@@ -116,7 +117,7 @@ static void test_center_x_never_wraps_when_text_is_wider(void)
  */
 static void test_mode_count_matches_the_cycle_length(void)
 {
-    TEST_ASSERT_EQ(screen_mode_count(), 3, "trois crans dans le cycle de cette carte");
+    TEST_ASSERT_EQ(screen_mode_count(), 4, "quatre crans dans le cycle de cette carte");
 }
 
 /* Chaque mode DU CYCLE a SON point, et deux modes n'en partagent jamais un :
@@ -126,7 +127,8 @@ static void test_mode_count_matches_the_cycle_length(void)
  * OTP passerait n'importe quelle formulation plus faible. */
 static void test_cycle_modes_have_distinct_pairwise_dots(void)
 {
-    const usb_mode_t modes[] = { USB_MODE_PGP, USB_MODE_OTP, USB_MODE_FIDO };
+    const usb_mode_t modes[] = { USB_MODE_PGP, USB_MODE_OTP, USB_MODE_FIDO,
+                                 USB_MODE_OATH };
     const unsigned n = sizeof(modes) / sizeof(modes[0]);
     for (unsigned i = 0; i < n; i++) {
         const uint8_t a = screen_mode_index(modes[i]);
@@ -162,13 +164,15 @@ static void test_off_cycle_mode_lights_no_dot(void)
  * pour « rien expose ». */
 static void test_unknown_mode_lights_no_dot(void)
 {
-    const usb_mode_t modes[] = { USB_MODE_PGP, USB_MODE_OTP, USB_MODE_FIDO };
+    const usb_mode_t modes[] = { USB_MODE_PGP, USB_MODE_OTP, USB_MODE_FIDO,
+                                 USB_MODE_OATH };
+    const unsigned n = sizeof(modes) / sizeof(modes[0]);
     const uint8_t out_of_enum = screen_mode_index(USB_MODE_COUNT);
     const uint8_t nonsense    = screen_mode_index((usb_mode_t)99);
 
     TEST_ASSERT_EQ(out_of_enum, screen_mode_count(), "hors enum : aucun point");
     TEST_ASSERT_EQ(nonsense, screen_mode_count(), "valeur absurde : aucun point");
-    for (unsigned i = 0; i < 3u; i++) {
+    for (unsigned i = 0; i < n; i++) {
         TEST_ASSERT(out_of_enum != screen_mode_index(modes[i]),
                     "l'inconnu ne prend pas le point d'un mode connu");
     }

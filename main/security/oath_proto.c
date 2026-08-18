@@ -117,7 +117,7 @@ static uint16_t sw_only(uint8_t *out, uint16_t cap, uint16_t sw)
  * huit octets qu'il choisit. ykman les refuserait de toute facon,
  * oath.py:453 faisant OATH_TYPE(0xF0 & data[0]) et levant sur 0x01.
  */
-static bool oath_slot_is_oath(uint8_t idx)
+bool oath_slot_is_oath(uint8_t idx)
 {
     return (sec_store_type(idx) & 0xF0u) == (OATH_ALGO_TOTP_SHA1 & 0xF0u);
 }
