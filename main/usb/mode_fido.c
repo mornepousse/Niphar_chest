@@ -156,20 +156,42 @@ static uint32_t s_last_cid;
 
 /*
  * Drapeaux de capacité CTAPHID_CAPFLAG_* du dernier octet d'INIT.
- * CAPFLAG_CBOR posé depuis la tâche 5 : authenticatorGetInfo répond sur
- * CBOR (cas CTAPHID_CMD_CBOR ci-dessous). WINK reste à 0 : non câblé.
  *
- * CTAPHID_CAPFLAG_NMSG (« ce périphérique n'implémente PAS CTAPHID_MSG »)
- * n'est PLUS posé depuis cette tâche (7) : CTAPHID_MSG route désormais vers
- * U2F (security/u2f.c, cas CTAPHID_CMD_MSG ci-dessous). Avant cette tâche,
- * ce drapeau contredisait "U2F_V2" annoncé par authenticatorGetInfo
- * (ctap2.c) — un client qui lisait `versions` avant `caps` aurait pu
- * tenter U2F_REGISTER contre un périphérique qui l'annonçait indisponible.
- * NE PAS le reposer sans retirer "U2F_V2" de ctap2.c en même temps : les
- * deux doivent rester synchronisés.
+ * NMSG est PARTI depuis la tâche 7 : CTAPHID_MSG route vers U2F
+ * (security/u2f.c, cas CTAPHID_CMD_MSG ci-dessous). WINK reste à 0 : non
+ * câblé. Plus aucune contradiction à signaler ici — ce commentaire portait
+ * un avertissement daté sur NMSG vs "U2F_V2" (ctap2.c) qui n'a plus lieu
+ * d'être maintenant que CBOR (ci-dessous) est également retiré.
+ *
+ * CBOR est ABSENT DÉLIBÉRÉMENT (Ruling 16 du coordinateur, revue de la
+ * tâche 7) — CE N'EST PAS UN OUBLI, ne pas le reposer sans lire ce qui
+ * suit. authenticatorGetInfo (ctap2.c) est correctement implémenté et
+ * RESTE dans le firmware, mais ce drapeau ne doit PAS être posé tant que
+ * makeCredential/getAssertion n'existent pas (décodeur CBOR reporté au
+ * plan 2, contraintes-globales.md écart 2) : un client CTAP2 qui voit ce
+ * bit s'engage sur un protocole qu'il ne peut pas mener à bien ici.
+ *
+ * Le Ruling 12 (tâche 5) avait déjà retiré "FIDO_2_0"/"rk" de `versions`
+ * dans ce même but — mais ça ne suffit pas : `libfido2` (oracle indépendant,
+ * `src/dev.c:515`, `fido_dev_is_fido2()`) décide CTAP1 vs CTAP2 sur CE
+ * DRAPEAU DE TRANSPORT, jamais sur le contenu de `versions`. Une fois ce
+ * bit posé et `authenticatorGetInfo` répondant avec succès, la bibliothèque
+ * s'engage sur CTAP2 pour toute la session (`src/dev.c:191-209`) et
+ * n'essaie plus jamais `u2f_register()` (`src/cred.c:217-232`) — même en
+ * cas d'échec ultérieur de `makeCredential`. C'est exactement ce qui a été
+ * observé sur matériel avec `fido2-cred -M` avant ce Ruling
+ * (`FIDO_ERR_INVALID_COMMAND`), voir le rapport de tâche 7.
+ *
+ * Coût assumé : `fido2-token -I` (et tout client CTAP2) ne décrit plus
+ * cette clé — un client CTAP1/U2F pur n'appelle jamais authenticatorGetInfo.
+ * C'est le prix explicitement payé par le coordinateur : un outil de
+ * diagnostic qui marche ne vaut pas un produit qui ne marche pas.
+ *
+ * À REPOSER uniquement quand authenticatorMakeCredential ET
+ * authenticatorGetAssertion existeront (plan 2) — jamais avant, jamais
+ * "pour que fido2-token remarche".
  */
 #define CTAPHID_CAPFLAG_WINK 0x01u
-#define CTAPHID_CAPFLAG_CBOR 0x04u
 
 /*
  * État d'émission fragmentée — image miroir de ctaphid_asm_t côté envoi :
@@ -475,7 +497,10 @@ static void handle_message(const ctaphid_msg_t *msg)
         resp[13] = FIDO_DEV_VER_MAJOR;
         resp[14] = FIDO_DEV_VER_MINOR;
         resp[15] = FIDO_DEV_VER_BUILD;
-        resp[16] = CTAPHID_CAPFLAG_CBOR; /* NMSG retiré (tâche 7) ; WINK : non câblé, à 0 */
+        /* NMSG retiré (tâche 7), CBOR retiré (Ruling 16, tâche 7) — voir le
+         * commentaire de CTAPHID_CAPFLAG_WINK ci-dessus pour pourquoi.
+         * WINK : non câblé, à 0. Aucun bit posé aujourd'hui. */
+        resp[16] = 0u;
 
         /* Réponse envoyée sur le canal DE LA REQUÊTE (msg->cid), diffusion
          * comprise : le nouveau CID ne voyage que dans la charge utile,
