@@ -141,23 +141,37 @@ esp_err_t usb_mode_set(usb_mode_t mode)
     ESP_LOGI(TAG, "mode USB : %s -> %s", usb_mode_name(s_mode), usb_mode_name(mode));
 
     /*
-     * I4 (revue finale de branche) : purge TOUTE confirmation armée avant de
-     * démonter quoi que ce soit, un seul endroit symétrique pour les trois
-     * personnalités (CCID, OTP, FIDO) plutôt qu'un appel dupliqué dans
-     * chaque *_stop(). ccid_worker() (security/ccid.c) appelait déjà
-     * sec_confirm_reset() sur son propre chemin d'arrêt ; mode_otp_stop() et
-     * mode_fido_stop() n'avaient pas d'équivalent, donc l'écran pouvait
-     * afficher jusqu'à SEC_CONFIRM_TIMEOUT_MS (15 s) l'opération d'un mode
-     * qui vient d'être désinstallé — un libellé faux, pas une permission
-     * fausse (les slots sec_confirm sont disjoints par personnalité et
-     * arm() écrase l'état précédent, donc aucun octroi croisé n'en
-     * découle), mais exactement la classe d'erreur que sec_confirm.c
-     * documente exister pour empêcher. Placé ici, avant les *_stop()
-     * ci-dessous, et seulement une fois passé le court-circuit « même mode »
-     * plus haut : un appel qui ne change rien au mode ne démonte rien et ne
-     * doit donc pas couper une confirmation en cours pour CE mode-là.
+     * I4 (revue finale de branche) : purge TOUTE confirmation armée avant que
+     * le nouveau mode ne puisse jamais s'en servir, un seul endroit
+     * symétrique pour les trois personnalités (CCID, OTP, FIDO) plutôt qu'un
+     * appel dupliqué dans chaque *_stop(). ccid_worker() (security/ccid.c)
+     * appelait déjà sec_confirm_reset() sur son propre chemin d'arrêt ;
+     * mode_otp_stop() et mode_fido_stop() n'avaient pas d'équivalent, donc
+     * l'écran pouvait afficher jusqu'à SEC_CONFIRM_TIMEOUT_MS (15 s)
+     * l'opération d'un mode qui vient d'être désinstallé — un libellé faux,
+     * pas une permission fausse (les slots sec_confirm sont disjoints par
+     * personnalité et arm() écrase l'état précédent, donc aucun octroi
+     * croisé n'en découle), mais exactement la classe d'erreur que
+     * sec_confirm.c documente exister pour empêcher.
+     *
+     * PLACEMENT (revu à la revue finale de branche, I5, point 2) : cet appel
+     * vivait juste ici, avant les *_stop() ci-dessous et avant
+     * usb_device_uninstall() — ce qui purgeait la confirmation même quand la
+     * désinstallation échouait ensuite et que l'ancien mode restait le mode
+     * RÉELLEMENT actif (voir le bloc `if (err != ESP_OK)` plus bas, qui
+     * restaure s_mode dans ce cas). Une confirmation légitime pour le mode
+     * qui reste en place se retrouvait alors effacée par un événement qui ne
+     * le concernait pas — l'utilisateur devait réappuyer pour rien. Déplacé
+     * après le `if (err != ESP_OK)` : l'appel n'arrive plus que lorsque la
+     * désinstallation a RÉELLEMENT réussi, donc seulement quand l'ancien
+     * mode est en train de disparaître pour de bon — jamais sur un chemin
+     * qui peut encore faire machine arrière. Toujours placé AVANT toute
+     * installation du nouveau mode (mode_pgp_data_load()/mode_otp_start()/
+     * mode_fido_start(), plus bas) : aucune fenêtre inverse où le nouveau
+     * mode démarrerait avec une confirmation de l'ancien encore armée. Le
+     * court-circuit « même mode » plus haut protège toujours ce cas-là
+     * (rien n'est démonté, rien n'est purgé).
      */
-    sec_confirm_reset();
 
     /*
      * Le worker CCID d'abord, la pile USB ensuite. Il survit à tous les
@@ -228,6 +242,12 @@ esp_err_t usb_mode_set(usb_mode_t mode)
         busy_release();
         return err;
     }
+
+    /* La désinstallation a RÉELLEMENT réussi : l'ancien mode est en train de
+     * disparaître pour de bon, plus aucun chemin de retour arrière. C'est
+     * seulement maintenant que purger la confirmation armée est sûr — voir
+     * le commentaire I4/I5 plus haut. */
+    sec_confirm_reset();
 
     if (mode == USB_MODE_NONE) {
         s_mode = USB_MODE_NONE;
