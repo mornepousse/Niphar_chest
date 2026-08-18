@@ -35,7 +35,9 @@ add_executable(test_runner
     test_screen_anim.c
     test_screen_layout.c
     test_oath_name.c
+    test_oath_proto.c
     ../main/security/oath_name.c
+    ../main/security/oath_proto.c
     ../main/link/link_proto.c
     ../main/sys/cr_crc16.c
     ../main/security/sec_confirm.c
