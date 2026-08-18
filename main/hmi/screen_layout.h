@@ -27,6 +27,7 @@
 
 #include "sec_confirm.h"
 #include "usb/usb_mode.h"
+#include "usb/usb_mode_cycle.h"
 #include "hmi/led_state.h"
 
 /* Cellule de la police 5x7 de screen.c : 5 colonnes de glyphe + 1 de marge.
@@ -98,34 +99,91 @@ static inline uint16_t screen_center_x(uint16_t width_px, uint16_t text_px)
     return (uint16_t)((width_px - text_px) / 2u);
 }
 
-/* Nombre de points de cycle dessines. Les cinq modes que le firmware
- * connait, dans l'ordre de usb_mode_t. Cinq points tiennent toujours dans
- * 128 px de large : 5 x 5 px de diametre + 4 x 7 px d'espacement = 53 px,
- * loin de la limite. */
-static inline uint8_t screen_mode_count(void)
+/*
+ * Nombre de points de cycle dessines et position de chacun : DERIVES du
+ * CYCLE de la carte (usb_mode_cycle.h, usb_mode_cycle_after()), pas de
+ * l'enumeration usb_mode_t.
+ *
+ * Erreur de conception corrigee (2026-08-18, ruling du coordinateur) :
+ * compter les valeurs de l'enum et compter les crans du cycle sont deux
+ * choses differentes. Elles coincidaient tant qu'un cycle couvrait tous les
+ * modes ; la carte-cle (usb_mode_cycle.h) n'a que trois crans (pgp -> otp ->
+ * fido -> pgp, pas de microSD, USB_MODE_NONE n'y revient jamais) sur cinq
+ * valeurs d'enum. Deriver du cycle plutot que de l'enum rend ce fichier
+ * juste pour N'IMPORTE QUELLE carte : un cycle different (ex. futur devkit)
+ * change le nombre et la position des points sans toucher une ligne ici.
+ *
+ * screen_cycle_count() prend le "suivant" en parametre plutot que d'appeler
+ * usb_mode_cycle_after() en dur : c'est ce qui permet de PROUVER par un test
+ * que la garde anti-boucle infinie mord, avec un cycle volontairement casse
+ * qui ne revient jamais a son point de depart — impossible a demontrer avec
+ * le vrai cycle de cette carte, qui revient toujours en trois pas et
+ * masquerait n'importe quelle valeur de la borne.
+ */
+
+/*
+ * Parcourt le cycle `next` depuis `start` et compte les crans distincts
+ * avant d'y revenir.
+ *
+ * Borne a USB_MODE_COUNT iterations. Le domaine de usb_mode_t est fini, donc
+ * n'importe quelle fonction totale usb_mode_t -> usb_mode_t revient
+ * forcement sur une valeur deja visitee avant ce nombre de pas (principe des
+ * tiroirs) — mais rien ne garantit que cette valeur soit `start` lui-meme :
+ * un cycle qui boucle sur un SOUS-ENSEMBLE n'incluant pas `start` ne
+ * reviendrait jamais s'y arreter. Sans cette borne explicite, ce cas
+ * bloquerait la tache d'affichage indefiniment ; avec elle, on rend une
+ * valeur sure (USB_MODE_COUNT, deja le sentinel « hors du cycle » utilise
+ * ailleurs dans ce fichier) plutot que de figer la carte.
+ */
+static inline uint8_t screen_cycle_count(usb_mode_t start, usb_mode_t (*next)(usb_mode_t))
 {
-    return 5u;
+    usb_mode_t m = start;
+    for (uint8_t i = 0; i < USB_MODE_COUNT; i++) {
+        m = next(m);
+        if (m == start) {
+            return (uint8_t)(i + 1u);
+        }
+    }
+    return USB_MODE_COUNT;   /* jamais revenu au depart : valeur sure */
 }
 
 /*
- * Quel point est plein, de 0 a screen_mode_count() - 1.
+ * Nombre de points de cycle dessines — le nombre de crans DISTINCTS du
+ * cycle reel de cette carte, en partant du premier mode qu'un appui depuis
+ * l'etat muet atteint (usb_mode_cycle_after(USB_MODE_NONE) : PGP sur cette
+ * carte). Trois points tiennent toujours largement dans 128 px de large :
+ * meme cinq le feraient deja (5 x 5 px de diametre + 4 x 7 px d'espacement
+ * = 53 px), donc trois a fortiori.
+ */
+static inline uint8_t screen_mode_count(void)
+{
+    return screen_cycle_count(usb_mode_cycle_after(USB_MODE_NONE), usb_mode_cycle_after);
+}
+
+/*
+ * Quel point est plein, de 0 a screen_mode_count() - 1 : la position de
+ * `mode` dans le PARCOURS du cycle depuis son point de depart.
  *
- * Une valeur hors enum rend screen_mode_count() : AUCUN point ne s'allume.
- * Replier sur 0 ferait passer l'aberration pour « rien expose » — meme
- * principe que screen_mode_name(), qui rend « MODE INCONNU » plutot que le nom
- * d'un mode connu : un silence identique a un etat connu masque l'erreur au
- * lieu de la signaler.
+ * Un mode hors du cycle de cette carte (STORAGE : pas de microSD ici) ou
+ * hors enum rend screen_mode_count() : AUCUN point ne s'allume. Replier sur
+ * 0 ferait passer l'aberration — ou un mode simplement non cyclable — pour
+ * « rien expose » — meme principe que screen_mode_name(), qui rend « MODE
+ * INCONNU » plutot que le nom d'un mode connu : un silence identique a un
+ * etat connu masque l'erreur au lieu de la signaler.
  */
 static inline uint8_t screen_mode_index(usb_mode_t mode)
 {
-    switch (mode) {
-    case USB_MODE_NONE:    return 0u;
-    case USB_MODE_STORAGE: return 1u;
-    case USB_MODE_PGP:     return 2u;
-    case USB_MODE_OTP:     return 3u;
-    case USB_MODE_FIDO:    return 4u;
-    default:               return screen_mode_count();
+    const usb_mode_t start = usb_mode_cycle_after(USB_MODE_NONE);
+    const uint8_t    count = screen_cycle_count(start, usb_mode_cycle_after);
+
+    usb_mode_t m = start;
+    for (uint8_t i = 0; i < count; i++) {
+        if (m == mode) {
+            return i;
+        }
+        m = usb_mode_cycle_after(m);
     }
+    return count;   /* `mode` n'est pas dans ce cycle */
 }
 
 /*

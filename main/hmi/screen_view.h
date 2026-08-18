@@ -52,6 +52,7 @@ static inline const char *screen_mode_name(usb_mode_t mode)
     case USB_MODE_NONE:    return "Au repos";
     case USB_MODE_PGP:     return "OpenPGP";
     case USB_MODE_OTP:     return "Cle OTP";
+    case USB_MODE_FIDO:    return "Cle FIDO2";
     case USB_MODE_STORAGE: return "Disque";
     /* Une valeur hors enum (USB_MODE_COUNT, ou un futur mode ajoute avant
      * COUNT sans mise a jour de ce switch) ne doit pas se faire passer pour

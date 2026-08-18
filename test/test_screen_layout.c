@@ -98,37 +98,62 @@ static void test_center_x_never_wraps_when_text_is_wider(void)
 }
 
 /* ------------------------------------------------------------------------- */
-/* Les cinq points de cycle.                                                  */
+/* Les points de cycle — DERIVES du cycle, pas de l'enumeration.             */
 /* ------------------------------------------------------------------------- */
 
-/* Valeur en dur et non USB_MODE_COUNT : ce test epingle une DECISION de
- * disposition (cinq points tiennent dans 128 px de large — 5x5 px + 4x7 px
- * = 53 px, large), pas l'enum. Il DOIT rougir quand USB_MODE_FIDO s'ajoute :
- * c'est le signal que la disposition a ete revue, pas une simple
- * enumeration qui suivrait l'enum toute seule. */
-static void test_mode_count_is_five(void)
+/*
+ * Erreur de conception corrigee (2026-08-18) : screen_mode_count() rendait le
+ * nombre de VALEURS de usb_mode_t (5), alors que le cycle de cette carte
+ * (usb_mode_cycle.h : pgp -> otp -> fido -> pgp) ne fait que TROIS crans —
+ * elle n'a pas de microSD, et USB_MODE_NONE n'y revient jamais. Compter les
+ * modes de l'enum et compter les crans du cycle sont deux choses
+ * differentes ; la confusion etait invisible tant qu'un cycle couvrait tous
+ * les modes.
+ *
+ * Valeur en dur et non usb_mode_cycle_after() rejoue a la main : ce test
+ * epingle une DECISION observable (combien de points sur la dalle), pas
+ * l'implementation du cycle qu'il verifie justement par un autre chemin.
+ */
+static void test_mode_count_matches_the_cycle_length(void)
 {
-    TEST_ASSERT_EQ(screen_mode_count(), 5, "cinq points de cycle");
+    TEST_ASSERT_EQ(screen_mode_count(), 3, "trois crans dans le cycle de cette carte");
 }
 
-/* Chaque mode a SON point, et deux modes n'en partagent jamais un : sinon le
- * point plein designerait deux modes a la fois et ne dirait plus ou l'on est.
- * Les cinq valeurs sont comparees deux a deux — dix paires — et non chacune
- * a elle-meme : une mutation faisant rendre l'indice de PGP par STORAGE
- * passerait n'importe quelle formulation plus faible. */
-static void test_each_mode_has_its_own_dot(void)
+/* Chaque mode DU CYCLE a SON point, et deux modes n'en partagent jamais un :
+ * sinon le point plein designerait deux modes a la fois et ne dirait plus ou
+ * l'on est. Les trois valeurs sont comparees deux a deux — trois paires — et
+ * non chacune a elle-meme : une mutation faisant rendre l'indice de PGP par
+ * OTP passerait n'importe quelle formulation plus faible. */
+static void test_cycle_modes_have_distinct_pairwise_dots(void)
 {
-    const usb_mode_t modes[] = { USB_MODE_NONE, USB_MODE_STORAGE, USB_MODE_PGP,
-                                  USB_MODE_OTP, USB_MODE_FIDO };
+    const usb_mode_t modes[] = { USB_MODE_PGP, USB_MODE_OTP, USB_MODE_FIDO };
     const unsigned n = sizeof(modes) / sizeof(modes[0]);
     for (unsigned i = 0; i < n; i++) {
         const uint8_t a = screen_mode_index(modes[i]);
-        TEST_ASSERT(a < screen_mode_count(), "l'indice d'un mode connu designe un point");
+        TEST_ASSERT(a < screen_mode_count(), "l'indice d'un mode du cycle designe un point");
         for (unsigned j = i + 1; j < n; j++) {
             TEST_ASSERT(a != screen_mode_index(modes[j]),
-                        "deux modes ne partagent pas un point");
+                        "deux modes du cycle ne partagent pas un point");
         }
     }
+}
+
+/*
+ * Un mode valide de l'enum mais HORS DU CYCLE de cette carte (STORAGE : pas
+ * de microSD ici) n'allume aucun point — comme un mode carrement aberrant.
+ * Comparee a une valeur DISTINCTE (l'indice reel de PGP), pas a elle-meme :
+ * sans ca, une mutation qui ferait rendre screen_mode_count() par accident
+ * pour STORAGE ET pour PGP passerait inapercue.
+ */
+static void test_off_cycle_mode_lights_no_dot(void)
+{
+    const uint8_t storage_idx = screen_mode_index(USB_MODE_STORAGE);
+    const uint8_t pgp_idx     = screen_mode_index(USB_MODE_PGP);
+
+    TEST_ASSERT_EQ(storage_idx, screen_mode_count(),
+                   "storage n'est pas dans le cycle de cette carte : aucun point");
+    TEST_ASSERT(storage_idx != pgp_idx,
+                "le sentinel « aucun point » n'est pas confondu avec un vrai point");
 }
 
 /* Un mode aberrant n'allume AUCUN point plutot que celui du repos : meme
@@ -137,17 +162,43 @@ static void test_each_mode_has_its_own_dot(void)
  * pour « rien expose ». */
 static void test_unknown_mode_lights_no_dot(void)
 {
-    const usb_mode_t modes[] = { USB_MODE_NONE, USB_MODE_STORAGE, USB_MODE_PGP,
-                                  USB_MODE_OTP, USB_MODE_FIDO };
+    const usb_mode_t modes[] = { USB_MODE_PGP, USB_MODE_OTP, USB_MODE_FIDO };
     const uint8_t out_of_enum = screen_mode_index(USB_MODE_COUNT);
     const uint8_t nonsense    = screen_mode_index((usb_mode_t)99);
 
     TEST_ASSERT_EQ(out_of_enum, screen_mode_count(), "hors enum : aucun point");
     TEST_ASSERT_EQ(nonsense, screen_mode_count(), "valeur absurde : aucun point");
-    for (unsigned i = 0; i < 5u; i++) {
+    for (unsigned i = 0; i < 3u; i++) {
         TEST_ASSERT(out_of_enum != screen_mode_index(modes[i]),
                     "l'inconnu ne prend pas le point d'un mode connu");
     }
+}
+
+/*
+ * Garde anti-boucle infinie de screen_cycle_count() : si le cycle injecte ne
+ * revient JAMAIS a son point de depart (ici, un « suivant » qui reste
+ * coince ailleurs), le parcours doit tout de meme TERMINER — borne a
+ * USB_MODE_COUNT iterations — et rendre une valeur sure (screen_mode_count()
+ * hors de tout appel reel, ici directement le sentinel USB_MODE_COUNT) plutot
+ * que de boucler indefiniment. Impossible a prouver avec le VRAI cycle de
+ * cette carte, qui revient toujours a son depart en trois pas et masquerait
+ * n'importe quelle valeur de la borne : c'est pour ceci que
+ * screen_cycle_count() prend le « suivant » en parametre plutot que d'appeler
+ * usb_mode_cycle_after() en dur.
+ */
+static usb_mode_t stuck_away_from_start(usb_mode_t current)
+{
+    (void)current;
+    /* Ne rend jamais USB_MODE_PGP (le point de depart choisi par le test) :
+     * un cycle qui boucle sur un sous-ensemble n'incluant pas le depart. */
+    return USB_MODE_STORAGE;
+}
+
+static void test_cycle_count_terminates_when_the_cycle_never_returns(void)
+{
+    const uint8_t count = screen_cycle_count(USB_MODE_PGP, stuck_away_from_start);
+    TEST_ASSERT_EQ(count, USB_MODE_COUNT,
+                   "un cycle qui ne revient jamais au depart rend le sentinel, pas une boucle infinie");
 }
 
 /* ------------------------------------------------------------------------- */
@@ -548,9 +599,11 @@ void test_screen_layout(void)
     TEST_RUN(test_text_px_saturates_instead_of_wrapping);
     TEST_RUN(test_center_x_centers);
     TEST_RUN(test_center_x_never_wraps_when_text_is_wider);
-    TEST_RUN(test_mode_count_is_five);
-    TEST_RUN(test_each_mode_has_its_own_dot);
+    TEST_RUN(test_mode_count_matches_the_cycle_length);
+    TEST_RUN(test_cycle_modes_have_distinct_pairwise_dots);
+    TEST_RUN(test_off_cycle_mode_lights_no_dot);
     TEST_RUN(test_unknown_mode_lights_no_dot);
+    TEST_RUN(test_cycle_count_terminates_when_the_cycle_never_returns);
     TEST_RUN(test_seconds_left_rounds_up);
     TEST_RUN(test_seconds_left_matches_the_ceiling_everywhere);
     TEST_RUN(test_seconds_left_survives_millisecond_wraparound);

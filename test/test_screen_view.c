@@ -98,12 +98,12 @@ static void test_granted_and_refused_read_differently(void)
  * libelles d'operation transpose au nom de mode : une seule paire (PGP vs
  * OTP) ne voit pas une mutation qui ferait fuiter le nom d'un mode connu
  * vers un autre, ou vers le hors-enum jamais compare a rien. Le tableau
- * couvre les cinq valeurs — NONE, STORAGE, PGP, OTP, et USB_MODE_COUNT
+ * couvre les six valeurs — NONE, STORAGE, PGP, OTP, FIDO, et USB_MODE_COUNT
  * (hors enum) — et compare chaque paire. */
 static void test_every_mode_has_a_distinct_name(void)
 {
     const usb_mode_t modes[] = { USB_MODE_NONE, USB_MODE_STORAGE, USB_MODE_PGP,
-                                  USB_MODE_OTP, USB_MODE_COUNT };
+                                  USB_MODE_OTP, USB_MODE_FIDO, USB_MODE_COUNT };
     const unsigned n = sizeof(modes) / sizeof(modes[0]);
     for (unsigned i = 0; i < n; i++) {
         const char *a = screen_view_of(modes[i], false, SEC_OP_UNKNOWN, LED_EVENT_NONE).title;
