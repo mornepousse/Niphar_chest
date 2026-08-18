@@ -292,6 +292,14 @@ static inline const char *screen_op_short(sec_op_t op)
     case SEC_OP_OTP:     return "CLE OTP";
     case SEC_OP_FIDO_REGISTER: return "CREER CLE";
     case SEC_OP_FIDO_AUTH:     return "AUTH FIDO";
+    case SEC_OP_OATH_CODE:     return "CODE OTP";
+    case SEC_OP_OATH_DELETE:   return "EFFACER";
+    case SEC_OP_OATH_REPLACE:  return "REMPLACER";
+    /* "TOUT EFFACER" (12) deborderait les dix caracteres de la police double
+     * hauteur — voir test_op_short_fits_the_double_height_font(). RESET est
+     * le nom du protocole (OATH_TOUCH_RESET, oath_proto.h) : pas plus
+     * cryptique que AUTH ou OTP juste au-dessus, et il tient en dix. */
+    case SEC_OP_OATH_RESET:    return "RESET OATH";
     case SEC_OP_UNKNOWN: return "INCONNU";
     default:             return "INCONNU";
     }

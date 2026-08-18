@@ -1,5 +1,14 @@
 #include "sec_confirm.h"
 
+#include <string.h>
+
+/* Frere sans prefixe (main/security/ est a plat sur l'include path — voir
+ * main/CMakeLists.txt, INCLUDE_DIRS). Dependance voulue : la taille du
+ * tampon s_label ci-dessous et OATH_NAME_DISPLAY_MAX sont le MEME nombre, et
+ * les dupliquer les ferait diverger. oath_name.h est pur (aucun appel
+ * ESP-IDF), donc ce fichier reste compilable sur l'hote. */
+#include "oath_name.h"
+
 #ifndef TEST_HOST
 /* Spinlock portMUX, sur le modele exact de security/fido_master.c
  * (s_lock_init_spinlock) : une section critique tres courte (quelques
@@ -275,6 +284,12 @@ static sec_confirm_state_t s_state    = SEC_CONFIRM_IDLE;
 static uint8_t             s_slot     = 0;
 static uint32_t            s_armed_ms = 0;
 static sec_op_t            s_op       = SEC_OP_UNKNOWN;
+/* Etiquette affichable de l'operation armee. Toujours une chaine terminee,
+ * jamais NULL : screen.c la passe a draw_text_2x_centered()/draw_text_centered()
+ * sans garde. Videe par reset(), comme s_op — meme raison : un champ qui
+ * survit a la consommation de l'operation qu'il nomme est une reponse que le
+ * prochain lecteur devrait re-deriver. */
+static char s_label[OATH_NAME_DISPLAY_MAX] = { 0 };
 
 void sec_confirm_reset(void)
 {
@@ -286,16 +301,32 @@ void sec_confirm_reset(void)
     s_slot     = 0;
     s_op       = SEC_OP_UNKNOWN;
     s_armed_ms = 0;
+    s_label[0] = '\0';
     SEC_CONFIRM_UNLOCK();
 }
 
 void sec_confirm_arm(uint8_t slot, sec_op_t op, uint32_t now_ms)
 {
+    sec_confirm_arm_named(slot, op, NULL, now_ms);
+}
+
+void sec_confirm_arm_named(uint8_t slot, sec_op_t op, const char *label, uint32_t now_ms)
+{
+    /* Assainissement HORS verrou : oath_name_display() est pure et n'a rien a
+     * faire dans une section critique deja tres courte. Le resultat local
+     * est ensuite recopie sous verrou, avec les trois autres champs, pour
+     * que les cinq changent comme un seul groupe indivisible — meme
+     * discipline que le reste de arm()/reset() (voir CONCURRENCY MODEL). */
+    char formatted[OATH_NAME_DISPLAY_MAX];
+    oath_name_display(label, label ? (uint16_t)strlen(label) : 0u,
+                      formatted, sizeof(formatted));
+
     SEC_CONFIRM_LOCK();
     s_state    = SEC_CONFIRM_PENDING;
     s_slot     = slot;
     s_op       = op;
     s_armed_ms = now_ms;
+    memcpy(s_label, formatted, sizeof(s_label));
     SEC_CONFIRM_UNLOCK();
 }
 
@@ -391,4 +422,12 @@ sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op)
         return SEC_CONFIRM_TIMEDOUT;
     }
     return s_state;
+}
+
+const char *sec_confirm_label(void)
+{
+    /* Hors verrou, comme peek()/peek_labeled() : voir le commentaire de tete
+     * dans sec_confirm.h pour le residuel tolere et pour la regle d'appel
+     * (juste apres peek_labeled(), rien entre les deux). */
+    return s_label;
 }

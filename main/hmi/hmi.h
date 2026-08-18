@@ -43,6 +43,11 @@
 #include "hmi/led_state.h"
 #include "sec_confirm.h"
 #include "usb/usb_mode.h"
+/* Frere sans prefixe, comme sec_confirm.h ci-dessus (main/security/ est a
+ * plat sur l'include path). Seul OATH_NAME_DISPLAY_MAX est utilise : la
+ * taille de `label` ci-dessous doit rester le meme nombre que le tampon
+ * source dans sec_confirm.c, sans quoi une copie tronquerait ou deborderait. */
+#include "oath_name.h"
 
 /*
  * Ce que la tache d'affichage a besoin de savoir. Publie par la tache IHM sous
@@ -58,6 +63,13 @@ typedef struct {
     bool        confirm_pending;
     uint32_t    armed_at_ms;
     sec_op_t    op;
+    /* Etiquette de l'operation OATH armee (compte, ou compte a la forme
+     * "N COMPTES" pour un RESET) — vide pour toute operation qui n'en porte
+     * pas. Un tableau de taille fixe, pas un `const char *` : copie par
+     * valeur avec le reste de l'instantane sous s_snap_lock, jamais un
+     * pointeur vers l'etat mutable de sec_confirm.c qui resterait valide
+     * apres le verrou relache. */
+    char        label[OATH_NAME_DISPLAY_MAX];
     led_event_t event;
     uint32_t    event_at_ms;
 } hmi_snapshot_t;

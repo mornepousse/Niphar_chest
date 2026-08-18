@@ -4,6 +4,8 @@
 
 #if BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_BUTTON
 
+#include <string.h>
+
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -150,6 +152,13 @@ static void hmi_task(void *arg)
          * les deux usages, jamais deux lectures. */
         sec_op_t op = SEC_OP_UNKNOWN;
         const sec_confirm_state_t st = sec_confirm_peek_labeled(t, &op);
+        /* Appelee IMMEDIATEMENT apres peek_labeled(), rien entre les deux :
+         * c'est ce qui garde la fenetre de course sur l'etiquette a la meme
+         * echelle (quelques cycles CPU, pas un appel arbitrairement plus
+         * tard) que celle deja toleree par peek_labeled() elle-meme entre
+         * s_op et s_state — voir sec_confirm_label() dans sec_confirm.h. */
+        char label[OATH_NAME_DISPLAY_MAX];
+        memcpy(label, sec_confirm_label(), sizeof(label));
         const bool pending = (st == SEC_CONFIRM_PENDING);
 
         /* Sur la TRANSITION vers l'attente : c'est l'instant que
@@ -180,7 +189,11 @@ static void hmi_task(void *arg)
          * lecteur de screen.c ne doit jamais voir un instantane a moitie a
          * jour pour ce tick. */
         if (s_snap_lock != NULL) {
-            const hmi_snapshot_t snap = {
+            /* Pas const : un tableau ne se copie pas par une expression
+             * `.label = label` dans un initialisateur designe — memcpy()
+             * juste apres, avant que quoi que ce soit d'autre ne touche
+             * `snap`. */
+            hmi_snapshot_t snap = {
                 .mode            = usb_mode_get(),
                 .confirm_pending = pending,
                 .armed_at_ms     = wait_armed_at,
@@ -188,6 +201,7 @@ static void hmi_task(void *arg)
                 .event           = event,
                 .event_at_ms     = event_started_at,
             };
+            memcpy(snap.label, label, sizeof(snap.label));
             xSemaphoreTake(s_snap_lock, portMAX_DELAY);
             s_snapshot = snap;
             xSemaphoreGive(s_snap_lock);

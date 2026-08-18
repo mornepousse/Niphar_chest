@@ -451,8 +451,27 @@ static void render_frame(const hmi_snapshot_t *snap, uint32_t now)
     case SCREEN_WAIT: {
         draw_band(0, v.title);
 
+        /* L'etiquette (compte OATH, ou "N COMPTES" pour un RESET) se dessine
+         * SOUS le libelle d'operation quand elle n'est pas vide — c'est elle
+         * qui dit CE que l'appui va nommer, pas seulement QUEL type de geste.
+         * Vide pour toute operation qui n'en porte pas (tout ce qui n'est
+         * pas OATH aujourd'hui) : aucun changement visuel pour ces
+         * ecrans-la. */
+        const bool has_label = snap->label[0] != '\0';
+
         if (screen_op_has_deadline(snap->op)) {
-            draw_text_2x_centered(20 + shift, screen_op_short(snap->op), true);
+            /* Libelle remonte de 20 a 12 SEULEMENT quand une etiquette suit :
+             * a 20+shift(max 4)+14 = 38 de plus bas, elle chevaucherait la
+             * barre (y=42). A 12+shift, le pire cas (shift=4) descend a 30 ;
+             * l'etiquette a y=32 (fixe, sans decalage) laisse 2 px de marge
+             * au-dessus et 3 px sous elle (32+7=39) avant la barre. Aucune
+             * operation existante ne porte d'etiquette : ce chemin ne change
+             * rien pour SIGN/DECRYPT/AUTH/OTP. */
+            const int op_y = has_label ? (12 + (int)shift) : (20 + (int)shift);
+            draw_text_2x_centered(op_y, screen_op_short(snap->op), true);
+            if (has_label) {
+                draw_text_centered(32, snap->label, true);
+            }
 
             const uint16_t pm = screen_bar_permille(snap->armed_at_ms, now);
             draw_bar(4, 42, (int)BOARD_OLED_WIDTH - 8, 8, pm);
@@ -476,6 +495,14 @@ static void render_frame(const hmi_snapshot_t *snap, uint32_t now)
             const uint16_t avail = screen_span(BOARD_OLED_HEIGHT, SCREEN_BAND_H);
             const uint16_t y0    = SCREEN_BAND_H + screen_center_x(avail, SCREEN_BIG_CHAR_H);
             draw_text_2x_centered((int)y0 + shift, screen_op_short(snap->op), true);
+            /* Personne n'arme une operation FIDO (seule famille sans
+             * echeance) avec une etiquette aujourd'hui — mais si ce chemin
+             * en recevait une demain, elle ne doit pas se perdre : meme
+             * espace, largement disponible sous le libelle ici (54 px de
+             * marge verticale au total contre 8 dans l'autre branche). */
+            if (has_label) {
+                draw_text_centered((int)y0 + SCREEN_BIG_CHAR_H + (int)shift + 2, snap->label, true);
+            }
         }
         break;
     }

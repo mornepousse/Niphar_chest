@@ -15,6 +15,7 @@ set(srcs
     "usb/msc_lba.c"
     "console/console.c"
     "security/sec_confirm.c"
+    "security/oath_name.c"
     "security/sec_store.c"
     "security/apdu.c"
     "security/ctaphid.c"

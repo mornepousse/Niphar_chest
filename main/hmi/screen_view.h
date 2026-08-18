@@ -41,6 +41,10 @@ static inline const char *screen_op_label(sec_op_t op)
     case SEC_OP_OTP:     return "Cle OTP";
     case SEC_OP_FIDO_REGISTER: return "Creation de cle FIDO";
     case SEC_OP_FIDO_AUTH:     return "Authentification FIDO";
+    case SEC_OP_OATH_CODE:     return "Code OTP";
+    case SEC_OP_OATH_DELETE:   return "Effacer";
+    case SEC_OP_OATH_REPLACE:  return "Remplacer";
+    case SEC_OP_OATH_RESET:    return "Tout effacer";
     /* Une origine inconnue se dit, elle ne s'habille pas du libelle d'une
      * operation connue : mieux vaut « operation inconnue » qu'un mensonge
      * plausible. */

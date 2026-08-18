@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include <string.h>
 #include "sec_confirm.h"
 
 static void test_arm_authorize_consume(void)
@@ -301,6 +302,55 @@ static void test_press_window_survives_millisecond_wraparound(void)
                    "appui anterieur, a cheval sur le repassage : refuse");
 }
 
+/* L'ecran doit nommer le COMPTE demande, pas seulement le type d'operation :
+ * sans quoi l'appui n'est qu'un interrupteur de presence, pas un accord sur
+ * CE compte-la. L'etiquette suit l'armement et disparait au desarmement :
+ * une etiquette survivante ferait nommer un compte que plus rien n'attend.
+ * Compare les deux etats ENTRE EUX plutot que chacun a une constante. */
+static void test_etiquette_suit_l_armement(void)
+{
+    sec_confirm_reset();
+    TEST_ASSERT(sec_confirm_label()[0] == '\0', "au repos, pas d'etiquette");
+    sec_confirm_arm_named(1, SEC_OP_OATH_CODE, "GITHUB", 1000);
+    TEST_ASSERT(strcmp(sec_confirm_label(), "GITHUB") == 0, "armee : l'etiquette est la");
+    sec_confirm_reset();
+    TEST_ASSERT(sec_confirm_label()[0] == '\0', "desarmee : l'etiquette est partie");
+}
+
+/* Jamais NULL : screen.c la passe a draw_text_2x_centered()/draw_text_centered()
+ * sans garde. */
+static void test_etiquette_jamais_nulle(void)
+{
+    sec_confirm_reset();
+    sec_confirm_arm_named(1, SEC_OP_OATH_CODE, NULL, 1000);
+    TEST_ASSERT(sec_confirm_label() != NULL, "NULL en entree ne ressort pas en NULL");
+    TEST_ASSERT(sec_confirm_label()[0] == '\0', "il ressort une chaine vide");
+}
+
+/* sec_confirm_arm() reste le raccourci d'une etiquette vide : les appelants
+ * qui n'ont rien a nommer (SIGN, DECRYPT, AUTH, OTP, FIDO) ne doivent rien
+ * changer a leur appel pour continuer a fonctionner. */
+static void test_arm_sans_nom_laisse_l_etiquette_vide(void)
+{
+    sec_confirm_reset();
+    sec_confirm_arm(1, SEC_OP_SIGN, 1000);
+    TEST_ASSERT(sec_confirm_label()[0] == '\0', "arm() classique : rien a afficher sous le libelle");
+}
+
+/* Les quatre operations OATH sont des codes DISTINCTS : refuser et effacer ne
+ * se refusent pas pour les memes raisons, un libelle unique pour les quatre
+ * annulerait l'interet du geste. */
+static void test_les_quatre_operations_oath_sont_distinctes(void)
+{
+    const sec_op_t ops[] = { SEC_OP_OATH_CODE, SEC_OP_OATH_DELETE,
+                             SEC_OP_OATH_REPLACE, SEC_OP_OATH_RESET };
+    for (unsigned i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
+        for (unsigned j = i + 1; j < sizeof(ops) / sizeof(ops[0]); j++) {
+            TEST_ASSERT(ops[i] != ops[j], "deux operations OATH ne partagent pas un code");
+        }
+    }
+}
+
 void test_sec_confirm(void)
 {
     TEST_SUITE("sec_confirm state machine");
@@ -324,4 +374,8 @@ void test_sec_confirm(void)
     TEST_RUN(test_rearm_replaces_the_op);
     TEST_RUN(test_poll_clears_the_op_on_consume_or_timeout);
     TEST_RUN(test_peek_labeled_tolerates_null_out_op);
+    TEST_RUN(test_etiquette_suit_l_armement);
+    TEST_RUN(test_etiquette_jamais_nulle);
+    TEST_RUN(test_arm_sans_nom_laisse_l_etiquette_vide);
+    TEST_RUN(test_les_quatre_operations_oath_sont_distinctes);
 }

@@ -349,7 +349,9 @@ static void test_op_short_fits_the_double_height_font(void)
 {
     const sec_op_t ops[] = { SEC_OP_UNKNOWN, SEC_OP_SIGN, SEC_OP_DECRYPT,
                              SEC_OP_AUTH, SEC_OP_OTP,
-                             SEC_OP_FIDO_REGISTER, SEC_OP_FIDO_AUTH };
+                             SEC_OP_FIDO_REGISTER, SEC_OP_FIDO_AUTH,
+                             SEC_OP_OATH_CODE, SEC_OP_OATH_DELETE,
+                             SEC_OP_OATH_REPLACE, SEC_OP_OATH_RESET };
     for (unsigned i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
         const char *s = screen_op_short(ops[i]);
         TEST_ASSERT(s != NULL, "aucun libelle court n'est nul");
@@ -365,39 +367,32 @@ static void test_op_short_fits_the_double_height_font(void)
 
 static void test_op_short_maps_each_operation(void)
 {
-    /* Comparaisons deux a deux, jamais une valeur contre elle-meme : c'est le
+    /*
+     * Comparaisons deux a deux, jamais une valeur contre elle-meme : c'est le
      * defaut recurrent de ce projet — un test qui croit couvrir cinq cas alors
-     * qu'il n'en compare qu'un a lui-meme. Sept valeurs -> vingt et une
-     * paires (7*6/2), toutes ecrites ici. */
-    const char *unk   = screen_op_short(SEC_OP_UNKNOWN);
-    const char *sign  = screen_op_short(SEC_OP_SIGN);
-    const char *dec   = screen_op_short(SEC_OP_DECRYPT);
-    const char *auth  = screen_op_short(SEC_OP_AUTH);
-    const char *otp   = screen_op_short(SEC_OP_OTP);
-    const char *freg  = screen_op_short(SEC_OP_FIDO_REGISTER);
-    const char *fauth = screen_op_short(SEC_OP_FIDO_AUTH);
-
-    TEST_ASSERT(strcmp(unk, sign) != 0,   "l'inconnu ne se dit pas comme signer");
-    TEST_ASSERT(strcmp(unk, dec) != 0,    "l'inconnu ne se dit pas comme dechiffrer");
-    TEST_ASSERT(strcmp(unk, auth) != 0,   "l'inconnu ne se dit pas comme authentifier");
-    TEST_ASSERT(strcmp(unk, otp) != 0,    "l'inconnu ne se dit pas comme OTP");
-    TEST_ASSERT(strcmp(unk, freg) != 0,   "l'inconnu ne se dit pas comme creer une cle FIDO");
-    TEST_ASSERT(strcmp(unk, fauth) != 0,  "l'inconnu ne se dit pas comme authentifier FIDO");
-    TEST_ASSERT(strcmp(sign, dec) != 0,   "signer et dechiffrer se distinguent");
-    TEST_ASSERT(strcmp(sign, auth) != 0,  "signer et authentifier se distinguent");
-    TEST_ASSERT(strcmp(sign, otp) != 0,   "signer et OTP se distinguent");
-    TEST_ASSERT(strcmp(sign, freg) != 0,  "signer et creer une cle FIDO se distinguent");
-    TEST_ASSERT(strcmp(sign, fauth) != 0, "signer et authentifier FIDO se distinguent");
-    TEST_ASSERT(strcmp(dec, auth) != 0,   "dechiffrer et authentifier se distinguent");
-    TEST_ASSERT(strcmp(dec, otp) != 0,    "dechiffrer et OTP se distinguent");
-    TEST_ASSERT(strcmp(dec, freg) != 0,   "dechiffrer et creer une cle FIDO se distinguent");
-    TEST_ASSERT(strcmp(dec, fauth) != 0,  "dechiffrer et authentifier FIDO se distinguent");
-    TEST_ASSERT(strcmp(auth, otp) != 0,   "authentifier et OTP se distinguent");
-    TEST_ASSERT(strcmp(auth, freg) != 0,  "authentifier et creer une cle FIDO se distinguent");
-    TEST_ASSERT(strcmp(auth, fauth) != 0, "authentifier et authentifier FIDO se distinguent");
-    TEST_ASSERT(strcmp(otp, freg) != 0,   "OTP et creer une cle FIDO se distinguent");
-    TEST_ASSERT(strcmp(otp, fauth) != 0,  "OTP et authentifier FIDO se distinguent");
-    TEST_ASSERT(strcmp(freg, fauth) != 0, "creer une cle FIDO et authentifier FIDO se distinguent");
+     * qu'il n'en compare qu'un a lui-meme.
+     *
+     * Onze valeurs depuis l'arrivee des quatre operations OATH (tache 5) :
+     * cinquante-cinq paires (11*10/2). Les ecrire a la main, une par une comme
+     * avant l'ajout d'OATH, ne passait deja plus a l'echelle a sept — a onze,
+     * c'est le tableau et la double boucle qui portent la garantie « toute
+     * paire differe », pas une liste figee qu'il faudrait ETENDRE a chaque
+     * nouvelle operation sans jamais avoir la certitude de n'en avoir oublie
+     * aucune.
+     */
+    const sec_op_t ops[] = {
+        SEC_OP_UNKNOWN, SEC_OP_SIGN, SEC_OP_DECRYPT, SEC_OP_AUTH, SEC_OP_OTP,
+        SEC_OP_FIDO_REGISTER, SEC_OP_FIDO_AUTH,
+        SEC_OP_OATH_CODE, SEC_OP_OATH_DELETE, SEC_OP_OATH_REPLACE, SEC_OP_OATH_RESET,
+    };
+    const unsigned n = sizeof(ops) / sizeof(ops[0]);
+    for (unsigned i = 0; i < n; i++) {
+        const char *a = screen_op_short(ops[i]);
+        for (unsigned j = i + 1; j < n; j++) {
+            const char *b = screen_op_short(ops[j]);
+            TEST_ASSERT(strcmp(a, b) != 0, "deux operations ne partagent pas un libelle court");
+        }
+    }
 }
 
 /*
@@ -435,8 +430,18 @@ static void test_op_short_out_of_range_says_unknown(void)
  */
 static void test_op_has_deadline_distinguishes_fido_from_the_rest(void)
 {
+    /*
+     * Les quatre operations OATH (tache 5) rejoignent le cote "a echeance" :
+     * comme OpenPGP/OTP, ykman envoie une commande et attend une reponse
+     * unique — 0x6985 exactement a SEC_CONFIRM_TIMEOUT_MS, jamais de relance.
+     * Les oublier ici laisserait passer une future erreur d'enum (par
+     * exemple une valeur OATH glissee par erreur du cote FIDO) sans qu'aucun
+     * test ne la voie : c'est tout l'interet de la comparaison croisee.
+     */
     const sec_op_t with_deadline[] = { SEC_OP_UNKNOWN, SEC_OP_SIGN, SEC_OP_DECRYPT,
-                                        SEC_OP_AUTH, SEC_OP_OTP };
+                                        SEC_OP_AUTH, SEC_OP_OTP,
+                                        SEC_OP_OATH_CODE, SEC_OP_OATH_DELETE,
+                                        SEC_OP_OATH_REPLACE, SEC_OP_OATH_RESET };
     const sec_op_t no_deadline[]   = { SEC_OP_FIDO_REGISTER, SEC_OP_FIDO_AUTH };
 
     for (unsigned i = 0; i < sizeof(with_deadline) / sizeof(with_deadline[0]); i++) {
