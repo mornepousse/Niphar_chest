@@ -81,6 +81,33 @@ static void test_entrees_degenerees(void)
     TEST_ASSERT(out[0] == '\0', "issuer vide -> chaine vide");
 }
 
+/* Bords de out_sz : la fonction promet toujours une chaine terminee, y
+ * compris pour un tampon trop petit pour montrer quoi que ce soit d'utile.
+ * Avec un nom assez long pour tronquer, out_sz=1 et out_sz=2 ne laissent pas
+ * la place d'un caractere, du marqueur ET du terminateur — elle doit alors se
+ * limiter a la chaine vide, jamais deborder au-dela de out_sz. Un debordement
+ * qui ne se voit pas est un debordement qu'on croit absent : on verifie donc
+ * qu'aucun octet au-dela de out_sz n'est touche, pas seulement le contenu. */
+static void test_out_sz_borne(void)
+{
+    const char *n = "ServiceExtremementLong";   /* assez long pour tronquer */
+    for (uint8_t sz = 1; sz <= 3; sz++) {
+        char tampon[8];
+        memset(tampon, 0xAA, sizeof(tampon));
+        oath_name_display(n, (uint16_t)strlen(n), tampon, sz);
+
+        for (uint8_t k = sz; k < sizeof(tampon); k++) {
+            TEST_ASSERT((unsigned char)tampon[k] == 0xAA,
+                        "rien n'est ecrit au-dela de out_sz");
+        }
+        bool termine = false;
+        for (uint8_t k = 0; k < sz; k++) {
+            if (tampon[k] == '\0') { termine = true; break; }
+        }
+        TEST_ASSERT(termine, "la chaine se termine dans les bornes de out_sz");
+    }
+}
+
 void test_oath_name(void)
 {
     TEST_SUITE("oath_name");
@@ -89,4 +116,5 @@ void test_oath_name(void)
     TEST_RUN(test_caractere_indessinable_visible);
     TEST_RUN(test_troncature_marquee);
     TEST_RUN(test_entrees_degenerees);
+    TEST_RUN(test_out_sz_borne);
 }

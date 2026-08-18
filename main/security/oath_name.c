@@ -21,6 +21,12 @@ void oath_name_display(const char *raw, uint16_t raw_len, char *out, uint8_t out
 {
     if (out == NULL || out_sz == 0) return;
     out[0] = '\0';
+    /* Sous OATH_NAME_OUT_SZ_MIN, il n'y a la place ni d'un caractere utile,
+     * ni du marqueur, ni du terminateur ensemble : sans cette garde,
+     * `visibles = out_sz - 2` et `prefixe = visibles - 1` bouclent (uint8_t)
+     * et la branche de troncature ecrit bien au-dela de out_sz. La chaine
+     * vide est la seule sortie qu'on puisse garantir sans deborder. */
+    if (out_sz < OATH_NAME_OUT_SZ_MIN) return;
     if (raw == NULL || raw_len == 0) return;
 
     /* Prefixe de periode : « 30/GitHub:mae ». Retire s'il est present ET suivi
@@ -74,8 +80,13 @@ void oath_name_display(const char *raw, uint16_t raw_len, char *out, uint8_t out
      * identiques hors ce seul octet — meme prefixe assaini, meme queue —
      * produiraient la meme sortie. Sur les octets BRUTS, avant assainissement :
      * c'est ce qui distingue « \x01 » de « \x02 », que imprimable() confond. */
+    /* Base 31, pas 33 : pgcd(33,36)=3 annule structurellement toute paire
+     * d'octets dont la difference est un multiple de 3 (une classe entiere,
+     * pas un hasard de collision) une fois reduit modulo 36. pgcd(31,36)=1 —
+     * chaque poids 31^k mod 36 est inversible, donc une difference d'un seul
+     * octet ne peut plus s'annuler a elle seule. */
     uint32_t empreinte = 0;
-    for (uint16_t k = debut; k < fin; k++) empreinte = empreinte * 33u + (unsigned char)raw[k];
+    for (uint16_t k = debut; k < fin; k++) empreinte = empreinte * 31u + (unsigned char)raw[k];
     uint8_t idx = (uint8_t)(empreinte % 36u);
     out[n++] = (char)(idx < 10 ? ('0' + idx) : ('A' + (idx - 10)));
     out[n++] = '?';   /* marqueur : il reste du nom non montre */

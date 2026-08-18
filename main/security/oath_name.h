@@ -11,6 +11,12 @@
  * 128 px), un marqueur de troncature, un terminateur. */
 #define OATH_NAME_DISPLAY_MAX 12
 
+/* Taille minimale de `out_sz` en dessous de laquelle `oath_name_display` ne
+ * garantit que la chaine vide : il faut au moins un caractere utile, le
+ * marqueur de troncature et le terminateur pour qu'une troncature ait un sens
+ * sans deborder. Voir la garde en tete de la fonction. */
+#define OATH_NAME_OUT_SZ_MIN 3
+
 /*
  * Ecrit dans `out` une version affichable de `raw` :
  *   1. l'issuer seul — « 30/GitHub:mae@x.org » -> « GITHUB » — parce que c'est
@@ -18,9 +24,20 @@
  *      reste inutile ;
  *   2. tout caractere non imprimable devient « ? », JAMAIS un blanc : un nom
  *      bricole doit se voir plutot que se deguiser en nom propre ;
- *   3. troncature a dix caracteres avec un marqueur visible, sans quoi deux
- *      comptes divergeant au-dela du dixieme caractere seraient indiscernables.
+ *   3. troncature a dix caracteres avec un marqueur visible, complete par une
+ *      empreinte du nom entier en dernier caractere visible plutot qu'un
+ *      dixieme caractere litteral de plus — sans quoi deux comptes divergeant
+ *      au-dela du dixieme caractere, ou confondus par l'assainissement du
+ *      point 2, seraient indiscernables.
  *
- * `out` est toujours une chaine terminee, meme si `raw` est NULL ou vide.
+ * `out` est toujours une chaine terminee, meme si `raw` est NULL ou vide, ou
+ * si `out_sz` est sous OATH_NAME_OUT_SZ_MIN (auquel cas `out` recoit la
+ * chaine vide : pas assez de place pour autre chose sans deborder).
+ *
+ * CE QUE L'EMPREINTE N'EST PAS : une protection contre un hote malveillant.
+ * L'algorithme est public et deterministe — un hote qui choisit le nom peut,
+ * en au plus 36 essais, faire coincider prefixe assaini ET empreinte avec un
+ * compte legitime qu'il vise. Elle protege de la confusion ACCIDENTELLE entre
+ * deux noms proches, pas d'une usurpation deliberee.
  */
 void oath_name_display(const char *raw, uint16_t raw_len, char *out, uint8_t out_sz);
