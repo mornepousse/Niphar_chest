@@ -36,6 +36,10 @@ void oath_name_display(const char *raw, uint16_t raw_len, char *out, uint8_t out
 
     const uint8_t visibles = (uint8_t)(out_sz - 2);   /* place le marqueur et le \0 */
     const uint16_t reste = (uint16_t)(fin - i);
+    const uint16_t debut = i;   /* debut de l'issuer, avant que la boucle de
+                                  * troncature ne fasse avancer i : l'empreinte
+                                  * doit porter sur l'issuer ENTIER (voir plus
+                                  * bas), pas seulement sur sa queue masquee. */
 
     if (reste <= visibles) {
         /* Tient en entier : pas de marqueur, chaque caractere visible. */
@@ -52,17 +56,26 @@ void oath_name_display(const char *raw, uint16_t raw_len, char *out, uint8_t out
      * deux issuers qui ne divergent qu'au-dela — un environnement suffixe en
      * chiffre (« ServiceProd1 » / « ServiceProd2 »), ou n'importe quel nom
      * dont les dix premiers caracteres coincident. Le dernier caractere
-     * visible porte donc une empreinte de la partie masquee au lieu d'etre
-     * un simple caractere de plus : deux noms qui ne different qu'apres le
-     * dixieme caractere restent distinguables a l'ecran. */
+     * visible porte donc une empreinte de l'issuer entier au lieu d'etre un
+     * simple caractere de plus : deux noms qui ne different qu'apres le
+     * dixieme caractere, OU qui ne different que par un octet confondu avec
+     * un autre lors de l'assainissement du prefixe visible (voir plus bas),
+     * restent distinguables a l'ecran. */
     const uint8_t prefixe = (uint8_t)(visibles - 1);
     uint8_t n = 0;
     for (; n < prefixe; i++, n++) {
         unsigned char c = (unsigned char)raw[i];
         out[n] = imprimable(c) ? majuscule((char)c) : '?';
     }
+    /* L'empreinte porte sur l'issuer ENTIER (depuis `debut`), pas seulement
+     * sur la queue masquee a partir d'ici : deux octets de controle distincts
+     * (« \x01 » vs « \x02 ») retombent tous deux sur '?' dans le prefixe
+     * visible, et si l'empreinte ignorait la partie deja affichee, deux noms
+     * identiques hors ce seul octet — meme prefixe assaini, meme queue —
+     * produiraient la meme sortie. Sur les octets BRUTS, avant assainissement :
+     * c'est ce qui distingue « \x01 » de « \x02 », que imprimable() confond. */
     uint32_t empreinte = 0;
-    for (uint16_t k = i; k < fin; k++) empreinte = empreinte * 33u + (unsigned char)raw[k];
+    for (uint16_t k = debut; k < fin; k++) empreinte = empreinte * 33u + (unsigned char)raw[k];
     uint8_t idx = (uint8_t)(empreinte % 36u);
     out[n++] = (char)(idx < 10 ? ('0' + idx) : ('A' + (idx - 10)));
     out[n++] = '?';   /* marqueur : il reste du nom non montre */

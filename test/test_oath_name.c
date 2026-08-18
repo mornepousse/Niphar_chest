@@ -27,6 +27,11 @@ static void test_noms_distincts_restent_distincts(void)
         { "GitHub:mae",        "GitHub mae"  },   /* ponctuation vs espace */
         { "Banque",            "Ban\x01que"  },   /* caractere de controle */
         { "MonServiceTresLong1", "MonServiceTresLong2" }, /* divergence tardive */
+        /* Meme prefixe visible APRES assainissement (deux octets de controle
+         * distincts retombent tous deux sur « ? »), meme queue masquee : si
+         * l'empreinte ne portait que sur la queue, ces deux noms rendraient
+         * la meme chaine — c'est exactement le trou que corrige la ronde 1. */
+        { "Ban\x01que" "XXXXXXXXXXXX", "Ban\x02que" "XXXXXXXXXXXX" },
     };
     for (unsigned i = 0; i < sizeof(paires) / sizeof(paires[0]); i++) {
         char a[OATH_NAME_DISPLAY_MAX], b[OATH_NAME_DISPLAY_MAX];
