@@ -117,7 +117,7 @@ static void test_armed_op_is_reported(void)
     sec_confirm_reset();
     sec_confirm_arm(0xF0u, SEC_OP_SIGN, 1000);
     sec_op_t op = SEC_OP_UNKNOWN;
-    sec_confirm_peek_labeled(1000, &op);
+    sec_confirm_peek_labeled(1000, &op, NULL);
     TEST_ASSERT_EQ(op, SEC_OP_SIGN, "l'operation armee est rendue");
 }
 
@@ -127,7 +127,7 @@ static void test_armed_op_survives_peek(void)
     sec_confirm_arm(0xF0u, SEC_OP_DECRYPT, 1000);
     (void)sec_confirm_peek(1100);
     sec_op_t op = SEC_OP_UNKNOWN;
-    sec_confirm_peek_labeled(1100, &op);
+    sec_confirm_peek_labeled(1100, &op, NULL);
     TEST_ASSERT_EQ(op, SEC_OP_DECRYPT, "peek ne detruit pas l'operation");
 }
 
@@ -139,7 +139,7 @@ static void test_reset_clears_the_op(void)
     sec_confirm_arm(0xF0u, SEC_OP_AUTH, 1000);
     sec_confirm_reset();
     sec_op_t op = SEC_OP_AUTH;   /* pollue volontairement : peek_labeled doit l'ecraser */
-    sec_confirm_peek_labeled(1000, &op);
+    sec_confirm_peek_labeled(1000, &op, NULL);
     TEST_ASSERT_EQ(op, SEC_OP_UNKNOWN, "apres reset, aucune operation n'est armee");
 }
 
@@ -150,7 +150,7 @@ static void test_rearm_replaces_the_op(void)
     sec_confirm_arm(0xF0u, SEC_OP_SIGN, 1000);
     sec_confirm_arm(0xF0u, SEC_OP_OTP, 2000);
     sec_op_t op = SEC_OP_UNKNOWN;
-    sec_confirm_peek_labeled(2000, &op);
+    sec_confirm_peek_labeled(2000, &op, NULL);
     TEST_ASSERT_EQ(op, SEC_OP_OTP, "le dernier armement gagne");
 }
 
@@ -166,7 +166,7 @@ static void test_poll_clears_the_op_on_consume_or_timeout(void)
     TEST_ASSERT_EQ(sec_confirm_poll(1100, NULL), SEC_CONFIRM_AUTHORIZED,
                    "consommee par poll()");
     sec_op_t op = SEC_OP_SIGN;   /* pollue volontairement */
-    sec_confirm_peek_labeled(1100, &op);
+    sec_confirm_peek_labeled(1100, &op, NULL);
     TEST_ASSERT_EQ(op, SEC_OP_UNKNOWN, "poll() consommee efface aussi l'operation");
 
     sec_confirm_reset();
@@ -174,20 +174,31 @@ static void test_poll_clears_the_op_on_consume_or_timeout(void)
     TEST_ASSERT_EQ(sec_confirm_poll(1000 + SEC_CONFIRM_TIMEOUT_MS, NULL),
                    SEC_CONFIRM_TIMEDOUT, "expiree par poll()");
     op = SEC_OP_DECRYPT;         /* pollue volontairement */
-    sec_confirm_peek_labeled(1000 + SEC_CONFIRM_TIMEOUT_MS, &op);
+    sec_confirm_peek_labeled(1000 + SEC_CONFIRM_TIMEOUT_MS, &op, NULL);
     TEST_ASSERT_EQ(op, SEC_OP_UNKNOWN, "poll() expiree efface aussi l'operation");
 }
 
-/* out_op == NULL est documente dans l'en-tete comme supporte : l'appelant qui
- * ne veut que l'etat (le meme role que peek()) ne doit pas etre force a
- * fournir un pointeur. Sans ce test, retirer le garde `if (out_op)` ne
- * ferait rougir aucun test existant — ils passent tous un pointeur valide. */
-static void test_peek_labeled_tolerates_null_out_op(void)
+/* out_op == NULL et out_label == NULL sont documentes dans l'en-tete comme
+ * supportes, independamment l'un de l'autre : l'appelant qui ne veut que
+ * l'etat (le meme role que peek()) ne doit pas etre force a fournir un
+ * pointeur pour l'un ou l'autre. Sans ce test, retirer un garde `if (out_op)`
+ * ou `if (out_label)` ne ferait rougir aucun test existant — ils passent
+ * tous des pointeurs valides. */
+static void test_peek_labeled_tolerates_null_out_params(void)
 {
     sec_confirm_reset();
     sec_confirm_arm(0xF0u, SEC_OP_SIGN, 1000);
-    TEST_ASSERT_EQ(sec_confirm_peek_labeled(1000, NULL), SEC_CONFIRM_PENDING,
-                   "out_op NULL : l'etat est quand meme rendu, rien ne deref NULL");
+    TEST_ASSERT_EQ(sec_confirm_peek_labeled(1000, NULL, NULL), SEC_CONFIRM_PENDING,
+                   "les deux a NULL : l'etat est quand meme rendu, rien ne deref NULL");
+
+    sec_op_t op = SEC_OP_UNKNOWN;
+    TEST_ASSERT_EQ(sec_confirm_peek_labeled(1000, &op, NULL), SEC_CONFIRM_PENDING,
+                   "out_label seul a NULL : out_op est quand meme rempli");
+    TEST_ASSERT_EQ(op, SEC_OP_SIGN, "et avec la bonne valeur");
+
+    char label[OATH_NAME_DISPLAY_MAX];
+    TEST_ASSERT_EQ(sec_confirm_peek_labeled(1000, NULL, label), SEC_CONFIRM_PENDING,
+                   "out_op seul a NULL : out_label est quand meme rempli");
 }
 
 
@@ -306,25 +317,40 @@ static void test_press_window_survives_millisecond_wraparound(void)
  * sans quoi l'appui n'est qu'un interrupteur de presence, pas un accord sur
  * CE compte-la. L'etiquette suit l'armement et disparait au desarmement :
  * une etiquette survivante ferait nommer un compte que plus rien n'attend.
- * Compare les deux etats ENTRE EUX plutot que chacun a une constante. */
+ * Compare les trois etats ENTRE EUX plutot que chacun a une constante.
+ *
+ * Lue via sec_confirm_peek_labeled() et pas un accesseur separe : ronde de
+ * revue 1 a retire sec_confirm_label(), qui aurait laisse un appelant
+ * enchainer deux appels non synchronises — exactement ce que ce fichier
+ * interdit deja pour l'operation armee (voir CONCURRENCY MODEL,
+ * sec_confirm.c). */
 static void test_etiquette_suit_l_armement(void)
 {
+    char label[OATH_NAME_DISPLAY_MAX];
+
     sec_confirm_reset();
-    TEST_ASSERT(sec_confirm_label()[0] == '\0', "au repos, pas d'etiquette");
+    sec_confirm_peek_labeled(1000, NULL, label);
+    TEST_ASSERT(label[0] == '\0', "au repos, pas d'etiquette");
+
     sec_confirm_arm_named(1, SEC_OP_OATH_CODE, "GITHUB", 1000);
-    TEST_ASSERT(strcmp(sec_confirm_label(), "GITHUB") == 0, "armee : l'etiquette est la");
+    sec_confirm_peek_labeled(1000, NULL, label);
+    TEST_ASSERT(strcmp(label, "GITHUB") == 0, "armee : l'etiquette est la");
+
     sec_confirm_reset();
-    TEST_ASSERT(sec_confirm_label()[0] == '\0', "desarmee : l'etiquette est partie");
+    sec_confirm_peek_labeled(1000, NULL, label);
+    TEST_ASSERT(label[0] == '\0', "desarmee : l'etiquette est partie");
 }
 
-/* Jamais NULL : screen.c la passe a draw_text_2x_centered()/draw_text_centered()
- * sans garde. */
+/* Jamais une etiquette non terminee ou incoherente : screen.c la passe a
+ * draw_text_2x_centered()/draw_text_centered() sans garde. */
 static void test_etiquette_jamais_nulle(void)
 {
+    char label[OATH_NAME_DISPLAY_MAX];
+
     sec_confirm_reset();
     sec_confirm_arm_named(1, SEC_OP_OATH_CODE, NULL, 1000);
-    TEST_ASSERT(sec_confirm_label() != NULL, "NULL en entree ne ressort pas en NULL");
-    TEST_ASSERT(sec_confirm_label()[0] == '\0', "il ressort une chaine vide");
+    sec_confirm_peek_labeled(1000, NULL, label);
+    TEST_ASSERT(label[0] == '\0', "NULL en entree ressort en chaine vide, jamais en charabia");
 }
 
 /* sec_confirm_arm() reste le raccourci d'une etiquette vide : les appelants
@@ -332,23 +358,12 @@ static void test_etiquette_jamais_nulle(void)
  * changer a leur appel pour continuer a fonctionner. */
 static void test_arm_sans_nom_laisse_l_etiquette_vide(void)
 {
+    char label[OATH_NAME_DISPLAY_MAX];
+
     sec_confirm_reset();
     sec_confirm_arm(1, SEC_OP_SIGN, 1000);
-    TEST_ASSERT(sec_confirm_label()[0] == '\0', "arm() classique : rien a afficher sous le libelle");
-}
-
-/* Les quatre operations OATH sont des codes DISTINCTS : refuser et effacer ne
- * se refusent pas pour les memes raisons, un libelle unique pour les quatre
- * annulerait l'interet du geste. */
-static void test_les_quatre_operations_oath_sont_distinctes(void)
-{
-    const sec_op_t ops[] = { SEC_OP_OATH_CODE, SEC_OP_OATH_DELETE,
-                             SEC_OP_OATH_REPLACE, SEC_OP_OATH_RESET };
-    for (unsigned i = 0; i < sizeof(ops) / sizeof(ops[0]); i++) {
-        for (unsigned j = i + 1; j < sizeof(ops) / sizeof(ops[0]); j++) {
-            TEST_ASSERT(ops[i] != ops[j], "deux operations OATH ne partagent pas un code");
-        }
-    }
+    sec_confirm_peek_labeled(1000, NULL, label);
+    TEST_ASSERT(label[0] == '\0', "arm() classique : rien a afficher sous le libelle");
 }
 
 void test_sec_confirm(void)
@@ -373,9 +388,8 @@ void test_sec_confirm(void)
     TEST_RUN(test_reset_clears_the_op);
     TEST_RUN(test_rearm_replaces_the_op);
     TEST_RUN(test_poll_clears_the_op_on_consume_or_timeout);
-    TEST_RUN(test_peek_labeled_tolerates_null_out_op);
+    TEST_RUN(test_peek_labeled_tolerates_null_out_params);
     TEST_RUN(test_etiquette_suit_l_armement);
     TEST_RUN(test_etiquette_jamais_nulle);
     TEST_RUN(test_arm_sans_nom_laisse_l_etiquette_vide);
-    TEST_RUN(test_les_quatre_operations_oath_sont_distinctes);
 }

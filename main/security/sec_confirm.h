@@ -3,6 +3,11 @@
 #pragma once
 #include <stdint.h>
 
+/* Frere sans prefixe : main/security/ est a plat sur l'include path (voir
+ * main/CMakeLists.txt, INCLUDE_DIRS). Seul OATH_NAME_DISPLAY_MAX sert ici —
+ * la capacite que sec_confirm_peek_labeled() exige de `out_label`. */
+#include "oath_name.h"
+
 #define SEC_CONFIRM_TIMEOUT_MS 15000u
 
 typedef enum {
@@ -58,8 +63,8 @@ void sec_confirm_arm(uint8_t slot, sec_op_t op, uint32_t now_ms);
  * l'appelant, ex. « 12 COMPTES ») que l'appui va nommer sur l'ecran.
  *
  * `label` est assaini et tronque par oath_name_display() (security/
- * oath_name.h) avant d'etre range : jamais recopie tel quel, jamais NULL en
- * sortie de sec_confirm_label() meme si `label` est NULL ici.
+ * oath_name.h) avant d'etre range : jamais recopie tel quel, et jamais NULL
+ * en sortie de sec_confirm_peek_labeled() meme si `label` est NULL ici.
  */
 void sec_confirm_arm_named(uint8_t slot, sec_op_t op, const char *label, uint32_t now_ms);
 /* Physical confirm key pressed: PENDING -> AUTHORIZED; no-op otherwise. */
@@ -72,29 +77,32 @@ sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot);
  * `now_ms` sert a signaler une echeance deja depassee sans la consommer — la
  * LED doit pouvoir montrer le refus. */
 sec_confirm_state_t sec_confirm_peek(uint32_t now_ms);
-/* Lit l'etat ET l'operation armee en un seul appel, sans rien consommer.
- *
- * Un seul accesseur, et pas deux, parce que deux lectures separees peuvent
- * etre coupees par un reset()+arm() : l'appelant verrait alors l'etat d'une
- * operation avec le libelle d'une autre, et l'utilisateur confirmerait en
- * croyant autoriser ce qui est affiche. C'est precisement ce que l'ecran
- * existe pour empecher.
- *
- * `out_op` peut etre NULL si l'appelant ne veut que l'etat.
- */
-sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op);
 /*
- * Etiquette de l'operation armee (ou vide, jamais NULL). Lecture seule, hors
- * verrou — meme modele que peek()/peek_labeled(), voir CONCURRENCY MODEL en
- * tete de sec_confirm.c : le pire residuel est une chaine dechiree pendant un
- * arm_named() concurrent, un glitch d'affichage qui s'auto-corrige au tick
- * suivant, jamais un octroi. Ce que sec_confirm_label() N'EST PAS : un
- * troisieme champ synchronise avec (etat, operation). L'appelant qui veut les
- * trois DOIT appeler sec_confirm_peek_labeled() puis sec_confirm_label() dans
- * la foulee, sans rien executer entre les deux — c'est ce qui garde la
- * fenetre de course a la meme echelle (quelques cycles CPU) que celle deja
- * tolerable entre s_op et s_state a l'interieur de peek_labeled() elle-meme,
- * plutot que de rouvrir la fenetre arbitraire que peek_labeled() a ete creee
- * pour fermer. Voir hmi/hmi.c pour le seul appelant reel.
+ * Lit l'etat, l'operation ET l'etiquette armes en UN SEUL APPEL, sans rien
+ * consommer.
+ *
+ * Trois champs et pas deux, et un seul accesseur pour les trois — jamais
+ * peek()/peek_labeled() suivi d'une lecture separee de l'etiquette. La
+ * raison n'est pas seulement que deux lectures separees PEUVENT etre
+ * coupees par un reset()+arm() : c'est que rien ne borne la fenetre entre
+ * deux appels distincts au site d'appel. Un chargement de s_state et un
+ * chargement de s_op DANS LE MEME CORPS DE FONCTION ne laissent place qu'a
+ * une interruption pour s'y glisser — une fenetre etroite, mesuree en
+ * cycles CPU, documentee et acceptee dans sec_confirm.c. Deux APPELS
+ * separes au site d'appel laissent place a n'importe quelle ligne qu'une
+ * edition future y inserera, sans qu'aucun test ne le voie : hmi.c (le seul
+ * appelant) est derriere #if BOARD_CONFIRM_SOURCE, depend de FreeRTOS et du
+ * GPIO, et n'entre jamais dans le harnais hote. Une fenetre fermee par la
+ * LOCALITE du code est prouvee ; une fenetre fermee par « appeler la suite
+ * immediatement, rien entre les deux » n'est tenue que par une discipline
+ * d'ecriture — ce fichier a mis quatre corrections successives a etablir
+ * cette distinction (voir CONCURRENCY MODEL, tete de sec_confirm.c), elle
+ * ne se rouvre pas ici pour l'etiquette.
+ *
+ * `out_op` peut etre NULL si l'appelant ne veut que l'etat (role de peek()).
+ * `out_label`, s'il n'est pas NULL, doit pointer vers au moins
+ * OATH_NAME_DISPLAY_MAX octets ecrits en une seule fois ; toujours une
+ * chaine terminee, jamais NULL, y compris quand aucune etiquette n'est
+ * armee.
  */
-const char *sec_confirm_label(void);
+sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op, char *out_label);

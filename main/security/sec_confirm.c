@@ -219,6 +219,17 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
  *     attacker can force from outside (they do not control ESP-IDF's tick
  *     scheduling). Revisit only if this residual is ever shown to be
  *     steerable, not just theoretically present.
+ *     ETENDU (Tache 5, ronde de revue 1) : s_label (l'etiquette de compte
+ *     OATH) a rejoint s_op dans CE meme corps de fonction, lu juste a cote,
+ *     pour la raison EXACTE ci-dessus — un accesseur sec_confirm_label()
+ *     separe avait d'abord ete ecrit, puis retire en revue : un appelant qui
+ *     enchainerait peek_labeled() puis cet accesseur separe au site d'appel
+ *     rouvrirait la fenetre non bornee que ce bullet existe pour fermer,
+ *     tenue seulement par la discipline « rien entre les deux appels », que
+ *     rien ne verifie sur un fichier qui n'entre jamais dans le harnais hote
+ *     (hmi.c, seul appelant, est derriere #if BOARD_CONFIRM_SOURCE). Le
+ *     residu sur s_label est de meme nature que celui sur s_op ci-dessus :
+ *     transitoire, auto-corrige au tick suivant, jamais un octroi errone.
  *   - sec_confirm_reset() writes the same four fields, in the same order, as
  *     arm() (s_state, then s_slot, then s_op, then s_armed_ms — see above).
  *     CE QUI SUIT ETAIT FAUX (corrige a la revue finale de branche du plan
@@ -410,24 +421,22 @@ sec_confirm_state_t sec_confirm_peek(uint32_t now_ms)
     return s_state;
 }
 
-sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op)
+sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op, char *out_label)
 {
-    /* s_op est lu EN PREMIER, avant le calcul d'echeance de peek() : voir le
-     * paragraphe CONCURRENCY MODEL, bullet sec_confirm_peek_labeled(), pour
-     * pourquoi cet ordre (et pas l'inverse) borne la fenetre de course sans
-     * la fermer. */
+    /* s_op et s_label sont lus EN PREMIER, cote a cote, avant le calcul
+     * d'echeance de peek() : voir le paragraphe CONCURRENCY MODEL, bullet
+     * sec_confirm_peek_labeled(), pour pourquoi cet ordre (et pas l'inverse)
+     * borne la fenetre de course sans la fermer. L'etiquette rejoint s_op
+     * dans CE meme corps de fonction — et pas un accesseur separe que
+     * l'appelant enchainerait a la main — precisement pour que la fenetre
+     * entre les deux lectures reste bornee par la localite du code (une
+     * interruption peut s'y glisser, rien d'autre) plutot que par une
+     * discipline d'appel que rien ne verifie. */
     if (out_op) *out_op = s_op;
+    if (out_label) memcpy(out_label, s_label, sizeof(s_label));
     if (s_state == SEC_CONFIRM_PENDING &&
         (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS) {
         return SEC_CONFIRM_TIMEDOUT;
     }
     return s_state;
-}
-
-const char *sec_confirm_label(void)
-{
-    /* Hors verrou, comme peek()/peek_labeled() : voir le commentaire de tete
-     * dans sec_confirm.h pour le residuel tolere et pour la regle d'appel
-     * (juste apres peek_labeled(), rien entre les deux). */
-    return s_label;
 }

@@ -143,22 +143,17 @@ static void hmi_task(void *arg)
         }
 
         /* peek_labeled() et jamais poll(), et jamais peek() ici : consommer
-         * volerait la permission a la tache qui attend de signer, et deux
-         * appels separes (etat puis operation) rouvriraient la fenetre de
-         * course qu'un seul appel ferme — voir le modele de concurrence en
-         * tete de security/sec_confirm.c, bullet peek_labeled(). `op` sert a
-         * la fois a rien ici (la LED ne porte pas de libelle) et a
-         * l'instantane publie plus bas pour hmi/screen.c — un seul appel pour
-         * les deux usages, jamais deux lectures. */
+         * volerait la permission a la tache qui attend de signer, et des
+         * appels separes (etat, operation, etiquette) rouvriraient la
+         * fenetre de course qu'un seul appel ferme — voir le modele de
+         * concurrence en tete de security/sec_confirm.c, bullet
+         * peek_labeled(). `op` et `label` ne servent a rien ici (la LED ne
+         * porte pas de libelle) mais a l'instantane publie plus bas pour
+         * hmi/screen.c — un seul appel pour les trois usages (etat, op,
+         * etiquette), jamais des lectures separees. */
         sec_op_t op = SEC_OP_UNKNOWN;
-        const sec_confirm_state_t st = sec_confirm_peek_labeled(t, &op);
-        /* Appelee IMMEDIATEMENT apres peek_labeled(), rien entre les deux :
-         * c'est ce qui garde la fenetre de course sur l'etiquette a la meme
-         * echelle (quelques cycles CPU, pas un appel arbitrairement plus
-         * tard) que celle deja toleree par peek_labeled() elle-meme entre
-         * s_op et s_state — voir sec_confirm_label() dans sec_confirm.h. */
-        char label[OATH_NAME_DISPLAY_MAX];
-        memcpy(label, sec_confirm_label(), sizeof(label));
+        char     label[OATH_NAME_DISPLAY_MAX];
+        const sec_confirm_state_t st = sec_confirm_peek_labeled(t, &op, label);
         const bool pending = (st == SEC_CONFIRM_PENDING);
 
         /* Sur la TRANSITION vers l'attente : c'est l'instant que
