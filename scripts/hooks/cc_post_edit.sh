@@ -7,7 +7,7 @@ cd "$REPO" || exit 1
 command -v python3 >/dev/null 2>&1 || { echo "tripwire: python3 absent, hook PostToolUse inactif" >&2; exit 0; }
 FP="$(python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("tool_input",{}).get("file_path",""))' 2>/dev/null)"
 case "$FP" in
-  *"main/"*|*"scripts/"*|*"CMakeLists.txt"*|*"sdkconfig.defaults"*|*"partitions.csv"*) ;;
+  *"main/"*|*"scripts/"*|*"test/"*|*"CMakeLists.txt"*|*"sdkconfig.defaults"*|*"partitions.csv"*) ;;
   *) exit 0 ;;  # fichier non surveillé → rien
 esac
 # Debounce : pas de re-check si le dernier date de moins de TRIPWIRE_DEBOUNCE s (défaut 10).
@@ -21,16 +21,20 @@ fi
 OUT="$("$REPO/scripts/check.sh" --fast --changed "$FP" 2>&1)"
 rc=$?
 if [ "$rc" -ne 0 ]; then
-  echo "Régression phase rapide après édition de $FP :" >&2
-  echo "$OUT" | tail -8 >&2
-  exit 2   # remonte à Claude
+  # Avis, pas blocage. La norme TDD impose d'écrire l'assertion rouge AVANT
+  # l'implémentation : bloquer ici ferait sonner l'alarme à chaque pas correct,
+  # et une alarme qui sonne toujours finit ignorée. Le rouge qui arrête est
+  # celui du hook Stop et du pre-push.
+  python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":sys.argv[1]}}, ensure_ascii=False))' \
+    "tripwire: phase rapide ROUGE après édition de $FP — détail: $GITDIR/tripwire/last-fail.log. À corriger avant de conclure : le hook Stop bloquera."
+  exit 0
 fi
 # Garde anti-affaiblissement : perte nette d'assertions vs HEAD dans un test ?
 case "$FP" in
-  *"/__jamais__/"*)
+  *"/test/"*)
     REL="${FP#"$REPO"/}"
-    NOLD="$(git show "HEAD:$REL" 2>/dev/null | grep -cE 'TEST_ASSERT|assert')"
-    NNEW="$(grep -cE 'TEST_ASSERT|assert' "$FP" 2>/dev/null)"
+    NOLD="$(git show "HEAD:$REL" 2>/dev/null | grep -cE 'TEST_ASSERT')"
+    NNEW="$(grep -cE 'TEST_ASSERT' "$FP" 2>/dev/null)"
     if git cat-file -e "HEAD:$REL" 2>/dev/null && [ "$NOLD" -gt "$NNEW" ] 2>/dev/null; then
       python3 -c 'import json,sys; print(json.dumps({"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":sys.argv[1]}}, ensure_ascii=False))' \
         "tripwire: $((NOLD-NNEW)) assertion(s) en moins dans $REL vs HEAD — refactor légitime ou affaiblissement ? Rétablir ou justifier."

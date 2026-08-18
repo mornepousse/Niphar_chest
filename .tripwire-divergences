@@ -1,3 +1,5 @@
 scripts/fast.sh	BOARD_CONSOLE_ACTIONS	garde-fou 4 : l'axe surveille le pouvoir de la console, plus la presence du lien
 main/board_common.h	BOARD_HAS_SD	le brochage reste inconditionnel, seuls le sondage au demarrage et les commandes console dependent de cet axe
 main/security/sec_confirm.c	sec_confirm_arm(uint8_t slot, sec_op_t op, uint32_t now_ms)	diverge de KeSp_firmware par un parametre : l'ecran doit nommer l'operation armee, pas seulement son slot — divergence assumee (Tache 1, ecran OLED)
+scripts/check.sh	FAST_RUN_CMD="./scripts/fast.sh"	mode maison : check.sh est un fichier template que /tripwire:init reecrit, donc les garde-fous materiels vivent dans scripts/fast.sh — cette ligne est le point d accroche
+scripts/check.sh	( ./scripts/full.sh )	mode maison : le build des trois cartes vit dans scripts/full.sh, pas dans la boucle ALL_VARIANTS du template (vide ici) — un re-scaffold standard le remplacerait en silence

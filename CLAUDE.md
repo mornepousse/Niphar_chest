@@ -133,9 +133,16 @@ Source unique de vérité : `scripts/check.sh`.
 `pre-push` lance le check complet et bloque le push si rouge. WIP : `git push --no-verify`.
 
 **Hooks Claude Code** (`.claude/settings.json`, automatiques) :
-- `PostToolUse` sur édition d'un fichier surveillé → `check.sh --fast`.
-- `Stop` → `check.sh --fast` (garde-fou avant de conclure). Le rebuild complet
-  n'est PAS relancé à chaque fin de tour : il reste garanti au pre-push git.
+- `PostToolUse` sur édition d'un fichier surveillé → `check.sh --fast`, en
+  **avis non bloquant**. Il signale le rouge sans interrompre : la norme TDD
+  impose d'écrire l'assertion rouge AVANT l'implémentation, et bloquer là ferait
+  sonner l'alarme à chaque pas correct. Un avis n'est pas à ignorer pour autant.
+  Les chemins surveillés incluent `test/` : éditer un test déclenche la phase
+  rapide et la garde anti-affaiblissement (perte nette de `TEST_ASSERT` vs HEAD).
+- `Stop` → `check.sh --fast` et il **bloque** : on ne conclut pas un tour sur du
+  rouge. Le rebuild complet n'est PAS relancé à chaque fin de tour : il reste
+  garanti au pre-push git.
+- `pre-push` → check complet, **bloquant**.
 
 **Divergences déclarées** : `.tripwire-divergences` (committé) liste les écarts
 assumés au scaffold standard — mode maison, dégradation d'environnement, alias
