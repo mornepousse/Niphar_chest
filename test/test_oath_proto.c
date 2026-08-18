@@ -641,6 +641,40 @@ static void slot_totp(uint8_t idx, const char *nom)
                 "slot TOTP provisionne");
 }
 
+/* Meme chose, avec un secret reconnaissable : c'est ce qui permet de dire
+ * QUEL compte a bouge, et pas seulement combien il en reste. */
+static void slot_totp_secret(uint8_t idx, const char *nom, uint8_t remplissage)
+{
+    uint8_t key[20];
+    memset(key, remplissage, sizeof(key));
+    TEST_ASSERT(sec_store_set_slot(idx, OATH_ALGO_TOTP_SHA1, nom, key, sizeof(key)),
+                "slot TOTP provisionne");
+}
+
+/* Le slot porte-t-il toujours ce nom et ce secret ? */
+static bool slot_intact(uint8_t idx, const char *nom, uint8_t remplissage)
+{
+    const char *lab = sec_store_label(idx);
+    if (lab == NULL || strcmp(lab, nom) != 0) return false;
+    uint8_t sec[SEC_SECRET_MAX]; uint8_t sl = 0;
+    if (!sec_store_get_secret(idx, sec, &sl)) return false;
+    if (sl != 20) return false;
+    for (unsigned i = 0; i < 20; i++) if (sec[i] != remplissage) return false;
+    return true;
+}
+
+/* Fabrique le corps d'un PUT : nom, puis 0x73 = [type][chiffres][secret]. */
+static uint8_t put_body(uint8_t *d, const char *nom, uint8_t nom_len,
+                        uint8_t digits, uint8_t remplissage, uint8_t secret_len)
+{
+    uint8_t clef[2 + SEC_SECRET_MAX];
+    clef[0] = OATH_ALGO_TOTP_SHA1;
+    clef[1] = digits;
+    memset(&clef[2], remplissage, secret_len);
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, nom, nom_len);
+    return tlv_at(d, l, OATH_TAG_KEY, clef, (uint8_t)(2 + secret_len));
+}
+
 /*
  * C1 — le magasin est PARTAGE avec le mode OTP : otp_hid.c mappe les slots 0
  * et 1 sur les secrets CR-HMAC de KeePassXC. Un slot CR-HMAC doit etre
@@ -748,6 +782,10 @@ static void test_delete_et_reset_exigent_l_appui(void)
     TEST_ASSERT(sw_is(out, n, 0x69, 0x85), "6985 : appui refuse");
     TEST_ASSERT_EQ(sec_store_count(), 2, "un refus n'efface rien");
     TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "la demande est retiree");
+    /* Invariant : rien en attente, donc rien a afficher. Un compte residuel
+     * ferait annoncer « EFFACER 12 COMPTES » alors qu'aucune demande ne
+     * court. */
+    TEST_ASSERT_EQ(ctx.touch_count, 0, "aucun compte annonce sans demande en cours");
 
     /* Et une confirmation qui ne suit aucune demande n'efface rien non plus. */
     n = oath_touch_commit(&ctx, true, out, sizeof(out));
@@ -759,6 +797,7 @@ static void test_delete_et_reset_exigent_l_appui(void)
     n = oath_touch_commit(&ctx, true, out, sizeof(out));
     TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : supprime apres appui");
     TEST_ASSERT_EQ(sec_store_count(), 1, "il reste un compte");
+    TEST_ASSERT_EQ(ctx.touch_count, 0, "plus rien a annoncer une fois l'effacement fait");
 
     /* Un nom inconnu se refuse AVANT l'appui : faire clignoter la clef pour
      * un compte inexistant apprendrait a confirmer sans regarder. */
@@ -884,6 +923,62 @@ static void test_pending_purge_par_chaque_mutation(void)
     n = oath_cmd(&ctx, 0x05, 0x00, 0x00, d, l, out, sizeof(out));
     TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "RENAME accepte");
     TEST_ASSERT_EQ(ctx.pending_len, 0, "le differe est purge par RENAME");
+
+    /* --- REPLACE confirme --- */
+    sec_store_init();
+    for (uint8_t i = 0; i < 12; i++) {
+        char nom[40];
+        snprintf(nom, sizeof(nom), "ServiceNumero%02u:compte@exemple.org", (unsigned)i);
+        slot_totp(i, nom);
+    }
+    oath_select_ok(&ctx);
+    n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(ctx.pending_len > 0, "un reste est en attente");
+    l = put_body(d, "ServiceNumero05:compte@exemple.org", 34, 6, 0xEE, 20);
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "REPLACE demande l'appui");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "remplace");
+    TEST_ASSERT_EQ(ctx.pending_len, 0, "le differe est purge par le remplacement");
+    n = oath_cmd(&ctx, 0xA5, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82),
+                "SEND REMAINING ne sert plus l'etat d'avant le remplacement");
+
+    /* --- RESET confirme --- */
+    sec_store_init();
+    for (uint8_t i = 0; i < 12; i++) {
+        char nom[40];
+        snprintf(nom, sizeof(nom), "ServiceNumero%02u:compte@exemple.org", (unsigned)i);
+        slot_totp(i, nom);
+    }
+    oath_select_ok(&ctx);
+    n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(ctx.pending_len > 0, "un reste est en attente");
+    n = oath_cmd(&ctx, 0x04, 0xDE, 0xAD, NULL, 0, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "RESET demande l'appui");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "remis a neuf");
+    TEST_ASSERT_EQ(ctx.pending_len, 0, "le differe est purge par RESET");
+    n = oath_cmd(&ctx, 0xA5, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82),
+                "SEND REMAINING ne sert plus les comptes effaces");
+
+    /* --- SELECT --- */
+    sec_store_init();
+    for (uint8_t i = 0; i < 12; i++) {
+        char nom[40];
+        snprintf(nom, sizeof(nom), "ServiceNumero%02u:compte@exemple.org", (unsigned)i);
+        slot_totp(i, nom);
+    }
+    oath_select_ok(&ctx);
+    n = oath_cmd(&ctx, 0xA1, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(ctx.pending_len > 0, "un reste est en attente");
+    n = oath_cmd(&ctx, 0xA4, 0x04, 0x00, k_aid, sizeof(k_aid), out, sizeof(out));
+    TEST_ASSERT(n > 2, "re-selection");
+    TEST_ASSERT_EQ(ctx.pending_len, 0, "le differe est purge par SELECT");
+    n = oath_cmd(&ctx, 0xA5, 0x00, 0x00, NULL, 0, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82),
+                "une re-selection ne laisse pas reprendre la reponse d'avant");
 }
 
 /*
@@ -1151,17 +1246,6 @@ static void test_rename_refuse_un_doublon(void)
     TEST_ASSERT(strcmp(sec_store_label(1), "C:d") == 0, "le second compte est intact");
 }
 
-/* Fabrique le corps d'un PUT : nom, puis 0x73 = [type][chiffres][secret]. */
-static uint8_t put_body(uint8_t *d, const char *nom, uint8_t nom_len,
-                        uint8_t digits, uint8_t remplissage, uint8_t secret_len)
-{
-    uint8_t clef[2 + SEC_SECRET_MAX];
-    clef[0] = OATH_ALGO_TOTP_SHA1;
-    clef[1] = digits;
-    memset(&clef[2], remplissage, secret_len);
-    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, nom, nom_len);
-    return tlv_at(d, l, OATH_TAG_KEY, clef, (uint8_t)(2 + secret_len));
-}
 
 /*
  * Creer un compte ne detruit rien : douze appuis a la migration depuis Proton
@@ -1242,6 +1326,7 @@ static void test_put_qui_ecrase_exige_l_appui(void)
     /* Le secret refuse ne doit pas trainer en RAM : il attendait une
      * confirmation qui n'est pas venue. */
     TEST_ASSERT_EQ(ctx.touch_put_secret_len, 0, "longueur du secret en attente remise a zero");
+    TEST_ASSERT_EQ(ctx.touch_count, 0, "aucun compte annonce apres le refus");
     {
         bool reste = false;
         for (unsigned i = 0; i < SEC_SECRET_MAX; i++)
@@ -1269,7 +1354,10 @@ static void test_put_qui_ecrase_exige_l_appui(void)
         TEST_ASSERT_EQ(sec[i], 0xBB, "octet du nouveau secret");
     TEST_ASSERT_EQ(sec_store_digits(0), 8, "les nouveaux chiffres ont pris");
     TEST_ASSERT(strcmp(sec_store_label(0), "A:b") == 0, "l'etiquette est conservee");
-    TEST_ASSERT_EQ(ctx.pending_len, 0, "le differe est purge par le remplacement");
+    /* La purge du differe n'est PAS verifiable ici : un seul compte tient dans
+     * une tranche, donc pending_len vaut 0 avant comme apres et l'assertion
+     * serait creuse. Elle est couverte, LIST emis a l'appui, dans
+     * test_pending_purge_par_chaque_mutation. */
 }
 
 /*
@@ -1316,6 +1404,162 @@ static void test_le_contexte_annonce_combien_de_comptes(void)
     TEST_ASSERT_EQ(ctx.touch_count, 1, "un seul compte concerne");
 }
 
+/*
+ * LE defaut que tout le mecanisme d'appui existe pour empecher : l'ecran
+ * affiche « EFFACER ServiceNumero05 », la proprietaire appuie, et c'est un
+ * autre compte qui disparait. Deux mutations passaient au vert —
+ * `sec_store_clear_slot(0)` et `sec_store_set_slot(0, ...)` a la place de
+ * `ctx->touch_slot`.
+ *
+ * On vise donc un slot != 0 et on verifie que le VOISIN survit intact, secret
+ * compris : compter les comptes restants ne dirait pas lequel est parti.
+ */
+static void test_l_appui_confirme_agit_sur_le_bon_compte(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    for (uint8_t i = 0; i < 5; i++) {
+        char nom[16];
+        snprintf(nom, sizeof(nom), "S%02u:c", (unsigned)i);
+        slot_totp_secret(i, nom, (uint8_t)(0x10 + i));
+    }
+    oath_select_ok(&ctx);
+    uint8_t d[96], out[32];
+
+    /* --- DELETE confirme sur le slot 3 --- */
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "S03:c", 5);
+    uint16_t n = oath_cmd(&ctx, 0x02, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "DELETE demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_slot, 3, "le slot vise est le 3");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : supprime");
+
+    TEST_ASSERT_EQ(sec_store_type(3), SEC_SLOT_EMPTY, "c'est bien le slot 3 qui part");
+    TEST_ASSERT(slot_intact(0, "S00:c", 0x10), "le slot 0 est intact, secret compris");
+    TEST_ASSERT(slot_intact(1, "S01:c", 0x11), "le slot 1 est intact, secret compris");
+    TEST_ASSERT(slot_intact(2, "S02:c", 0x12), "le slot 2 est intact, secret compris");
+    TEST_ASSERT(slot_intact(4, "S04:c", 0x14), "le slot 4 est intact, secret compris");
+
+    /* --- REPLACE confirme sur le slot 2 --- */
+    l = put_body(d, "S02:c", 5, 8, 0xEE, 24);
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "REPLACE demande l'appui");
+    TEST_ASSERT_EQ(ctx.touch_slot, 2, "le slot vise est le 2");
+    n = oath_touch_commit(&ctx, true, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : remplace");
+
+    uint8_t sec[SEC_SECRET_MAX]; uint8_t sl = 0;
+    TEST_ASSERT(sec_store_get_secret(2, sec, &sl), "secret du slot 2 relisible");
+    TEST_ASSERT_EQ(sl, 24, "c'est le slot 2 qui a recu le nouveau secret");
+    TEST_ASSERT_EQ(sec[0], 0xEE, "nouveau secret au slot 2");
+    TEST_ASSERT(slot_intact(0, "S00:c", 0x10),
+                "le slot 0 n'a PAS ete ecrase par le remplacement");
+    TEST_ASSERT(slot_intact(1, "S01:c", 0x11), "le slot 1 est intact");
+    TEST_ASSERT(slot_intact(4, "S04:c", 0x14), "le slot 4 est intact");
+}
+
+/*
+ * oath_do_put a sa PROPRE boucle de recherche de slot libre — elle ne passe
+ * pas par oath_find_slot. Un slot libre est un slot VIDE, jamais « un slot qui
+ * n'est pas a nous » : confondre les deux ferait ecrire le compte OATH par
+ * dessus le secret CR-HMAC de KeePassXC.
+ */
+static void test_put_ne_prend_pas_le_slot_du_mode_otp(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    uint8_t crh[20];
+    memset(crh, 0x5A, sizeof(crh));
+    TEST_ASSERT(sec_store_set_slot(0, SEC_SLOT_HMAC_SHA1, "keepassxc", crh, sizeof(crh)),
+                "slot CR-HMAC en slot 0");
+    oath_select_ok(&ctx);
+    uint8_t d[96], out[32];
+
+    uint8_t l = put_body(d, "Neuf:n", 6, 6, 0xCC, 20);
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : le compte est cree");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "creation, donc pas d'appui");
+
+    TEST_ASSERT_EQ(sec_store_type(0), SEC_SLOT_HMAC_SHA1,
+                   "le slot 0 est reste CR-HMAC");
+    uint8_t sec[SEC_SECRET_MAX]; uint8_t sl = 0;
+    TEST_ASSERT(sec_store_get_secret(0, sec, &sl) && sl == 20 && sec[0] == 0x5A,
+                "le secret KeePassXC est intact");
+    TEST_ASSERT(sec_store_label(1) != NULL && strcmp(sec_store_label(1), "Neuf:n") == 0,
+                "le compte OATH a pris le premier slot VIDE, le 1");
+}
+
+/*
+ * PUT et RENAME ne passent pas par oath_find_slot pour choisir ou ecrire : ils
+ * doivent donc verifier eux-memes qu'une etiquette n'est pas deja portee par
+ * un slot d'un AUTRE mode. Sans cela, deux entrees « keepassxc » coexistent
+ * dans le magasin — et c'est exactement le doublon que ce controle ferme.
+ */
+static void test_put_et_rename_ne_reprennent_pas_une_etiquette_du_mode_otp(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    uint8_t crh[20];
+    memset(crh, 0x5A, sizeof(crh));
+    TEST_ASSERT(sec_store_set_slot(0, SEC_SLOT_HMAC_SHA1, "keepassxc", crh, sizeof(crh)),
+                "slot CR-HMAC");
+    slot_totp_secret(1, "A:b", 0x11);
+    oath_select_ok(&ctx);
+    uint8_t d[96], out[32];
+
+    /* PUT « keepassxc » : ni remplacement du slot CR-HMAC, ni doublon. */
+    uint8_t l = put_body(d, "keepassxc", 9, 6, 0xCC, 20);
+    uint16_t n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : cette etiquette n'est pas libre");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "aucun appui arme");
+    TEST_ASSERT_EQ(sec_store_type(0), SEC_SLOT_HMAC_SHA1, "le slot CR-HMAC est intact");
+    uint8_t sec[SEC_SECRET_MAX]; uint8_t sl = 0;
+    TEST_ASSERT(sec_store_get_secret(0, sec, &sl) && sec[0] == 0x5A,
+                "le secret KeePassXC est intact");
+    TEST_ASSERT_EQ(sec_store_count(), 2, "aucun compte n'a ete ajoute");
+
+    /* RENAME « A:b » -> « keepassxc » : meme refus. */
+    l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+    l = tlv_at(d, l, OATH_TAG_NAME, "keepassxc", 9);
+    n = oath_cmd(&ctx, 0x05, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "6A80 : ce nom est deja porte");
+    TEST_ASSERT(slot_intact(1, "A:b", 0x11), "le compte OATH n'a pas ete renomme");
+    TEST_ASSERT(sec_store_label(0) != NULL && strcmp(sec_store_label(0), "keepassxc") == 0,
+                "une seule entree porte « keepassxc »");
+
+    /* Le controle porte sur l'etiquette ENTIERE : « keepass », strict prefixe
+     * d'une etiquette existante, reste un nom libre. Une comparaison par
+     * prefixe interdirait de creer des comptes parfaitement legitimes. */
+    l = put_body(d, "keepass", 7, 6, 0xCC, 20);
+    n = oath_cmd(&ctx, 0x01, 0x00, 0x00, d, l, out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "9000 : un prefixe est un autre nom");
+    TEST_ASSERT_EQ(sec_store_count(), 3, "le compte a bien ete cree");
+}
+
+/* Le contrat le dit, rien ne le verifiait : achever un CALCULATE n'est pas le
+ * travail de oath_touch_commit — il rend 0 et NE consomme PAS la demande. */
+static void test_touch_commit_rend_zero_sur_calculate(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    slot_totp(2, "A:b");
+    oath_select_ok(&ctx);
+    const uint8_t defi[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    uint8_t d[32], out[32];
+    uint8_t l = tlv_at(d, 0, OATH_TAG_NAME, "A:b", 3);
+    l = tlv_at(d, l, OATH_TAG_CHALLENGE, defi, 8);
+    uint16_t n = oath_cmd(&ctx, 0xA2, 0x00, 0x01, d, l, out, sizeof(out));
+    TEST_ASSERT_EQ(n, OATH_SW_NEEDS_TOUCH, "l'appui est demande");
+
+    memset(out, 0x5A, sizeof(out));
+    TEST_ASSERT_EQ(oath_touch_commit(&ctx, true, out, sizeof(out)), 0,
+                   "0 : le calcul reste a l'appelant, qui a le HMAC");
+    TEST_ASSERT(out[0] == 0x5A, "aucun mot d'etat ecrit");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_CALCULATE,
+                   "la demande n'est pas consommee : l'appelant en a besoin");
+    TEST_ASSERT_EQ(ctx.touch_slot, 2, "le slot vise reste disponible");
+}
+
 void test_oath_proto(void)
 {
     TEST_SUITE("oath_proto");
@@ -1357,4 +1601,8 @@ void test_oath_proto(void)
     TEST_RUN(test_put_qui_cree_ne_demande_pas_l_appui);
     TEST_RUN(test_put_qui_ecrase_exige_l_appui);
     TEST_RUN(test_le_contexte_annonce_combien_de_comptes);
+    TEST_RUN(test_l_appui_confirme_agit_sur_le_bon_compte);
+    TEST_RUN(test_put_ne_prend_pas_le_slot_du_mode_otp);
+    TEST_RUN(test_put_et_rename_ne_reprennent_pas_une_etiquette_du_mode_otp);
+    TEST_RUN(test_touch_commit_rend_zero_sur_calculate);
 }

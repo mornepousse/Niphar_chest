@@ -64,6 +64,9 @@ uint16_t oath_tlv_put(uint8_t *out, uint16_t cap, uint8_t tag,
 #define SW_NOT_SUPPORTED   0x6A81u
 #define SW_NOT_FOUND       0x6A82u
 #define SW_FULL            0x6A84u
+/* Persistance partielle : l'operation a deja pris effet mais n'a pas pu
+ * s'achever. 6A80 mentirait — la trame de l'hote etait bonne. */
+#define SW_MEMORY          0x6581u
 #define SW_CLA_UNSUPPORTED 0x6E00u
 #define SW_INS_UNKNOWN     0x6D00u
 
@@ -183,6 +186,27 @@ static uint8_t oath_find_slot(const uint8_t *name, uint16_t name_len)
         return SEC_N_SLOTS;
     for (uint8_t i = 0; i < SEC_N_SLOTS; i++) {
         if (!oath_slot_is_oath(i)) continue;
+        const char *lab = sec_store_label(i);
+        if (lab == NULL) continue;
+        if (strlen(lab) != name_len) continue;
+        if (memcmp(lab, name, name_len) == 0) return i;
+    }
+    return SEC_N_SLOTS;
+}
+
+/*
+ * Cherche une etiquette dans TOUT le magasin, sans filtrer sur le type.
+ * oath_find_slot ignore les slots CR-HMAC — c'est ce qu'il doit faire pour
+ * que l'applet ne les voie pas — mais les commandes qui ATTRIBUENT une
+ * etiquette (PUT, RENAME) ont besoin de savoir qu'elle est deja portee,
+ * fut-ce par un autre mode. Sans cela, deux entrees « keepassxc »
+ * coexisteraient dans le magasin.
+ */
+static uint8_t oath_label_taken(const uint8_t *name, uint16_t name_len)
+{
+    if (name == NULL || name_len == 0 || name_len >= SEC_LABEL_LEN)
+        return SEC_N_SLOTS;
+    for (uint8_t i = 0; i < SEC_N_SLOTS; i++) {
         const char *lab = sec_store_label(i);
         if (lab == NULL) continue;
         if (strlen(lab) != name_len) continue;
@@ -400,10 +424,23 @@ static uint16_t oath_do_put(const apdu_t *cmd, uint8_t *out, uint16_t cap,
          * l'appliquer : sec_store_set_slot commence par un memset du slot, et
          * lui passer un pointeur vers ce meme slot lirait une zone qu'il est
          * en train d'ecraser. */
-        memcpy(ctx->touch_put_label, label, sizeof(ctx->touch_put_label));
+        /* Seuls les octets ecrits sont recopies : `label` est un tampon de
+         * pile de 64 octets dont seuls strlen+1 sont renseignes, et en copier
+         * la totalite emporterait des residus de pile dans une structure a
+         * plus longue duree de vie. */
+        memcpy(ctx->touch_put_label, label, strlen(label) + 1u);
         return OATH_SW_NEEDS_TOUCH;
     }
 
+    /* L'etiquette peut etre portee par un slot d'un AUTRE mode, que
+     * oath_find_slot ne voit pas. La reprendre creerait un doublon dans le
+     * magasin — et l'ecraser detruirait un secret qui n'appartient pas a cet
+     * applet. */
+    if (oath_label_taken(name, name_len) < SEC_N_SLOTS)
+        return sw_only(out, cap, SW_WRONG_DATA);
+
+    /* Un slot libre est un slot VIDE. Surtout pas « un slot qui n'est pas a
+     * nous » : ce serait ecrire par dessus le secret CR-HMAC du mode OTP. */
     uint8_t slot = SEC_N_SLOTS;
     for (uint8_t i = 0; i < SEC_N_SLOTS; i++) {
         if (sec_store_type(i) == SEC_SLOT_EMPTY) { slot = i; break; }
@@ -413,8 +450,10 @@ static uint16_t oath_do_put(const apdu_t *cmd, uint8_t *out, uint16_t cap,
     if (!sec_store_set_slot(slot, type, label, &key[2], (uint8_t)secret_len))
         return sw_only(out, cap, SW_WRONG_DATA);
     oath_store_changed(ctx);
+    /* Le compte est deja persiste : un echec ici le laisse sans son nombre de
+     * chiffres. C'est une panne de stockage, pas une mauvaise trame. */
     if (!sec_store_set_digits(slot, digits))
-        return sw_only(out, cap, SW_WRONG_DATA);
+        return sw_only(out, cap, SW_MEMORY);
     return sw_only(out, cap, SW_OK);
 }
 
@@ -469,8 +508,10 @@ static uint16_t oath_do_rename(const apdu_t *cmd, uint8_t *out, uint16_t cap,
     if (slot >= SEC_N_SLOTS) return sw_only(out, cap, SW_NOT_FOUND);
 
     /* Un doublon d'etiquette rendrait le second slot inatteignable — donc
-     * indelebile, puisque toute commande de cet applet passe par le nom. */
-    const uint8_t occupe = oath_find_slot(neuf, neuf_len);
+     * indelebile, puisque toute commande de cet applet passe par le nom. La
+     * recherche porte sur TOUT le magasin : un nom deja pris par le mode OTP
+     * est pris, meme si cet applet ne voit pas le slot qui le porte. */
+    const uint8_t occupe = oath_label_taken(neuf, neuf_len);
     if (occupe < SEC_N_SLOTS && occupe != slot)
         return sw_only(out, cap, SW_WRONG_DATA);
 
@@ -488,10 +529,11 @@ static uint16_t oath_do_rename(const apdu_t *cmd, uint8_t *out, uint16_t cap,
     memset(secret, 0, sizeof(secret));
     oath_store_changed(ctx);
     if (!ok) return sw_only(out, cap, SW_WRONG_DATA);
-    /* Un echec de persistance ici laisserait le compte sans son nombre de
-     * chiffres : le dire vaut mieux que rendre 9000 sur un etat incomplet. */
+    /* Un echec de persistance ici laisserait le compte renomme mais sans son
+     * nombre de chiffres. 6A80 mentirait sur ce qui s'est passe : la trame de
+     * l'hote etait bonne, c'est le stockage qui a lache. */
     if ((digits == 6 || digits == 8) && !sec_store_set_digits(slot, digits))
-        return sw_only(out, cap, SW_WRONG_DATA);
+        return sw_only(out, cap, SW_MEMORY);
     return sw_only(out, cap, SW_OK);
 }
 
@@ -531,6 +573,11 @@ uint16_t oath_touch_commit(oath_ctx_t *ctx, bool granted, uint8_t *out, uint16_t
     uint8_t  put_len    = ctx->touch_put_secret_len;
     uint8_t  put_secret[SEC_SECRET_MAX];
     char     put_label[SEC_LABEL_LEN];
+    /* Le slot vise se copie AVANT le clear, comme le reste. Le lire apres
+     * exposerait tout ce chemin a une remise a zero de `touch_slot` ajoutee un
+     * jour dans oath_touch_clear — geste naturel vu le nom de la fonction, et
+     * qui redirigerait silencieusement chaque effacement vers le slot 0. */
+    const uint8_t cible = ctx->touch_slot;
     memcpy(put_secret, ctx->touch_put_secret, sizeof(put_secret));
     memcpy(put_label,  ctx->touch_put_label,  sizeof(put_label));
     oath_touch_clear(ctx);
@@ -543,17 +590,16 @@ uint16_t oath_touch_commit(oath_ctx_t *ctx, bool granted, uint8_t *out, uint16_t
     if (op == OATH_TOUCH_REPLACE) {
         /* Meme defense en profondeur que pour DELETE : le slot doit toujours
          * appartenir a cet applet. */
-        const bool ok_slot = ctx->touch_slot < SEC_N_SLOTS
-                             && oath_slot_is_oath(ctx->touch_slot);
+        const bool ok_slot = cible < SEC_N_SLOTS && oath_slot_is_oath(cible);
         const bool ok = ok_slot
-                        && sec_store_set_slot(ctx->touch_slot, put_type,
+                        && sec_store_set_slot(cible, put_type,
                                               put_label, put_secret, put_len);
         memset(put_secret, 0, sizeof(put_secret));
         if (!ok_slot) return sw_only(out, cap, SW_NOT_FOUND);
         if (!ok)      return sw_only(out, cap, SW_WRONG_DATA);
         oath_store_changed(ctx);
-        if (!sec_store_set_digits(ctx->touch_slot, put_digits))
-            return sw_only(out, cap, SW_WRONG_DATA);
+        if (!sec_store_set_digits(cible, put_digits))
+            return sw_only(out, cap, SW_MEMORY);
         return sw_only(out, cap, SW_OK);
     }
     memset(put_secret, 0, sizeof(put_secret));
@@ -561,10 +607,10 @@ uint16_t oath_touch_commit(oath_ctx_t *ctx, bool granted, uint8_t *out, uint16_t
     if (op == OATH_TOUCH_DELETE) {
         /* Le magasin a pu changer entre la demande et l'appui : on re-verifie
          * que le slot vise est toujours un compte de CET applet. */
-        if (ctx->touch_slot >= SEC_N_SLOTS || !oath_slot_is_oath(ctx->touch_slot))
+        if (cible >= SEC_N_SLOTS || !oath_slot_is_oath(cible))
             return sw_only(out, cap, SW_NOT_FOUND);
-        if (!sec_store_clear_slot(ctx->touch_slot))
-            return sw_only(out, cap, SW_WRONG_DATA);
+        if (!sec_store_clear_slot(cible))
+            return sw_only(out, cap, SW_MEMORY);
         oath_store_changed(ctx);
         return sw_only(out, cap, SW_OK);
     }
