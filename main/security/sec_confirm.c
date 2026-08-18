@@ -1,5 +1,21 @@
 #include "sec_confirm.h"
 
+#ifndef TEST_HOST
+/* Spinlock portMUX, sur le modele exact de security/fido_master.c
+ * (s_lock_init_spinlock) : une section critique tres courte (quelques
+ * ecritures de mots), jamais une attente bloquante. Gate pour TEST_HOST —
+ * voir le bullet sec_confirm_reset() plus bas pour pourquoi ce module en a
+ * enfin besoin, et security/sec_store.c pour le meme motif de garde
+ * #ifndef TEST_HOST sur un module par ailleurs pur. */
+#include "freertos/FreeRTOS.h"
+static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
+#define SEC_CONFIRM_LOCK()    portENTER_CRITICAL(&s_lock)
+#define SEC_CONFIRM_UNLOCK()  portEXIT_CRITICAL(&s_lock)
+#else
+#define SEC_CONFIRM_LOCK()    ((void)0)
+#define SEC_CONFIRM_UNLOCK()  ((void)0)
+#endif
+
 /* CONCURRENCY MODEL (Phase-2 pentest, 2026-06-11 ; relu et corrige a l'arrivee
  * de hmi_task, 2026-08-16 ; etendu a s_op, 2026-08-17 ; corrige deux fois en
  * revue le meme jour — d'abord parce que deux lectures separees de l'etat et
@@ -9,10 +25,29 @@
  * cooperatif alors qu'ESP-IDF ordonnance en preemptif, et sa conclusion
  * rangeait le residuel de s_op dans la meme classe "benigne" que celui de
  * s_armed_ms alors que les deux n'appartiennent pas a la meme categorie de
- * risque — les deux corrections sont dans ce meme bullet ; corrige une
- * troisieme fois a la revue finale de branche du plan FIDO2 (2026-08-18,
- * I5) parce que la premisse ci-dessous etait elle-meme fausse — see the
- * paragraph immediately below) — why no lock is needed.
+ * risque — les deux corrections sont dans ce meme bullet ; corrigee une
+ * TROISIEME fois a la revue finale de branche du plan FIDO2 (2026-08-18, I5)
+ * parce que le bullet sec_confirm_reset() plus bas affirmait que reset() ne
+ * tourne jamais que sur la meme tache que arm() — vrai avant le correctif I4
+ * de usb/usb_mode.c, faux depuis : la fonction de bascule de mode USB
+ * (usb/usb_mode.c, ligne ~160) appelle desormais sec_confirm_reset()
+ * directement, depuis hmi_task ou la tache REPL selon la carte, AVANT tout
+ * mode_*_stop() — donc PENDANT que ccid_worker (PGP) ou usb_task (OTP, FIDO)
+ * peuvent encore etre au milieu d'un arm()/poll(). Cette fois la fausse
+ * premisse ne pouvait pas se reparer
+ * par un argument plus fin comme les trois fois precedentes (peek() contre
+ * un seul ecrivain reste bornee, meme torn read) : reset() et arm()/poll()
+ * peuvent desormais s'executer EN MEME TEMPS, sur les deux coeurs HP du P4 —
+ * deux ECRIVAINS concurrents sur les quatre champs, une classe de course que
+ * rien plus bas ne couvrait (tout le raisonnement ci-dessous suppose au plus
+ * UN ecrivain actif a la fois). D'ou la QUATRIEME correction, cette fois pas
+ * seulement textuelle : le spinlock portMUX ci-dessus serialise desormais
+ * arm(), reset(), poll() et authorize() entre eux, fermant la course plutot
+ * que de continuer a plaider qu'elle est benigne. peek() et peek_labeled()
+ * restent volontairement HORS verrou — voir leurs bullets respectifs plus
+ * bas : ce sont des lecteurs face a UN SEUL ecrivain a la fois (le verrou
+ * garantit que les quatre champs changent desormais comme un groupe), leur
+ * analyse de torn read reste donc valide sans modification.
  * sec_confirm is a pure module (host-tested, no FreeRTOS). Entry points run
  * from at most THREE task contexts. The three security personalities
  * (OpenPGP CCID, OTP-HID, FIDO U2F) are NOT mutually exclusive AT BUILD —
@@ -87,14 +122,17 @@
  * about tearing. Cross-core placement only affects how fast one core's
  * write becomes visible to a reader on the other core — and that latency
  * window is exactly the transient staleness peek() already tolerates below.
- * The only race left is authorize() vs poll()'s timeout branch at the 15 s
- * boundary; its worst case is a real touch accepted at T+15.0s instead of
- * rejected (or vice-versa) — benign, since the user physically touched for
- * the armed slot (and the caller re-checks the slot). No touch can be
- * fabricated and no wrong slot can be granted. If a SECOND poll context is
- * ever added (two enabled personalities, or a concurrent admin path), wrap
- * the read-modify-write sections in a portMUX critical section (gated for
- * the host build).
+ * The only race left BETWEEN arm()/poll() of the single active personality
+ * and authorize() is the timeout branch at the 15 s boundary; its worst case
+ * is a real touch accepted at T+15.0s instead of rejected (or vice-versa) —
+ * benign, since the user physically touched for the armed slot (and the
+ * caller re-checks the slot). No touch can be fabricated and no wrong slot
+ * can be granted. Ce paragraphe ne couvre que arm()/poll() d'UNE SEULE
+ * personnalite active a la fois, serialises entre eux par l'exclusivite
+ * runtime ci-dessus — pas reset(), qui depuis I4 (voir l'entete CONCURRENCY
+ * MODEL) est un ECRIVAIN CONCURRENT distinct de ce raisonnement. C'est pour
+ * CETTE course-la, pas celle-ci, que le spinlock portMUX en tete de fichier
+ * a ete ajoute : voir le bullet sec_confirm_reset() plus bas.
  *   - peek() is READ-ONLY and adds no writer, but it reads TWO fields
  *     (s_state and s_armed_ms) from a third context — hmi_task, confirmed
  *     real as of main/hmi/hmi.c (this paragraph used to describe a task that
@@ -170,30 +208,58 @@
  *     steerable, not just theoretically present.
  *   - sec_confirm_reset() writes the same four fields, in the same order, as
  *     arm() (s_state, then s_slot, then s_op, then s_armed_ms — see above).
- *     It's safe for the same reason peek()-vs-arm() is bounded, plus one
- *     more fact specific to reset(): every caller of reset()
- *     (dongle_confirm() in ccid.c) runs on the same task as arm(), so
- *     reset() never races arm() itself; and because reset() writes IDLE
- *     first, peek()'s `s_state == PENDING` guard can never pair a
- *     freshly-written state with reset()'s s_armed_ms — a peek() torn
- *     mid-reset() observes either the old PENDING/armed_ms pair (reset()
- *     hasn't stored yet) or IDLE (reset()'s first store already landed, and
- *     IDLE fails the PENDING guard outright), never a PENDING read paired
- *     with a reset() timestamp. The same first-field-gates-visibility
- *     argument covers peek_labeled(): a display path that only shows the
- *     operation label while the returned state is PENDING/AUTHORIZED can
- *     never observe reset()'s stale s_op paired with a fresh IDLE — IDLE
- *     lands first and gates the label off before s_op is even cleared.
- *     poll() now clears s_op to SEC_OP_UNKNOWN on both its consuming
- *     branches (AUTHORIZED and TIMEDOUT), symmetric with reset(): a field
- *     that survives the consumption of the operation it describes is a
- *     question the next reader would have to re-derive the answer to, so
- *     the invariant "IDLE implies SEC_OP_UNKNOWN" now holds after every path
- *     that reaches IDLE, not just reset(). poll() and peek_labeled() never
- *     run concurrently with each other on this build (poll() is
- *     ccid_worker/usb_task only, peek_labeled() is hmi_task only), so this
- *     addition changes no race analysis above — it only makes a
- *     single-threaded invariant hold in more places. */
+ *     CE QUI SUIT ETAIT FAUX (corrige a la revue finale de branche du plan
+ *     FIDO2, 2026-08-18, I5) : une version precedente affirmait ici que
+ *     « every caller of reset() (dongle_confirm() in ccid.c) runs on the
+ *     same task as arm(), so reset() never races arm() itself ». C'etait
+ *     exact tant que dongle_confirm() etait le SEUL appelant. Depuis le
+ *     correctif I4 de usb/usb_mode.c, un second appelant existe : la
+ *     fonction de bascule de mode USB y appelle sec_confirm_reset()
+ *     directement, depuis hmi_task ou la tache REPL, AVANT tout mode_*_stop()
+ *     — donc PENDANT que la personnalite qu'on est en train de quitter peut
+ *     encore etre au milieu d'un arm()/poll() sur SA propre tache
+ *     (ccid_worker pour PGP, usb_task pour OTP et FIDO). Aucune de ces
+ *     taches n'est hmi_task ni la tache REPL : la premisse ne pouvait donc
+ *     plus etre vraie pour aucune des trois personnalites, pas seulement
+ *     OTP/FIDO comme un premier examen le suggerait — le fait que
+ *     dongle_confirm() se re-teste lui-meme contre un drapeau d'arret
+ *     (s_shutdown, voir ccid_shutdown()) borne la fenetre reelle pour PGP
+ *     mais ne change rien a la premisse ELLE-MEME, qui reste fausse.
+ *
+ *     Le raisonnement « premier champ pose la visibilite » qui suivait
+ *     (reset() ecrit IDLE en premier, donc un peek() dechire ne peut jamais
+ *     lire un s_state frais avec un s_armed_ms perime) supposait un seul
+ *     ecrivain actif a la fois entre reset() et arm(). Avec deux ecrivains
+ *     VRAIMENT concurrents (deux coeurs HP, aucune synchronisation), les
+ *     HUIT ecritures de reset() et arm() peuvent s'entrelacer champ par
+ *     champ dans n'importe quel ordre : le quadruplet final peut melanger,
+ *     par exemple, le s_state de arm() (PENDING) avec le s_armed_ms de
+ *     reset() (0) — poll()/authorize() y voient alors une operation perimee
+ *     depuis l'epoque Unix, donc refusee (fail-safe pour CE cas precis) —
+ *     mais l'entrelacement inverse existe aussi : s_state=PENDING (de arm(),
+ *     landed last) avec s_slot=0 (de reset(), landed last APRES le s_slot de
+ *     arm()). Si un appui physique REEL survient pendant cette fenetre,
+ *     authorize() accorde legitimement AUTHORIZED, et poll() rend le slot 0
+ *     — pas le slot que arm() avait reellement arme. Pour l'OTP, dont les
+ *     index de sec_store valent precisement 0 et 1 (otp_hid.c), ce n'est pas
+ *     un cas d'ecole : un octroi peut alors s'appliquer au MAUVAIS slot
+ *     HMAC. C'est une classe d'erreur differente de tout ce que ce fichier
+ *     tolerait jusqu'ici — pas un refus premature (fail-safe), mais un octroi
+ *     mal attribue sur un geste physique reel. D'ou le spinlock portMUX en
+ *     tete de fichier : arm(), reset(), poll() et authorize() s'executent
+ *     desormais chacun sous verrou, donc les quatre champs changent toujours
+ *     comme un groupe indivisible — plus aucun entrelacement champ par champ
+ *     n'est possible entre ecrivains. peek()/peek_labeled() restent hors
+ *     verrou : ce sont des lecteurs qui ne font face qu'a UN SEUL ecrivain a
+ *     la fois maintenant (le verrou a elimine le second), donc leur analyse
+ *     de torn read ci-dessus reste valide sans aucune modification.
+ *
+ *     poll() clears s_op to SEC_OP_UNKNOWN on both its consuming branches
+ *     (AUTHORIZED and TIMEDOUT), symmetric with reset(): a field that
+ *     survives the consumption of the operation it describes is a question
+ *     the next reader would have to re-derive the answer to, so the
+ *     invariant "IDLE implies SEC_OP_UNKNOWN" holds after every path that
+ *     reaches IDLE, not just reset(). */
 
 static sec_confirm_state_t s_state    = SEC_CONFIRM_IDLE;
 static uint8_t             s_slot     = 0;
@@ -202,18 +268,25 @@ static sec_op_t            s_op       = SEC_OP_UNKNOWN;
 
 void sec_confirm_reset(void)
 {
+    /* Sous verrou : voir le bullet sec_confirm_reset() de l'entete
+     * CONCURRENCY MODEL — depuis I4 (usb/usb_mode.c), cette fonction peut
+     * tourner en meme temps que arm()/poll() sur une tache differente. */
+    SEC_CONFIRM_LOCK();
     s_state    = SEC_CONFIRM_IDLE;
     s_slot     = 0;
     s_op       = SEC_OP_UNKNOWN;
     s_armed_ms = 0;
+    SEC_CONFIRM_UNLOCK();
 }
 
 void sec_confirm_arm(uint8_t slot, sec_op_t op, uint32_t now_ms)
 {
+    SEC_CONFIRM_LOCK();
     s_state    = SEC_CONFIRM_PENDING;
     s_slot     = slot;
     s_op       = op;
     s_armed_ms = now_ms;
+    SEC_CONFIRM_UNLOCK();
 }
 
 /*
@@ -244,30 +317,39 @@ void sec_confirm_arm(uint8_t slot, sec_op_t op, uint32_t now_ms)
  */
 void sec_confirm_authorize(uint32_t pressed_at_ms)
 {
+    SEC_CONFIRM_LOCK();
     if (s_state != SEC_CONFIRM_PENDING) {
+        SEC_CONFIRM_UNLOCK();
         return;
     }
     if ((uint32_t)(pressed_at_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS) {
+        SEC_CONFIRM_UNLOCK();
         return;
     }
     s_state = SEC_CONFIRM_AUTHORIZED;
+    SEC_CONFIRM_UNLOCK();
 }
 
 sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot)
 {
+    SEC_CONFIRM_LOCK();
     if (s_state == SEC_CONFIRM_PENDING &&
         (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS) {
         s_state = SEC_CONFIRM_IDLE;
         s_op    = SEC_OP_UNKNOWN;
+        SEC_CONFIRM_UNLOCK();
         return SEC_CONFIRM_TIMEDOUT;
     }
     if (s_state == SEC_CONFIRM_AUTHORIZED) {
         if (out_slot) *out_slot = s_slot;
         s_state = SEC_CONFIRM_IDLE;
         s_op    = SEC_OP_UNKNOWN;
+        SEC_CONFIRM_UNLOCK();
         return SEC_CONFIRM_AUTHORIZED;
     }
-    return s_state;
+    sec_confirm_state_t st = s_state;
+    SEC_CONFIRM_UNLOCK();
+    return st;
 }
 
 sec_confirm_state_t sec_confirm_peek(uint32_t now_ms)
