@@ -9,16 +9,46 @@
  * cooperatif alors qu'ESP-IDF ordonnance en preemptif, et sa conclusion
  * rangeait le residuel de s_op dans la meme classe "benigne" que celui de
  * s_armed_ms alors que les deux n'appartiennent pas a la meme categorie de
- * risque — les deux corrections sont dans ce meme bullet) — why no lock is
- * needed.
+ * risque — les deux corrections sont dans ce meme bullet ; corrige une
+ * troisieme fois a la revue finale de branche du plan FIDO2 (2026-08-18,
+ * I5) parce que la premisse ci-dessous etait elle-meme fausse — see the
+ * paragraph immediately below) — why no lock is needed.
  * sec_confirm is a pure module (host-tested, no FreeRTOS). Entry points run
- * from at most THREE contexts, and the security personalities are mutually
- * exclusive at build (OpenPGP CCID xor OTP-HID), so per build:
+ * from at most THREE task contexts. The three security personalities
+ * (OpenPGP CCID, OTP-HID, FIDO U2F) are NOT mutually exclusive AT BUILD —
+ * ccid.c, otp_hid.c and u2f.c are all linked into the same binary, every
+ * build, on every board. What is actually true, and is what this analysis
+ * relies on, is RUNTIME exclusivity: usb/usb_mode.c guarantees that at most
+ * one personality's USB descriptors — and, since Task 1 (usb/hid_dispatch.c),
+ * at most one HID handlers table — are installed at any instant. Switching
+ * personalities always uninstalls the current one (usb_device_uninstall(),
+ * which also calls each mode's own *_stop()) before installing the next;
+ * a busy flag in usb/usb_mode.c additionally refuses a second mode switch
+ * while one is already in flight. Concretely: u2f_handle_apdu()'s
+ * arm()/poll() calls (security/u2f.c, reached only from mode_fido.c's
+ * handle_message(), itself reached only through the FIDO entry of
+ * hid_dispatch.c) can run ONLY while the FIDO table is installed — which is
+ * exactly the window during which the OTP table (and therefore
+ * otp_hid.c's arm()/poll()) cannot be installed, and vice versa. So although
+ * THREE personalities' arm()/poll() code all exist in the binary, at most ONE
+ * of {ccid_worker, usb_task-as-OTP, usb_task-as-FIDO} is ever the task
+ * actually exercising arm()/poll() at a given moment — the same conclusion
+ * the old (wrong) "exclusive at build" premise reached, but for the true
+ * reason. This is why the single extra poll context that FIDO's u2f.c adds
+ * does NOT trigger the portMUX warning at the end of this comment: it is a
+ * new call site, not a new CONCURRENT context — usb_mode.c's runtime
+ * exclusivity keeps it disjoint from ccid_worker's and otp_hid.c's, the same
+ * way OTP and CCID were already disjoint from each other. A future change
+ * that lets two personalities' arm()/poll() run at once (e.g. a background
+ * admin path that does not go through usb_mode.c's single-slot install) WOULD
+ * still need the portMUX below — the guard is about concurrent EXECUTION, not
+ * about how many personalities exist in the link:
  *   - arm() + poll() run on the SAME task (ccid_worker in OpenPGP — see
  *     dongle_confirm() in ccid.c, which also calls reset() — or usb_task
- *     running tud_task_ext() in OTP, see otp_hid.c) — serialized with each
- *     other, so the (state,slot,op) triple is always written and read
- *     consistently.
+ *     running tud_task_ext() in OTP or FIDO, see otp_hid.c and u2f.c/
+ *     mode_fido.c respectively) — serialized with each other by the runtime
+ *     exclusivity above, so the (state,slot,op) triple is always written and
+ *     read consistently.
  *   - authorize() is called by whichever confirmation source main/security/
  *     sec_gate.c wires up for the board: the esp-console REPL task via the
  *     console-command crutch on any board with BOARD_CONSOLE_ACTIONS (see
