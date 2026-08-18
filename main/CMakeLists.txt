@@ -19,6 +19,7 @@ set(srcs
     "security/apdu.c"
     "security/ctaphid.c"
     "security/cbor_enc.c"
+    "security/ctap2.c"
     "security/otp_proto.c"
     "security/cr_hmac.c"
     "security/openpgp_do.c"

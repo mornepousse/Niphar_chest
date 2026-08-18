@@ -5,6 +5,7 @@
 
 #include "tusb.h"
 
+#include "ctap2.h"
 #include "ctaphid.h"
 #include "usb/hid_dispatch.h"
 #include "usb/usb_device.h"
@@ -147,8 +148,9 @@ static uint32_t s_last_cid;
  * Drapeaux de capacité CTAPHID_CAPFLAG_* du dernier octet d'INIT.
  * CAPFLAG_NMSG (« ce périphérique n'implémente PAS CTAPHID_MSG ») est VRAI à
  * ce stade : MSG rend CTAPHID_ERR_INVALID_CMD (handle_message() plus bas). À
- * retirer quand U2F (MSG) sera câblé — tâche ultérieure du plan. CBOR et
- * WINK restent à 0 pour la même raison : aucun des deux n'est câblé ici.
+ * retirer quand U2F (MSG) sera câblé — tâche ultérieure du plan. CAPFLAG_CBOR
+ * est désormais posé (tâche 5) : authenticatorGetInfo répond sur CBOR — voir
+ * le cas CTAPHID_CMD_CBOR ci-dessous. WINK reste à 0 : non câblé.
  */
 #define CTAPHID_CAPFLAG_WINK 0x01u
 #define CTAPHID_CAPFLAG_CBOR 0x04u
@@ -458,7 +460,7 @@ static void handle_message(const ctaphid_msg_t *msg)
         resp[13] = FIDO_DEV_VER_MAJOR;
         resp[14] = FIDO_DEV_VER_MINOR;
         resp[15] = FIDO_DEV_VER_BUILD;
-        resp[16] = CTAPHID_CAPFLAG_NMSG; /* WINK et CBOR : non câblés, à 0 */
+        resp[16] = CTAPHID_CAPFLAG_NMSG | CTAPHID_CAPFLAG_CBOR; /* WINK : non câblé, à 0 */
 
         /* Réponse envoyée sur le canal DE LA REQUÊTE (msg->cid), diffusion
          * comprise : le nouveau CID ne voyage que dans la charge utile,
@@ -472,9 +474,53 @@ static void handle_message(const ctaphid_msg_t *msg)
          * ctaphid_feed() l'a déjà réassemblée le cas échéant. */
         send_response(msg->cid, CTAPHID_CMD_PING, msg->data, msg->len);
         break;
+    case CTAPHID_CMD_CBOR: {
+        /*
+         * Une réponse CTAP2 (succès ou échec) voyage TOUJOURS dans une
+         * trame CTAPHID_CMD_CBOR, jamais dans une trame CTAPHID_CMD_ERROR :
+         * cette dernière est réservée aux erreurs de TRANSPORT (canal,
+         * séquence — voir ctaphid.h), pas aux erreurs de la commande CTAP2
+         * elle-même. C'est pourquoi les branches ci-dessous appellent
+         * send_response(..., CTAPHID_CMD_CBOR, ...) même en cas d'échec, un
+         * simple octet de statut CTAP2_ERR_* servant alors de charge utile.
+         */
+        if (msg->len < 1u) {
+            /* Aucun octet de commande à interpréter. */
+            const uint8_t status = CTAP2_ERR_INVALID_LENGTH;
+            send_response(msg->cid, CTAPHID_CMD_CBOR, &status, 1u);
+            break;
+        }
+        if (msg->data[0] != CTAP2_CMD_GET_INFO) {
+            /* Seul authenticatorGetInfo est câblé à ce stade (tâche 5) —
+             * makeCredential/getAssertion suivront avec le décodeur CBOR,
+             * reporté au plan 2 (aucun paramètre de requête ici : voir
+             * contraintes-globales.md, écart assumé 2). */
+            const uint8_t status = CTAP2_ERR_INVALID_COMMAND;
+            send_response(msg->cid, CTAPHID_CMD_CBOR, &status, 1u);
+            break;
+        }
+
+        /* 128 octets : la réponse authenticatorGetInfo tient en 52 (statut
+         * compris — voir ctap2.c), large marge sans dépasser ce que
+         * send_response()/CTAPHID_MAX_PAYLOAD sauraient de toute façon
+         * gérer si ce champ grossissait plus tard. */
+        uint8_t resp[128];
+        size_t  n = ctap2_build_get_info(resp, sizeof resp);
+        if (n == 0u) {
+            /* Ne devrait jamais arriver (tampon largement suffisant) —
+             * défense plutôt que silence : mieux vaut un message d'erreur
+             * explicite qu'une trame absente que l'hôte prendrait pour un
+             * périphérique muet. */
+            const uint8_t status = CTAP2_ERR_INVALID_LENGTH;
+            send_response(msg->cid, CTAPHID_CMD_CBOR, &status, 1u);
+            break;
+        }
+        send_response(msg->cid, CTAPHID_CMD_CBOR, resp, (uint16_t)n);
+        break;
+    }
     default:
-        /* MSG, CBOR, CANCEL : pas encore câblés — voir le commentaire en
-         * tête de fichier. ERR_INVALID_CMD est la réponse prévue par la
+        /* MSG, CANCEL : pas encore câblés — voir le commentaire en tête de
+         * fichier. ERR_INVALID_CMD est la réponse prévue par la
          * spécification pour une commande que l'authentificateur ne
          * reconnaît pas. */
         send_error(msg->cid, CTAPHID_ERR_INVALID_CMD);
