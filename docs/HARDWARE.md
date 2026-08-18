@@ -539,10 +539,13 @@ pas le bouton.** `wt9932_key` définit `BOARD_CONSOLE_ACTIONS 1`
 et accorde le slot armé par U2F — indépendamment de l'état du bouton MODE/
 CONFIRM en façade. La revue de branche avait affirmé à plusieurs reprises
 que le bouton électriquement ouvert empêchait toute validation du chemin de
-signature ; **c'était faux**. Le fait rapporté (« aucune signature réelle
-produite ») était exact ; sa cause (« le bouton est ouvert, donc rien n'est
-possible ») ne l'était pas — la béquille console restait disponible et n'a
-simplement pas été utilisée avant ce passage.
+signature ; **c'était faux deux fois**. Le fait rapporté (« aucune signature
+réelle produite ») était exact ; sa cause invoquée ne l'était pas, ni dans sa
+conséquence — la béquille console restait disponible et n'a simplement pas été
+utilisée — ni dans sa prémisse : le bouton n'a jamais été ouvert (voir
+« Retracté — il n'y a jamais eu de défaut de bouton », plus bas). Une même
+erreur a donc été construite sur un fait inventé puis raisonnée à partir de lui
+pendant deux jours.
 
 **Protocole** : `usb mode fido` en console, `fido2-cred -M` (via `nix-shell`,
 `shell.nix`) dans une seconde session pour lancer un `U2F_REGISTER` réel
@@ -709,87 +712,63 @@ même trame ne répare qu'une perte transitoire — pas un contrôleur qui a per
 - **Le comportement sur erreur I²C durable.** La réinitialisation après vingt
   échecs est écrite mais jamais déclenchée en conditions réelles.
 
-#### Défaut ouvert — bascules de mode spontanées
+#### Retracté — il n'y a jamais eu de défaut de bouton
 
-La carte change de mode USB **sans que personne ne la touche**. Trois
-observations indépendantes, toujours la même signature :
+**Cette section décrivait un défaut matériel qui n'existe pas.** Elle affirmait,
+du 2026-08-17 au 2026-08-18, que le bouton MODE (IO32) était électriquement
+ouvert et demandait une reprise au fer à souder. C'est faux, et la façon dont
+c'est devenu faux mérite d'être gardée.
 
-| quand | ce qui a été vu |
-|---|---|
-| pendant le premier sondage | bascules à 56016, 57206, 58856, 59046 ms |
-| capture de 600 s | 4 bascules, dont 3 en 1,3 s |
-| capture de 900 s | 3 bascules en 1,8 s |
-
-**Toujours un groupe serré de deux à trois bascules en moins de deux secondes,
-puis plus rien pendant des minutes.** Ce n'est pas du bruit diffus. Trois appuis
-acceptés signifie que la ligne MODE a lu « pressé » à trois instants distincts,
-malgré l'anti-rebond de 20 ms.
-
-Ce qui est établi :
-
-- le pull-up **interne** de IO32 est bien activé (`hmi.c`, `gpio_config`), donc
-  la broche ne flotte pas — mais un pull-up interne d'ESP32 vaut ~45 kΩ, ce qui
-  est faible sur des fils volants voisins d'un bus commutant à 400 kHz ;
-- l'écart entre deux bascules d'un même groupe (0,6 à 1,2 s) correspond à la
-  durée d'un `usb_mode_set()` complet : elles s'enchaînent **aussi vite que le
-  drapeau d'occupation le permet**, donc la ligne est vue active pendant toute
-  la rafale.
-
-**Diagnostiqué le 2026-08-17 : le bouton MODE est électriquement ouvert.**
-
-Une sonde jetable — ISR sur les deux fronts de IO32, plus une lecture de niveau
-toutes les 5 s — a mesuré, carte au repos :
+**La mesure qui tranche, 2026-08-18.** Console en écoute, la propriétaire appuie
+quatre fois sur MODE, délibérément :
 
 ```
-niveau IO32=1  IO33=1  (fronts vus: 0)
+I (2630508) usb_mode: mode USB : clé FIDO2   -> carte OpenPGP
+I (2632408) usb_mode: mode USB : carte OpenPGP -> clé CR-HMAC
+I (2634228) usb_mode: mode USB : clé CR-HMAC -> clé FIDO2
+I (2635918) usb_mode: mode USB : clé FIDO2   -> carte OpenPGP
 ```
 
-Les deux broches lisent 1, tirées au repos par les pull-ups internes. La sonde
-est donc vivante : `hmi_task` tourne, la lecture fonctionne, et l'ISR n'a rien
-vu parce qu'il n'y avait rien à voir. **Un appui physique sur MODE n'a produit ni
-front ni bascule** — la broche n'est jamais descendue.
+Quatre appuis, quatre bascules, écarts de 1,9 / 1,8 / 1,7 s. Aucun rebond,
+aucune bascule surnuméraire : l'anti-rebond de 20 ms fait son travail et le
+contact est franc. **Le bouton MODE fonctionne.**
 
-Ce n'est donc pas un défaut de firmware, et l'hypothèse d'un couplage depuis le
-bus I²C que je poursuivais était fausse. Un **contact intermittent** explique
-chaque observation, mieux qu'elle : un fil qui tressaute sur son point de
-contact donne exactement deux ou trois bascules en moins de deux secondes puis
-des minutes de silence, là où un couplage I²C produirait un rythme régulier
-calé sur les 50 ms de la tâche d'affichage.
+**Ce que les « bascules spontanées » étaient réellement.** Des appuis
+involontaires de la propriétaire — sa main effleurant le bouton en manipulant la
+carte nue. Toutes les observations s'y rangent sans reste.
 
-**Symptôme visible, découvert le 2026-08-17 par sonde** : quand la carte
-bascule toute seule, **l'écran reste figé sur le logo plein** au lieu de passer
-en veille errante. Ce n'est pas un défaut d'affichage — c'est la conséquence
-exacte du défaut matériel. La veille se déclenche après 60 s sans changement
-d'état, et chaque bascule remet ce compteur à zéro ; une bascule toutes les
-~45 s l'empêche donc d'aboutir indéfiniment.
+**Et c'est là que le raisonnement d'origine s'est retourné contre lui-même.**
+J'avais fait de « deux à trois bascules en moins de deux secondes, puis des
+minutes de silence » la signature d'un contact qui tressaute, en écartant le
+couplage I²C parce qu'il aurait produit un rythme régulier. Le rythme mesuré
+ci-dessus sur des appuis **délibérés** est le même : 1,7 à 1,9 s. Un groupe
+serré de quelques bascules espacées de l'ordre de la seconde, ce n'est pas la
+signature d'un fil qui vibre — **c'est la signature d'une main.** J'avais
+expliqué ces écarts par la durée d'un `usb_mode_set()` complet ; c'était une
+rationalisation construite après coup pour sauver l'hypothèse.
 
-Mesuré : `inactif=43050 ms` puis retour à `2940 ms` sur une bascule
-`mode=2 → mode=3` que personne n'avait demandée.
+**Pourquoi la sonde du 2026-08-17 n'a rien vu.** Elle a mesuré `IO32=1 IO33=1`
+au repos et zéro front, puis j'ai écrit qu'« un appui physique sur MODE n'a
+produit ni front ni bascule ». **Aucun appui délibéré n'avait été éprouvé sur
+IO32 pendant cette fenêtre.** C'est exactement l'erreur déjà commise sur IO33 le
+même jour, et corrigée le lendemain par un simple « oui j'ai bien appuyé » :
+conclure la mort d'une broche depuis une absence de signal, sans s'assurer qu'un
+signal avait été émis. Deux broches lisant 1 au repos ne disent rien de leur
+santé, et une sonde qui ne voit rien ne prouve rien tant que personne n'a
+appuyé.
 
-**Un logo figé en grand est donc l'indicateur visible que le contact déraille.**
-Utile : il rend le défaut observable sans brancher de console.
+**Le symptôme du logo figé était réel, sa cause non.** L'écran restait bloqué
+sur le logo plein parce que la veille se déclenche après 60 s sans changement
+d'état et que chaque bascule remet ce compteur à zéro — mécanisme exact, mais
+déclenché par de vrais appuis, pas par un contact défaillant.
 
-**Réparation au fer à souder.** Deux mécanismes indépendants — l'interruption et
-la lecture périodique, qui ne partagent rien — sont d'accord sur l'absence : ce
-n'est pas l'instrument.
+**Rien à réparer.** Aucune intervention au fer à souder n'est nécessaire sur
+cette carte.
 
-**Seul MODE est atteint. CONFIRM (IO33) fonctionne — mesuré le 2026-08-18.**
+**La leçon de méthode**, qui a coûté deux diagnostics faux en deux jours sur les
+deux boutons : une hypothèse matérielle ne se valide pas en accumulant des
+observations qu'elle explique bien. Elle se valide en demandant à la personne
+qui a la carte en main de produire l'événement, puis en regardant si l'appareil
+le voit. Ici, trente secondes d'écoute et quatre appuis ont suffi — et rien de
+ce qui a été écrit entre-temps n'a rapproché de la vérité.
 
-Cette section affirmait auparavant que « la porte de présence physique ne peut
-pas être actionnée ». **C'était une extrapolation abusive** : la sonde du
-2026-08-17 n'avait éprouvé par un appui réel que IO32. Les deux broches lisaient
-1 au repos, ce qui ne distingue pas un bouton sain d'un bouton déconnecté.
-
-Le 2026-08-18, un `U2F_REGISTER` émis par `fido2-cred -M` a été **autorisé par
-un appui physique de la propriétaire sur CONFIRM**, produisant une vraie
-signature avec le certificat d'attestation embarqué — en trois secondes, sans
-recourir à la béquille `sec confirm`.
-
-Conséquence pratique : **la clé est utilisable dès aujourd'hui.** On peut
-enregistrer et s'authentifier ; seul le changement de mode passe obligatoirement
-par la console (`usb mode …`), IO32 restant ouvert.
-
-Et une conséquence de méthode, qui vaut au-delà de ce cas : deux broches lisant
-la même valeur au repos ne disent rien de leur santé respective. Il fallait
-appuyer sur chacune. La conclusion trop large a bloqué pendant tout le plan
-FIDO2 une validation qui était possible.
