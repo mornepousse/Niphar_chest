@@ -7,7 +7,11 @@
 #include <stdbool.h>
 
 #include "mbedtls/sha256.h"
+#include "mbedtls/ecdsa.h"
+#include "mbedtls/ecp.h"
+#include "mbedtls/bignum.h"
 #include "esp_random.h"
+#include "esp_log.h"
 
 #include "ecdsa_der.h"
 #include "fido_attest.h"
@@ -15,6 +19,8 @@
 #include "fido_master.h"
 #include "openpgp_crypto.h"
 #include "sec_confirm.h"
+
+static const char *TAG = "u2f";
 
 /* INS U2F — FIDO U2F Raw Message Format v1.2, section 4. */
 #define U2F_INS_REGISTER     0x01u
@@ -365,4 +371,126 @@ size_t u2f_handle_apdu(const apdu_t *apdu, uint8_t *out, size_t cap, uint32_t no
     default:
         return sw_only(out, cap, U2F_SW_INS_NOT_SUP);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Autotest de démarrage — voir u2f.h pour le contrat complet.          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Vérifie une signature r||s (brute, comme rendue par
+ * openpgp_crypto_p256_sign()) contre `hash` et le point public non compressé
+ * `pub65`, via mbedtls — même séquence que le KAT 1 de
+ * openpgp_crypto_selftest() (openpgp_crypto.c). Rend faux sur n'importe quel
+ * échec mbedtls, jamais un déréférencement ni un comportement indéfini.
+ */
+static bool verify_p256(const uint8_t pub65[65], const uint8_t hash[32],
+                        const uint8_t sig[64])
+{
+    mbedtls_ecp_group grp;
+    mbedtls_ecp_point Q;
+    mbedtls_mpi r, s;
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_ecp_point_init(&Q);
+    mbedtls_mpi_init(&r);
+    mbedtls_mpi_init(&s);
+
+    bool ok = false;
+    do {
+        if (mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1)) break;
+        if (mbedtls_ecp_point_read_binary(&grp, &Q, pub65, 65)) break;
+        if (mbedtls_mpi_read_binary(&r, sig, 32)) break;
+        if (mbedtls_mpi_read_binary(&s, sig + 32, 32)) break;
+        ok = (mbedtls_ecdsa_verify(&grp, hash, 32, &Q, &r, &s) == 0);
+    } while (0);
+
+    mbedtls_mpi_free(&r);
+    mbedtls_mpi_free(&s);
+    mbedtls_ecp_point_free(&Q);
+    mbedtls_ecp_group_free(&grp);
+    return ok;
+}
+
+bool u2f_selftest(void)
+{
+    /* Vecteurs FIXES, jamais des données d'hôte : un rp_id_hash et un nonce
+     * arbitraires (fido_key_derive n'a pas de vecteur "spécial" à éviter),
+     * et un message fixe à hacher/signer. Ces octets ne protègent rien —
+     * seule leur PRÉSENCE (faire tourner la dérivation + la crypto au moins
+     * une fois) compte ici, contrairement au K_maître (fido_master.c) ou à
+     * fido_attest_key. */
+    static const uint8_t rp_id_hash[32] = {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+        0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+    };
+    static const uint8_t nonce[16] = {
+        0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+        0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
+    };
+    static const char msg[] = "u2f_selftest fixed message";
+
+    uint8_t hash[32];
+    if (mbedtls_sha256((const uint8_t *)msg, strlen(msg), hash, 0) != 0) {
+        ESP_LOGE(TAG, "selftest: sha256 a echoue");
+        return false;
+    }
+
+    /* 1. Chemin CREDENTIAL : dérivation -> pubkey -> signature -> verif ->
+     * encodage DER — exactement la séquence de handle_register()/
+     * handle_authenticate() une fois la confirmation obtenue. */
+    uint8_t d[32];
+    fido_key_derive(fido_master_hmac, rp_id_hash, nonce, d);
+
+    uint8_t pub[65];
+    bool ok = openpgp_crypto_p256_pubkey(d, pub);
+    if (!ok) {
+        memset(d, 0, sizeof(d));
+        ESP_LOGE(TAG, "selftest: derivation credential -> pubkey a echoue");
+        return false;
+    }
+
+    uint8_t sig[64];
+    ok = openpgp_crypto_p256_sign(d, hash, sizeof(hash), sig);
+    memset(d, 0, sizeof(d));
+    if (!ok) {
+        ESP_LOGE(TAG, "selftest: signature credential a echoue");
+        return false;
+    }
+
+    if (!verify_p256(pub, hash, sig)) {
+        memset(sig, 0, sizeof(sig));
+        ESP_LOGE(TAG, "selftest: verification credential a echoue (signature/pubkey incoherents)");
+        return false;
+    }
+
+    uint8_t der[ECDSA_DER_MAX_LEN];
+    size_t  der_len = ecdsa_der_encode(sig, sig + 32, der, sizeof(der));
+    memset(sig, 0, sizeof(sig));
+    if (der_len < 8u || der[0] != 0x30u || der[1] != (uint8_t)(der_len - 2u)) {
+        ESP_LOGE(TAG, "selftest: encodage DER credential incoherent (len=%u)", (unsigned)der_len);
+        return false;
+    }
+
+    /* 2. Chemin ATTESTATION : la clé qui signe RÉELLEMENT U2F_REGISTER
+     * (fido_attest_key, pas `d`) — vérifiée contre fido_attest_pubkey,
+     * extrait du certificat (fido_attest.h). Un échec ici indiquerait soit
+     * une régression mbedtls, soit — plus grave — un fido_attest_key/
+     * fido_attest_pubkey/fido_attest_cert_der devenus incohérents entre eux
+     * (voir le commentaire de fido_attest.h sur leur régénération conjointe). */
+    ok = openpgp_crypto_p256_sign(fido_attest_key, hash, sizeof(hash), sig);
+    if (!ok) {
+        memset(sig, 0, sizeof(sig));
+        ESP_LOGE(TAG, "selftest: signature attestation a echoue");
+        return false;
+    }
+    if (!verify_p256(fido_attest_pubkey, hash, sig)) {
+        memset(sig, 0, sizeof(sig));
+        ESP_LOGE(TAG, "selftest: verification attestation a echoue (cle/certificat incoherents)");
+        return false;
+    }
+    memset(sig, 0, sizeof(sig));
+
+    ESP_LOGI(TAG, "selftest: PASS (credential + attestation)");
+    return true;
 }

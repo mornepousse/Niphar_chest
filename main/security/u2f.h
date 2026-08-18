@@ -63,3 +63,32 @@ void u2f_reset(void);
  * incomplete.
  */
 size_t u2f_handle_apdu(const apdu_t *apdu, uint8_t *out, size_t cap, uint32_t now_ms);
+
+/*
+ * Autotest de démarrage — exerce le chemin de signature COMPLET une fois,
+ * avec des vecteurs fixes (jamais des données réelles d'hôte) : dérivation
+ * `fido_key_derive`, `openpgp_crypto_p256_pubkey`, SHA-256, signature ET
+ * vérification (`mbedtls_ecdsa_verify`, comme `openpgp_crypto_selftest()`),
+ * encodage DER (`ecdsa_der_encode`) — puis la même séquence signature+
+ * vérification avec la clé d'ATTESTATION (`fido_attest_key`), vérifiée
+ * contre `fido_attest_pubkey` (extraite du certificat, voir fido_attest.h) :
+ * un test qui prouve au passage que la clé et le certificat committés
+ * forment bien une paire.
+ *
+ * Raison d'être : ni REGISTER ni AUTHENTICATE ne peuvent jamais dépasser
+ * `0x6985` sur ce matériel (bouton de confirmation électriquement ouvert,
+ * voir u2f_handle_apdu()) — donc SANS cet autotest, le chemin de signature
+ * ne s'exécuterait JAMAIS avant le premier vrai enregistrement, avec une
+ * pile (`usb_task`, voir usb_device.c) dimensionnée par analogie et jamais
+ * éprouvée. Cet autotest fait tourner ce chemin, sur CETTE pile, au moment
+ * où l'appelant (mode_fido.c) le déclenche — voir le commentaire de son
+ * point d'appel pour pourquoi c'est garanti être `usb_task`.
+ *
+ * Rend faux au premier échec, avec un ESP_LOGE précis (TAG "u2f") sur
+ * l'étape fautive — même discipline que openpgp_crypto_selftest(). N'a
+ * aucun effet sur le fonctionnement de la clé si le résultat est faux (ce
+ * n'est qu'un journal, pas une porte — au contraire de la crypto OpenPGP,
+ * U2F n'a pas de SW dédié pour "crypto en panne" ; voir les préoccupations
+ * du rapport de tâche 7 si ce point doit être reconsidéré).
+ */
+bool u2f_selftest(void);

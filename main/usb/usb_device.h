@@ -19,6 +19,16 @@
 #include "esp_err.h"
 
 /*
+ * Taille (en mots de pile FreeRTOS, l'unité de xTaskCreate) de `usb_task` —
+ * voir son commentaire dans usb_device.c pour pourquoi 6144 depuis la
+ * tâche 7. Exportée pour que tout code qui mesure la marge de pile de cette
+ * tâche (ex. security/u2f.c, autotest de démarrage FIDO) journalise un
+ * dénominateur qui reste vrai si cette valeur change un jour, plutôt qu'une
+ * constante recopiée à la main qui divergerait en silence.
+ */
+#define USB_TASK_STACK_WORDS 6144u
+
+/*
  * Installe le PHY, la tâche TinyUSB et les descripteurs fournis, puis
  * démarre l'énumération. `fs_cfg`/`hs_cfg` sont des blocs de configuration
  * TinyUSB complets (TUD_CONFIG_DESCRIPTOR + descripteurs de classe) pour le

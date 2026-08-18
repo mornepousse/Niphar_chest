@@ -17,6 +17,14 @@
  * symboles ci-dessous sont renommes a la main en fido_attest_cert_der/
  * fido_attest_cert_len, meme convention que main/hmi/screen_logo.h.)
  *
+ * TROISIEME tableau a regenerer en meme temps que les deux precedents :
+ * fido_attest_pubkey (voir son commentaire dedie plus bas), extrait de
+ * fido_attest_cert_der par un petit script Python plutot que retape a la
+ * main (voir le rapport de la tache 7 pour le script exact). Oublier ce
+ * troisieme tableau a une regeneration future serait detecte au premier
+ * boot par u2f_selftest() (ESP_LOGE), pas silencieusement — mais autant
+ * regenerer les trois d'un coup.
+ *
  * La cle privee ci-dessous (fido_attest_key, le scalaire brut extrait de
  * /tmp/attest.key par `openssl ec -in /tmp/attest.key -text -noout`) EST
  * COMMITEE EN CLAIR DANS LE FIRMWARE, DELIBEREMENT : U2F_REGISTER exige une
@@ -82,4 +90,29 @@ static const uint8_t fido_attest_key[32] = {
   0xb0, 0xe1, 0xcd, 0x7e, 0x86, 0xd1, 0x04, 0xff, 0xfc, 0xbc, 0x4e, 0xf6,
   0x4b, 0xbf, 0x55, 0x93, 0x05, 0xf2, 0x12, 0x51, 0x33, 0x96, 0xb1, 0x2e,
   0xaf, 0xbf, 0xa9, 0x72, 0xab, 0xdf, 0x84, 0x1c,
+};
+
+/*
+ * Point public non compresse (0x04 || X(32) || Y(32)) correspondant a
+ * fido_attest_key, EXTRAIT PROGRAMMATIQUEMENT du SubjectPublicKeyInfo de
+ * fido_attest_cert_der ci-dessus (jamais retape a la main — voir le script
+ * de la tache 7) : il n'existe donc aucune fenetre de transcription entre ce
+ * tableau et le certificat.
+ *
+ * Sert UNIQUEMENT au selftest de demarrage (u2f_selftest(), u2f.c) : deriver
+ * ce point depuis fido_attest_key sur la cible et le comparer a cette valeur
+ * prouve, a chaque boot, que la cle privee committee et le certificat committe
+ * forment bien une paire coherente — sans avoir a decoder du DER a
+ * l'execution (aucun decodeur DER n'existe dans ce firmware, tache 2). Une
+ * regeneration future qui mettrait a jour le certificat ou la cle sans
+ * regenerer CE tableau serait detectee au premier boot (ESP_LOGE), pas
+ * silencieusement.
+ */
+static const uint8_t fido_attest_pubkey[65] = {
+  0x04, 0xcf, 0xda, 0xb2, 0x7d, 0xf4, 0x10, 0x11, 0xcb, 0x5e, 0x66, 0x4e,
+  0xf3, 0x63, 0xd6, 0x6a, 0xe6, 0x15, 0x83, 0x8f, 0x76, 0x73, 0x80, 0x56,
+  0x8f, 0x9e, 0xd4, 0xf0, 0x0b, 0x65, 0xd9, 0xe8, 0x4a, 0x52, 0xe9, 0xcc,
+  0x3b, 0xeb, 0x25, 0xde, 0x55, 0x3f, 0xd5, 0xd2, 0xdc, 0x4b, 0xdb, 0xfb,
+  0x25, 0xd7, 0x18, 0xdc, 0x68, 0x35, 0x25, 0xaf, 0x36, 0xbb, 0x1a, 0x10,
+  0x49, 0xda, 0x8f, 0x4b, 0x98,
 };

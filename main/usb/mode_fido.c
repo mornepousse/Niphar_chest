@@ -5,6 +5,10 @@
 
 #include "tusb.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "esp_log.h"
 #include "esp_timer.h"
 
 #include "apdu.h"
@@ -587,8 +591,49 @@ static void handle_message(const ctaphid_msg_t *msg)
  * installée, `instance` vaut donc toujours 0.
  */
 
+/*
+ * Autotest de démarrage FIDO (u2f_selftest(), security/u2f.c) — déclenché
+ * ici, une seule fois par démarrage du firmware (drapeau statique, même
+ * discipline que ccid_init()/openpgp_crypto_selftest() dans ccid.c et le
+ * rapport de marge de pile one-shot de screen.c).
+ *
+ * POURQUOI ICI, PAS mode_fido_start() : mode_fido_start() tourne sur la
+ * tâche qui déclenche la bascule de mode USB (console ou hmi_task selon la
+ * carte — voir usb/usb_mode.c), PAS sur usb_task — mesurer sa marge de
+ * pile là mesurerait la mauvaise tâche. fido_report_desc(), à l'inverse,
+ * est un callback `tud_hid_*_cb` (via usb/hid_dispatch.c) : TinyUSB ne
+ * l'appelle QUE depuis tud_task —
+ * donc depuis usb_task, garanti, sans plomberie de renvoi (usbd_defer_func)
+ * ni risque de course avec un démontage. Il est aussi appelé tôt et de
+ * façon fiable : l'hôte demande ce descripteur pendant l'énumération
+ * (GET_DESCRIPTOR), juste après l'installation du mode — au plus près de
+ * « au démarrage du mode » qu'on puisse obtenir sans provoquer soi-même un
+ * appel hors contexte.
+ */
+static void fido_selftest_once(void)
+{
+    static bool s_done = false;
+    if (s_done) return;
+    s_done = true;
+
+    bool ok = u2f_selftest();
+    ESP_LOGI("u2f", "selftest au demarrage : %s", ok ? "PASS" : "FAIL");
+
+    /* Marge de pile MESURÉE, pas estimée — c'est tout l'intérêt de cet
+     * autotest : uxTaskGetStackHighWaterMark() rend le creux le plus bas
+     * jamais atteint par CETTE tâche depuis sa création, en mots de pile ;
+     * multiplié par sizeof(StackType_t) pour des octets, même formule que
+     * hmi/screen.c. Journalié même si le selftest a échoué : la mesure
+     * reste informative (la pile a quand même été exercée jusqu'au point
+     * d'échec). */
+    ESP_LOGI("u2f", "usb_task, marge de pile : %u octets libres sur %u",
+             (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)),
+             (unsigned)(USB_TASK_STACK_WORDS * sizeof(StackType_t)));
+}
+
 static const uint8_t *fido_report_desc(void)
 {
+    fido_selftest_once();
     return desc_hid_report;
 }
 
