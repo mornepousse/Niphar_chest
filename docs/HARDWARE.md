@@ -772,3 +772,49 @@ qui a la carte en main de produire l'événement, puis en regardant si l'apparei
 le voit. Ici, trente secondes d'écoute et quatre appuis ont suffi — et rien de
 ce qui a été écrit entre-temps n'a rapproché de la vérité.
 
+### Validation OATH/TOTP — 2026-08-19
+
+Applet YKOATH sur CCID, carte `wt9932_key` (MAC `30:ED:A0:E0:BC:5F`), firmware
+`d1c1e02`, client `tools/niphar-oath`.
+
+**Le code rendu par la clé coïncide avec `oathtool` à l'instant contrôlé.**
+
+```
+T0=1787116452   compteur = T0/30 = 59570548
+
+cle    : 563782   (valide encore 17 s)
+oathtool --totp -b JBSWY3DPEHPK3PXP --now=@1787116452  -> 563782
+meme secret, fenetre SUIVANTE (@T0+30)                 -> 788748
+```
+
+Une seule mesure prouve toute la chaîne : le compteur de temps fourni par
+l'hôte est correctement interprété, le secret a bien été persisté en NVS,
+HMAC-SHA1 et la troncature RFC 4226 sont justes, et **la carte n'applique pas
+le modulo** — c'est l'hôte qui le fait (`_format_code`, `ykman`). Si la carte
+l'appliquait, le résultat ne pourrait pas coïncider.
+
+**Piège de mesure, rencontré puis écarté.** Un premier recoupement donnait
+`660163` contre `367131` — un désaccord apparent, causé par un basculement de
+créneau de trente secondes entre les deux commandes. Comparer un code TOTP sans
+fixer l'instant ne prouve rien : `oathtool --now=@<epoch>` est obligatoire.
+
+**Ce que `pcscd` change, et pourquoi il n'est pas activé.** `ykman` exige le
+démon PC/SC, absent de cette machine — et la configuration NixOS de Mae le
+désactive délibérément, parce qu'il saisirait l'interface CCID avant
+`scdaemon`, dont dépendent sa signature git et son authentification SSH par
+carte. La liste de `libccid` compte 1274 identifiants, aucun Espressif : nous y
+déclarer serait précisément ce qui casserait cette chaîne. D'où `niphar-oath`,
+qui parle CCID par libusb comme `scdaemon` le fait déjà. **Le firmware reste du
+YKOATH standard** : sur une machine où `pcscd` tourne, `ykman` fonctionnera.
+
+**Éprouvé** : `add` (PUT, première écriture réelle de `sec_store` depuis que ce
+module existe), `list` (LIST), `code` (CALCULATE avec confirmation), l'attente
+de quinze secondes avec absorption des trames d'extension de temps, et le refus
+`6985` quand l'appui ne vient pas.
+
+**Non éprouvé, à faire avec Mae** : l'écran pendant l'attente — qu'il nomme bien
+le compte demandé (décision 4 de la spec) et que la barre de décompte s'y vide
+une seule fois ; l'appui sur le bouton pour un code (le grant est venu de la
+béquille console `sec confirm`, le bouton étant prouvé séparément le 2026-08-18
+par un enregistrement U2F) ; `delete` et `reset` avec leur écran distinct ; et
+la migration des douze comptes de Proton.
