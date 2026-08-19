@@ -104,6 +104,43 @@ static void test_digits_par_slot(void)
     TEST_ASSERT(!sec_store_set_digits(0, 9), "9 chiffres refuse");
 }
 
+/*
+ * Le cloisonnement du magasin, dans le sens OTP -> OATH.
+ *
+ * oath_slot_is_oath() empeche depuis toujours l'applet OATH de voir les slots
+ * CR-HMAC. La reciproque n'existait pas : otp_hid.c lisait le secret du slot 0
+ * ou 1 sans jamais demander de quel TYPE il etait. Or oath_do_put() attribue
+ * le PREMIER slot vide en partant de 0, et le mode OTP mappe en dur
+ * 0x30 -> slot 0 et 0x38 -> slot 1 : sur une cle neuve, les deux premiers
+ * comptes TOTP atterrissent exactement sur les slots que le mode OTP sert. Un
+ * hote obtiendrait alors HMAC-SHA1(secret_TOTP, defi de 64 octets qu'il
+ * choisit), sous un ecran annoncant « CLE OTP ».
+ *
+ * Ce predicat est la frontiere manquante. Le test compare un slot TOTP a un
+ * slot CR-HMAC : verifier seulement qu'un slot rempli rend `true` laisserait
+ * passer un « type != SEC_SLOT_EMPTY », c'est-a-dire le defaut lui-meme.
+ */
+static void test_seuls_les_slots_cr_hmac_servent_le_mode_otp(void)
+{
+    sec_store_init();
+    const uint8_t key[20] = { 1, 2, 3, 4 };
+    /* 0x21 = OATH_ALGO_TOTP_SHA1 (oath_proto.h). Ecrit en clair plutot
+     * qu'inclus : sec_store ne connait pas l'applet OATH, et l'inclure ici
+     * ferait dependre le test du module qu'il sert a cloisonner. */
+    TEST_ASSERT(sec_store_set_slot(0, 0x21, "GitHub:mae", key, 20),
+                "un compte TOTP occupe le slot 0");
+    TEST_ASSERT(!sec_store_is_hmac_slot(0),
+                "un slot TOTP n'est PAS un slot CR-HMAC");
+    TEST_ASSERT(sec_store_set_slot(1, SEC_SLOT_HMAC_SHA1, "keepass", key, 20),
+                "un slot CR-HMAC occupe le slot 1");
+    TEST_ASSERT(sec_store_is_hmac_slot(1),
+                "un slot CR-HMAC en est un");
+    TEST_ASSERT(!sec_store_is_hmac_slot(2),
+                "un slot vide n'en est pas un");
+    TEST_ASSERT(!sec_store_is_hmac_slot(SEC_N_SLOTS),
+                "un index hors bornes n'en est pas un");
+}
+
 void test_sec_store(void)
 {
     TEST_SUITE("sec_store");
@@ -113,4 +150,5 @@ void test_sec_store(void)
     TEST_RUN(test_seize_slots_et_pas_un_de_plus);
     TEST_RUN(test_nom_long_conserve);
     TEST_RUN(test_digits_par_slot);
+    TEST_RUN(test_seuls_les_slots_cr_hmac_servent_le_mode_otp);
 }

@@ -45,6 +45,14 @@ uint8_t sec_store_type(uint8_t idx)
     return (idx < SEC_N_SLOTS) ? s_slots[idx].type : SEC_SLOT_EMPTY;
 }
 
+bool sec_store_is_hmac_slot(uint8_t idx)
+{
+    /* Egalite STRICTE, pas « non vide » : un compte OATH porte son octet
+     * d'algo YKOATH (0x21 pour TOTP/SHA-1), qui n'est pas SEC_SLOT_HMAC_SHA1.
+     * Voir le commentaire de declaration dans sec_store.h. */
+    return sec_store_type(idx) == SEC_SLOT_HMAC_SHA1;
+}
+
 const char *sec_store_label(uint8_t idx)
 {
     if (idx >= SEC_N_SLOTS || s_slots[idx].type == SEC_SLOT_EMPTY) return NULL;

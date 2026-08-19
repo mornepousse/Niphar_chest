@@ -54,6 +54,20 @@ static bool hook_compute_hmac(uint8_t slot,
         return false;
     }
 
+    /* Cloisonnement du magasin, sens OTP -> OATH. oath_slot_is_oath() empeche
+     * l'applet OATH de voir les slots CR-HMAC ; sans cette ligne, la
+     * reciproque n'existe pas. oath_do_put() attribue le premier slot vide en
+     * partant de 0, et le mapping ci-dessus est fige a 0x30 -> slot 0,
+     * 0x38 -> slot 1 : sur une cle neuve, les deux premiers comptes TOTP de
+     * Mae atterrissent exactement la. Un hote signerait alors un defi de
+     * 64 octets qu'il choisit avec un secret TOTP, sous un ecran annoncant
+     * « CLE OTP ». Voir sec_store.h, sec_store_is_hmac_slot(). */
+    if (!sec_store_is_hmac_slot((uint8_t)idx)) {
+        ESP_LOGW(TAG, "compute_hmac: slot %d n'est pas un slot CR-HMAC "
+                      "(type 0x%02x) — refuse", idx, sec_store_type((uint8_t)idx));
+        return false;
+    }
+
     uint8_t secret[SEC_SECRET_MAX];
     uint8_t secret_len = 0;
     if (!sec_store_get_secret((uint8_t)idx, secret, &secret_len) || secret_len == 0) {
