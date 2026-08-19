@@ -38,13 +38,47 @@ TROIS POINTS QUI DÉCIDENT SI ÇA MARCHE
    patienter, PAS une réponse : un client qui la prend pour la réponse rend une
    trame vide. `await_final_frame()` les compte pour rien et continue d'attendre.
 
+LE SECRET NE PASSE JAMAIS PAR LA LIGNE DE COMMANDE
+==================================================
+
+Un `add NOM SECRET` écrirait les douze secrets TOTP en clair dans
+`~/.zsh_history`, et les exposerait dans `/proc/<pid>/cmdline` le temps de
+l'appel : une sauvegarde hors-ligne complète du second facteur, sur le disque,
+que personne n'a demandée. L'argument `secret` est donc OPTIONNEL — absent ou
+`-`, il est lu sur l'entrée standard, ou par `getpass.getpass()` quand le
+terminal est interactif (rien ne s'affiche, rien n'est historisé).
+
+Il reste accepté en argument pour les scripts qui savent ce qu'ils font ; son
+aide le dit franchement.
+
+PROVISIONNER DEUX APPAREILS : `add-batch`
+=========================================
+
+La clé ne peut pas exporter ses secrets — c'est délibéré et ça ne changera pas.
+La seule sauvegarde possible est donc le secret LUI-MÊME, rejoué depuis sa
+source sur un second appareil. Douze comptes fois deux appareils font
+vingt-quatre saisies manuelles de chaînes qu'on ne relit pas :
+
+    proton-export | ./tools/niphar-oath add-batch
+
+Une ligne par compte, `nom<espace ou tabulation>secret-base32`. JAMAIS de
+fichier en argument : la contrainte est que les secrets ne touchent pas le
+disque. Chaque ligne est rapportée (ajouté / déjà présent / rejeté et
+pourquoi), et une ligne en échec n'arrête pas les suivantes — une migration à
+moitié faite dont on ignore la moitié est pire qu'un échec net.
+
 CE QUE LE CLIENT NE FAIT PAS
 ============================
 
-Pas de RENAME, pas de RESET, pas de SET CODE/VALIDATE (la clé n'a pas de mot de
-passe — décision 3). Quatre sous-commandes : `list`, `add`, `code`, `delete`.
+Pas de SET CODE/VALIDATE (la clé n'a pas de mot de passe — décision 3). Sept
+sous-commandes : `list`, `add`, `add-batch`, `code`, `delete`, `rename`,
+`reset`.
+
 `add` sur un nom déjà présent ÉCRASE, donc détruit un secret, donc demande un
-appui (`OATH_TOUCH_REPLACE`).
+appui (`OATH_TOUCH_REPLACE`). `reset` détruit jusqu'à seize secrets d'un seul
+appui : il affiche d'abord ce qu'il va détruire et exige une confirmation
+explicite CÔTÉ HÔTE, avant même d'envoyer l'APDU — l'appui sur la clé est le
+second rempart, pas le premier.
 
 PRÉ-REQUIS
 ==========
@@ -59,6 +93,7 @@ n'expose RIEN. Le sélecteur est la console série (voir CLAUDE.md).
 import argparse
 import base64
 import binascii
+import getpass
 import re
 import sys
 import time
@@ -84,10 +119,18 @@ TAG_TOUCH = 0x7C
 
 INS_PUT = 0x01
 INS_DELETE = 0x02
+INS_RESET = 0x04
+INS_RENAME = 0x05
 INS_LIST = 0xA1
 INS_CALCULATE = 0xA2
 INS_SELECT = 0xA4
 INS_SEND_REMAINING = 0xA5
+
+# Les deux octets de verrouillage du RESET (oath.py:318, et OATH_RESET_P1/P2 de
+# main/security/oath_proto.c). Ils SONT le verrou : sans eux, quatre octets
+# suffiraient à vider le magasin, et le firmware répond 6A80.
+RESET_P1 = 0xDE
+RESET_P2 = 0xAD
 
 # Le SEUL type de compte que la clé accepte : TOTP (0x20) sur HMAC-SHA1 (0x01).
 # Un 0x22 (SHA-256) serait refusé par 6A81 — cf. OATH_ALGO_TOTP_SHA1.
@@ -194,8 +237,16 @@ def apdu(cla, ins, p1, p2, data=b""):
 
 
 def check_name(name):
-    """Borne un nom de compte comme le fait `oath_name_copy()` du firmware."""
-    raw = name.encode("utf-8")
+    """Borne un nom de compte comme le fait `oath_name_copy()` du firmware.
+
+    Accepte une `str` (ce que Mae tape) ou des `bytes` (ce que la clé a rendu au
+    LIST). Le second cas n'est pas décoratif : la clé identifie un compte par
+    ses OCTETS exacts (`oath_find_slot`, comparaison sur la longueur exacte), et
+    une étiquette qui n'est pas de l'UTF-8 valide n'a pas de représentation
+    `str` fidèle — voir `parse_list()`.
+    """
+    raw = name if isinstance(name, (bytes, bytearray)) else name.encode("utf-8")
+    raw = bytes(raw)
     if not raw:
         raise ValueError("nom de compte vide")
     if b"\x00" in raw:
@@ -248,6 +299,32 @@ def apdu_put(name, secret, digits):
 
 def apdu_delete(name):
     return apdu(0x00, INS_DELETE, 0x00, 0x00, tlv(TAG_NAME, check_name(name)))
+
+
+def apdu_rename(ancien, neuf):
+    """RENAME — DEUX 0x71 de suite : l'ancien nom, puis le nouveau.
+
+    L'ordre n'est pas une convention d'écriture : `oath_do_rename()` lit le
+    PREMIER 0x71 comme la cible et cherche le second dans ce qui SUIT sa valeur
+    (main/security/oath_proto.c). Les inverser renommerait un compte inconnu, ou
+    le compte en lui-même sans erreur visible.
+    """
+    a = check_name(ancien)
+    n = check_name(neuf)
+    if a == n:
+        raise ValueError("l'ancien et le nouveau nom sont identiques")
+    return apdu(0x00, INS_RENAME, 0x00, 0x00,
+                tlv(TAG_NAME, a) + tlv(TAG_NAME, n))
+
+
+def apdu_reset():
+    """RESET — P1/P2 = DE:AD, et rien d'autre.
+
+    Ces deux octets SONT le verrou du protocole : c'est leur unique raison
+    d'être. Sans eux la clé répond 6A80 (`OATH_RESET_P1`/`P2`,
+    main/security/oath_proto.c). Aucune donnée : c'est une APDU de cas 1.
+    """
+    return apdu(0x00, INS_RESET, RESET_P1, RESET_P2)
 
 
 # --------------------------------------------------------------------------
@@ -348,6 +425,158 @@ def decode_secret(text):
         raise ValueError(f"secret de {len(raw)} octets : la clé en accepte "
                          f"{SEC_SECRET_MAX} au plus (SEC_SECRET_MAX)")
     return raw
+
+
+# --------------------------------------------------------------------------
+# D'où vient le secret — jamais de argv si on peut l'éviter
+# --------------------------------------------------------------------------
+def secret_depuis_entree(arg, *, stdin=None, isatty=None, getpass_fn=None,
+                         invite="secret base32 (non affiché) : "):
+    """Rend le TEXTE du secret, sans jamais l'exiger sur la ligne de commande.
+
+    `arg` absent (`None`) ou `-` : on lit ailleurs.
+      - terminal interactif -> `getpass.getpass()`, qui n'écho rien et ne passe
+        par aucun historique ;
+      - sinon (un tuyau) -> une ligne sur l'entrée standard.
+
+    Toute autre valeur d'`arg` est rendue telle quelle : l'argument reste
+    accepté pour les scripts, avec l'avertissement que porte son aide.
+
+    Les dépendances sont injectables parce que c'est la SEULE façon de tester
+    les deux branches sans terminal — et parce qu'une fonction qui décide où
+    lire un secret mérite d'être éprouvée plutôt que constatée à l'usage.
+    """
+    if arg is not None and arg != "-":
+        return arg
+    flux = stdin if stdin is not None else sys.stdin
+    interactif = flux.isatty() if isatty is None else isatty
+    if interactif:
+        lire = getpass_fn if getpass_fn is not None else getpass.getpass
+        texte = lire(invite)
+    else:
+        texte = flux.readline()
+        if not texte:
+            raise OathError(
+                "aucun secret sur l'entrée standard. Donnez-le au clavier "
+                "(sans redirection), ou passez-le par un tuyau : "
+                "« pass show totp/github | niphar-oath add NOM ».")
+    texte = texte.strip()
+    if not texte:
+        raise OathError("secret vide")
+    return texte
+
+
+# --------------------------------------------------------------------------
+# Le lot — provisionner un second appareil sans vingt-quatre saisies
+# --------------------------------------------------------------------------
+class LigneRejetee(ValueError):
+    """Une ligne du lot qu'on refuse, avec sa raison."""
+
+
+def parse_batch_line(ligne):
+    """Découpe « nom<espace|tabulation>secret ». Rend (nom, texte_du_secret).
+
+    Rend `None` pour une ligne vide ou un commentaire (« # ») : un export
+    contient souvent des deux, et s'arrêter dessus serait absurde.
+
+    EXACTEMENT deux champs, et refus franc sinon. La tentation est de couper au
+    premier blanc (le reste étant le secret) ou au dernier (le début étant le
+    nom) : les deux se trompent EN SILENCE. Sur « OVH:mae dupont SECRET », la
+    coupe au premier blanc met « dupont » en tête du secret — or `dupontcap...`
+    reste souvent du base32 valide, donc le compte serait provisionné avec un
+    secret FAUX, sans un mot. Un refus nommé renvoie vers `add`, qui prend le
+    nom en argument et le secret sur l'entrée standard.
+    """
+    nu = ligne.strip()
+    if not nu or nu.startswith("#"):
+        return None
+    champs = nu.split()
+    if len(champs) != 2:
+        raise LigneRejetee(
+            f"{len(champs)} champ(s) séparés par des blancs, deux attendus "
+            "(nom puis secret base32). Un nom ou un secret contenant un espace "
+            "ne peut pas passer par le lot : utilisez « add » pour celui-là.")
+    return champs[0], champs[1]
+
+
+def parse_batch(texte):
+    """Analyse un lot entier. Rend une liste de (n° de ligne, nom, secret, err).
+
+    NE S'ARRÊTE PAS à la première erreur, et c'est le point : une migration à
+    moitié faite dont on ignore la moitié est pire qu'un échec net. Chaque ligne
+    porte son verdict, et l'appelant les rapporte toutes.
+
+    `secret` est le SECRET DÉCODÉ (octets) quand la ligne est bonne, `None`
+    sinon ; `err` est la raison du refus, `None` quand tout va bien. Décoder
+    ici plutôt qu'au moment de l'envoi permet de nommer une faute de frappe en
+    base32 avant d'avoir touché la clé.
+
+    Les doublons DANS le lot sont refusés : deux lignes pour le même nom
+    veulent dire que l'export est incohérent, et provisionner la première puis
+    l'écraser par la seconde demanderait un appui au milieu d'une migration
+    automatique — sans que personne sache lequel des deux secrets a gagné.
+    """
+    resultats = []
+    vus = set()
+    for numero, ligne in enumerate(texte.splitlines(), start=1):
+        try:
+            paire = parse_batch_line(ligne)
+        except LigneRejetee as exc:
+            resultats.append((numero, None, None, str(exc)))
+            continue
+        if paire is None:
+            continue
+        nom, texte_secret = paire
+        if nom in vus:
+            resultats.append((numero, nom, None,
+                              "ce nom apparaît déjà plus haut dans le lot"))
+            continue
+        vus.add(nom)
+        try:
+            check_name(nom)
+            secret = decode_secret(texte_secret)
+        except ValueError as exc:
+            resultats.append((numero, nom, None, str(exc)))
+            continue
+        resultats.append((numero, nom, secret, None))
+    return resultats
+
+
+# --------------------------------------------------------------------------
+# Le rempart CÔTÉ HÔTE du RESET
+# --------------------------------------------------------------------------
+# Le mot exact à taper. Pas « oui » : un « oui » se tape par réflexe, et ce
+# chemin détruit jusqu'à seize secrets d'un seul appui derrière. Comparé
+# SANS repli de casse — la friction est le but.
+RESET_MOT = "EFFACER"
+
+
+def texte_reset(noms):
+    """Ce que le RESET va détruire, écrit avant d'envoyer quoi que ce soit.
+
+    Nomme CHAQUE compte, pas seulement leur nombre : « 12 comptes » ne permet
+    pas de reconnaître qu'on s'est trompé de clé. L'écran de la clé, lui, ne
+    peut afficher que le nombre (`oath_reset_label`) — d'où l'intérêt que
+    l'hôte, qui a la place, dise le reste.
+    """
+    n = len(noms)
+    if n == 0:
+        return "La clé ne porte aucun compte OATH : il n'y a rien à effacer."
+    tete = (f"Le RESET va détruire {n} compte"
+            f"{'s' if n > 1 else ''} — DÉFINITIVEMENT, "
+            "la clé ne sait pas exporter ses secrets :")
+    corps = "\n".join(f"    {nom_affichable(b)}" for b in noms)
+    return tete + "\n" + corps
+
+
+def reponse_confirme_le_reset(saisie):
+    """La saisie autorise-t-elle l'effacement ?
+
+    Égalité stricte après retrait des blancs : ni « oui », ni « effacer » en
+    minuscules, ni une chaîne vide (donc ni un Entrée réflexe, ni une entrée
+    standard fermée).
+    """
+    return saisie is not None and saisie.strip() == RESET_MOT
 
 
 # --------------------------------------------------------------------------
@@ -504,15 +733,42 @@ def algo_nom(octet):
 
 
 def parse_list(data):
-    """La réponse au LIST : une entrée 0x72 par compte, [algo][nom]."""
+    """La réponse au LIST : une entrée 0x72 par compte, [algo][nom].
+
+    Rend le nom en OCTETS BRUTS, jamais décodé.
+
+    Ce qui était faux : le nom était décodé en `backslashreplace`, un décodage
+    à PERTE. Une étiquette qui n'est pas de l'UTF-8 valide ressortait alors
+    sous une forme qui ne se compare plus à ce que Mae tape ni à ce que la clé
+    stocke — et `cmd_add()` en concluait « ce compte n'existe pas », donc pas
+    d'écrasement, donc `PLAIN_TIMEOUT_S` (6 s) sur une commande que la clé tient
+    QUINZE secondes en attendant l'appui. L'hôte abandonnait alors avec la
+    commande en vol côté carte : exactement ce que la docstring
+    d'`await_final_frame()` interdit.
+
+    Le décodage n'a plus lieu que pour AFFICHER (`nom_affichable`), jamais pour
+    décider.
+    """
     out = []
     for tag, val in tlv_parse(data):
         if tag != TAG_NAME_LIST:
             continue
         if not val:
             raise OathError("entrée 0x72 vide : il manque l'octet de type")
-        out.append((val[0], val[1:].decode("utf-8", "backslashreplace")))
+        out.append((val[0], bytes(val[1:])))
     return out
+
+
+def nom_affichable(brut):
+    """Le nom d'un compte, rendu lisible — pour l'AFFICHAGE uniquement.
+
+    `backslashreplace` est un décodage à perte : deux étiquettes distinctes
+    peuvent en sortir identiques. Il n'a donc rien à faire dans une comparaison,
+    seulement dans un message.
+    """
+    if isinstance(brut, str):
+        return brut
+    return bytes(brut).decode("utf-8", "backslashreplace")
 
 
 # ===========================================================================
@@ -697,14 +953,20 @@ def _resoudre(cle, nom):
     exact (`oath_find_slot`, comparaison sur la longueur EXACTE), et deviner
     ferait confirmer à Mae un compte qu'elle n'a pas demandé — l'écran
     afficherait bien le bon nom, mais elle aurait déjà appuyé.
+
+    La comparaison porte sur les OCTETS, comme celle du firmware, et rend les
+    octets du compte trouvé : un décodage à perte au milieu de cette
+    comparaison ferait manquer un compte qui existe.
     """
-    comptes = [n for _, n in cle.list()]
-    if nom in comptes:
-        return nom
+    comptes = [b for _, b in cle.list()]
+    vise = check_name(nom)
+    if vise in comptes:
+        return vise
     if not comptes:
         raise OathError("aucun compte sur la clé")
-    proches = [n for n in comptes if nom.lower() in n.lower()]
-    detail = "\n".join(f"    {n}" for n in (proches or comptes))
+    bas = vise.lower()
+    proches = [b for b in comptes if bas in b.lower()]
+    detail = "\n".join(f"    {nom_affichable(b)}" for b in (proches or comptes))
     quoi = "comptes approchants" if proches else "comptes présents"
     raise OathError(f"aucun compte nommé exactement « {nom} ».\n"
                     f"  {quoi} :\n{detail}")
@@ -715,24 +977,39 @@ def cmd_list(cle, args):
     if not comptes:
         print("aucun compte")
         return 0
-    largeur = max(len(n) for _, n in comptes)
-    for algo, nom in comptes:
+    noms = [nom_affichable(b) for _, b in comptes]
+    largeur = max(len(n) for n in noms)
+    for (algo, _), nom in zip(comptes, noms):
         print(f"{nom.ljust(largeur)}  {algo_nom(algo)}")
     return 0
 
 
+def _put_un_compte(cle, nom, secret, digits):
+    """Envoie un PUT et rend (ok, mot_d_état).
+
+    `TOUCH_TIMEOUT_S` dans TOUS les cas, y compris quand on croit le compte
+    nouveau. L'échéance côté hôte est un garde-fou, jamais un arbitre : si la
+    clé décide qu'un appui est requis — parce que le compte existait après
+    tout, ou parce que le magasin a bougé entre le LIST et le PUT — elle tient
+    la commande quinze secondes, et un hôte qui lâche à six laisse la commande
+    en vol côté carte. Attendre plus longtemps que nécessaire ne coûte rien ;
+    lâcher trop tôt coûte un état incertain.
+    """
+    _, sw = cle.exchange(apdu_put(nom, secret, digits), TOUCH_TIMEOUT_S)
+    return sw == 0x9000, sw
+
+
 def cmd_add(cle, args):
-    secret = decode_secret(args.secret)
     nom = args.nom
-    existant = any(n == nom for _, n in cle.list())
+    secret = decode_secret(secret_depuis_entree(args.secret))
+    existant = check_name(nom) in [b for _, b in cle.list()]
     if existant:
         # Le firmware exige l'appui sur un PUT qui écrase : remplacer détruit
         # l'ancien secret aussi sûrement qu'un DELETE, en moins visible.
         print(f"« {nom} » existe déjà — l'écraser détruit son secret.")
         print("Appuyez sur le bouton de la clé (quinze secondes)…")
-    trame = apdu_put(nom, secret, args.digits)
-    _, sw = cle.exchange(trame, TOUCH_TIMEOUT_S if existant else PLAIN_TIMEOUT_S)
-    if sw == 0x9000:
+    ok, sw = _put_un_compte(cle, nom, secret, args.digits)
+    if ok:
         print(f"« {nom} » {'remplacé' if existant else 'ajouté'} "
               f"({args.digits} chiffres, TOTP/SHA1).")
         return 0
@@ -740,14 +1017,63 @@ def cmd_add(cle, args):
     return 1
 
 
+def cmd_add_batch(cle, args):
+    """Provisionne un lot lu sur l'entrée standard. JAMAIS depuis un fichier."""
+    if sys.stdin.isatty():
+        print("une ligne par compte : « nom<espace>secret-base32 ». "
+              "Ctrl-D pour finir.", file=sys.stderr)
+    lignes = parse_batch(sys.stdin.read())
+    if not lignes:
+        print("rien à faire : aucune ligne exploitable sur l'entrée standard.",
+              file=sys.stderr)
+        return 1
+
+    presents = {b for _, b in cle.list()}
+    ajoutes = deja = rejetes = 0
+
+    for numero, nom, secret, err in lignes:
+        etiquette = f"ligne {numero}" + (f" « {nom} »" if nom else "")
+        if err is not None:
+            print(f"  rejeté   {etiquette} : {err}", file=sys.stderr)
+            rejetes += 1
+            continue
+        if check_name(nom) in presents:
+            # On n'écrase PAS en lot : un écrasement exige un appui physique,
+            # et douze appuis au milieu d'une migration automatique ne sont ni
+            # attendus ni vérifiables. « add » le fait, compte par compte.
+            print(f"  déjà là  {etiquette} — laissé tel quel "
+                  "(« add » pour l'écraser, avec appui)")
+            deja += 1
+            continue
+        try:
+            ok, sw = _put_un_compte(cle, nom, secret, args.digits)
+        except (OathError, ValueError) as exc:
+            # Une ligne en échec n'arrête PAS les suivantes : l'inverse
+            # laisserait une migration à moitié faite dont on ignore la moitié.
+            print(f"  échec    {etiquette} : {exc}", file=sys.stderr)
+            rejetes += 1
+            continue
+        if ok:
+            print(f"  ajouté   {etiquette}")
+            presents.add(check_name(nom))
+            ajoutes += 1
+        else:
+            print(f"  échec    {etiquette} : {sw_message(sw)}", file=sys.stderr)
+            rejetes += 1
+
+    print(f"\n{ajoutes} ajouté(s), {deja} déjà présent(s), {rejetes} rejeté(s).")
+    return 1 if rejetes else 0
+
+
 def cmd_code(cle, args):
-    nom = _resoudre(cle, args.nom)
-    periode, _ = parse_period(nom)
+    brut = _resoudre(cle, args.nom)
+    affiche = nom_affichable(brut)
+    periode, _ = parse_period(affiche)
     maintenant = int(time.time())
     defi = totp_challenge(maintenant, periode)
 
-    print(f"« {nom} » — appuyez sur le bouton de la clé (quinze secondes)…")
-    data, sw = cle.exchange(apdu_calculate(nom, defi), TOUCH_TIMEOUT_S)
+    print(f"« {affiche} » — appuyez sur le bouton de la clé (quinze secondes)…")
+    data, sw = cle.exchange(apdu_calculate(brut, defi), TOUCH_TIMEOUT_S)
     if sw != 0x9000:
         print(f"échec : {sw_message(sw)}", file=sys.stderr)
         return 1
@@ -758,12 +1084,77 @@ def cmd_code(cle, args):
 
 
 def cmd_delete(cle, args):
-    nom = _resoudre(cle, args.nom)
-    print(f"« {nom} » — appuyez sur le bouton de la clé pour EFFACER "
+    brut = _resoudre(cle, args.nom)
+    affiche = nom_affichable(brut)
+    print(f"« {affiche} » — appuyez sur le bouton de la clé pour EFFACER "
           "(quinze secondes)…")
-    _, sw = cle.exchange(apdu_delete(nom), TOUCH_TIMEOUT_S)
+    _, sw = cle.exchange(apdu_delete(brut), TOUCH_TIMEOUT_S)
     if sw == 0x9000:
-        print(f"« {nom} » effacé.")
+        print(f"« {affiche} » effacé.")
+        return 0
+    print(f"échec : {sw_message(sw)}", file=sys.stderr)
+    return 1
+
+
+def cmd_rename(cle, args):
+    """RENAME : le firmware ne demande AUCUN appui — rien n'est détruit.
+
+    Le secret ne bouge pas, seule l'étiquette change (`oath_do_rename`, qui
+    relit puis réécrit le slot). Le seul refus attendu est un nom déjà pris,
+    que la clé rend en 6A80 pour ne pas créer un doublon — un doublon rendrait
+    le second slot inatteignable, donc indélébile, puisque toute commande de
+    cet applet passe par le nom.
+    """
+    brut = _resoudre(cle, args.ancien)
+    affiche = nom_affichable(brut)
+    _, sw = cle.exchange(apdu_rename(brut, args.neuf), PLAIN_TIMEOUT_S)
+    if sw == 0x9000:
+        print(f"« {affiche} » renommé en « {args.neuf} ».")
+        return 0
+    print(f"échec : {sw_message(sw)}", file=sys.stderr)
+    return 1
+
+
+def cmd_reset(cle, args):
+    """RESET : deux remparts, et l'hôte passe EN PREMIER.
+
+    Le chemin le plus destructeur de cet applet — jusqu'à seize secrets d'un
+    seul appui. La garde du firmware (P1/P2 = DE:AD, puis l'appui physique) n'a
+    jamais tourné avant cette commande : le client ne l'implémentait pas, et
+    `ykman` ne peut pas tourner sur cette machine. « Protégé par une garde
+    qu'on n'a jamais vue fonctionner » n'est pas protégé.
+
+    L'hôte affiche donc CE QU'IL VA DÉTRUIRE et exige un mot exact AVANT même
+    d'envoyer l'APDU. L'appui sur la clé reste le second rempart, pas le
+    premier : quand l'écran de la clé s'allume, la décision est déjà prise.
+    """
+    comptes = [b for _, b in cle.list()]
+    print(texte_reset(comptes))
+    if not comptes:
+        return 0
+
+    if not sys.stdin.isatty():
+        # Un « yes | niphar-oath reset » viderait la clé sans que personne
+        # n'ait lu la liste ci-dessus. Le refus est la seule réponse honnête.
+        print("\nrefusé : le RESET exige une confirmation tapée sur un vrai "
+              "terminal.", file=sys.stderr)
+        return 1
+
+    print(f"\nTapez « {RESET_MOT} » pour confirmer, n'importe quoi d'autre "
+          "pour renoncer.")
+    try:
+        saisie = input("> ")
+    except EOFError:
+        saisie = ""
+    if not reponse_confirme_le_reset(saisie):
+        print("annulé — rien n'a été envoyé à la clé.")
+        return 1
+
+    print("Appuyez maintenant sur le bouton de la clé pour TOUT EFFACER "
+          "(quinze secondes)…")
+    _, sw = cle.exchange(apdu_reset(), TOUCH_TIMEOUT_S)
+    if sw == 0x9000:
+        print(f"{len(comptes)} compte(s) effacé(s).")
         return 0
     print(f"échec : {sw_message(sw)}", file=sys.stderr)
     return 1
@@ -781,12 +1172,35 @@ def build_parser():
     s = sub.add_parser("list", help="liste les comptes (sans appui)")
     s.set_defaults(fn=cmd_list)
 
-    s = sub.add_parser("add", help="provisionne un compte")
+    s = sub.add_parser(
+        "add", help="provisionne un compte (secret lu hors de la ligne de commande)",
+        description="Le secret n'est PAS demandé en argument : il est lu sur "
+                    "l'entrée standard, ou au clavier sans écho si le terminal "
+                    "est interactif.")
     s.add_argument("nom", help="p. ex. « GitHub:mae@exemple.org »")
-    s.add_argument("secret", help="le secret en base32, tel que donné par le site")
+    s.add_argument(
+        "secret", nargs="?", default=None,
+        help="À NE PAS UTILISER en usage courant : un secret donné ici finit "
+             "en clair dans l'historique du shell et dans /proc/<pid>/cmdline. "
+             "Absent ou « - » (le défaut), il est lu sur l'entrée standard, ou "
+             "par une invite sans écho sur un terminal interactif.")
     s.add_argument("--digits", type=int, default=6, choices=(6, 8),
                    help="longueur du code (défaut : 6)")
     s.set_defaults(fn=cmd_add)
+
+    s = sub.add_parser(
+        "add-batch",
+        help="provisionne un LOT de comptes lu sur l'entrée standard",
+        description="Une ligne par compte : « nom<espace ou tabulation>"
+                    "secret-base32 ». Lignes vides et « # » ignorées. Aucun "
+                    "fichier n'est accepté en argument — la contrainte est que "
+                    "les secrets ne touchent pas le disque. Chaque ligne est "
+                    "rapportée, et une ligne en échec n'arrête pas les "
+                    "suivantes. Un compte déjà présent est laissé tel quel "
+                    "(l'écraser exige un appui : voir « add »).")
+    s.add_argument("--digits", type=int, default=6, choices=(6, 8),
+                   help="longueur des codes du lot (défaut : 6)")
+    s.set_defaults(fn=cmd_add_batch)
 
     s = sub.add_parser("code", help="calcule un code (demande un appui)")
     s.add_argument("nom")
@@ -795,6 +1209,20 @@ def build_parser():
     s = sub.add_parser("delete", help="efface un compte (demande un appui)")
     s.add_argument("nom")
     s.set_defaults(fn=cmd_delete)
+
+    s = sub.add_parser(
+        "rename", help="renomme un compte (aucun appui : rien n'est détruit)")
+    s.add_argument("ancien", help="le nom exact du compte à renommer")
+    s.add_argument("neuf", help="son nouveau nom")
+    s.set_defaults(fn=cmd_rename)
+
+    s = sub.add_parser(
+        "reset", help="EFFACE TOUS les comptes OATH (double confirmation)",
+        description="Affiche d'abord la liste de ce qui va être détruit et "
+                    f"exige que « {RESET_MOT} » soit tapé sur un vrai "
+                    "terminal, AVANT d'envoyer quoi que ce soit à la clé. "
+                    "L'appui physique reste le second rempart.")
+    s.set_defaults(fn=cmd_reset)
     return p
 
 

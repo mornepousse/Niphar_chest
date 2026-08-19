@@ -381,10 +381,32 @@ class TestReponses(unittest.TestCase):
             oath.parse_select(oath.tlv(0x71, b"\x01" * 8))
 
     def test_liste_rend_algo_et_nom(self):
+        # Le nom sort en OCTETS BRUTS : c'est sur eux que la clé compare, et
+        # tout décodage au milieu de la comparaison est un décodage à perte.
         body = oath.tlv(0x72, b"\x21GitHub:mae") + oath.tlv(0x72, b"\x21b")
         self.assertEqual(
-            oath.parse_list(body), [(0x21, "GitHub:mae"), (0x21, "b")]
+            oath.parse_list(body), [(0x21, b"GitHub:mae"), (0x21, b"b")]
         )
+
+    def test_liste_ne_decode_pas_une_etiquette_non_utf8(self):
+        """LE test de m7 : une étiquette qui n'est pas de l'UTF-8 valide.
+
+        Avec l'ancien décodage `backslashreplace`, l'octet 0xFF ressortait en
+        « \\xff » — six caractères qui ne se comparent plus ni à ce que Mae
+        tape ni à ce que la clé stocke. `cmd_add()` en concluait « ce compte
+        n'existe pas », employait PLAIN_TIMEOUT_S (6 s) sur une commande que la
+        clé tient QUINZE secondes, et abandonnait avec la commande en vol —
+        ce que la docstring d'await_final_frame() interdit explicitement.
+        """
+        brut = b"OVH:\xffperso"
+        body = oath.tlv(0x72, bytes([0x21]) + brut)
+        self.assertEqual(oath.parse_list(body), [(0x21, brut)])
+        # Le round-trip est exact : c'est la propriété dont dépend la décision
+        # « ce compte existe-t-il ? ».
+        self.assertEqual(oath.check_name(brut), brut)
+        # Et l'affichage, lui, reste lisible — mais À PERTE, donc jamais
+        # employé pour décider.
+        self.assertIn("OVH", oath.nom_affichable(brut))
 
     def test_liste_vide(self):
         self.assertEqual(oath.parse_list(b""), [])
@@ -395,11 +417,218 @@ class TestReponses(unittest.TestCase):
 
     def test_liste_ignore_les_tags_etrangers(self):
         body = oath.tlv(0x79, b"\x05") + oath.tlv(0x72, b"\x21a")
-        self.assertEqual(oath.parse_list(body), [(0x21, "a")])
+        self.assertEqual(oath.parse_list(body), [(0x21, b"a")])
 
     def test_algo_lisible(self):
         self.assertEqual(oath.algo_nom(0x21), "TOTP/SHA1")
         self.assertIn("0x11", oath.algo_nom(0x11))
+
+
+# --------------------------------------------------------------------------
+# D'où vient le secret — C1 : jamais de la ligne de commande
+# --------------------------------------------------------------------------
+class _Flux:
+    """Une entrée standard factice, dont on choisit si elle est un terminal."""
+
+    def __init__(self, texte="", tty=False):
+        self._texte = texte
+        self._tty = tty
+
+    def isatty(self):
+        return self._tty
+
+    def readline(self):
+        ligne, _, reste = self._texte.partition("\n")
+        if not self._texte:
+            return ""
+        self._texte = reste
+        return ligne + "\n"
+
+    def read(self):
+        t, self._texte = self._texte, ""
+        return t
+
+
+class TestSecretHorsArgv(unittest.TestCase):
+    def test_un_tuyau_donne_le_secret_sur_l_entree_standard(self):
+        flux = _Flux("JBSWY3DPEHPK3PXP\n", tty=False)
+        self.assertEqual(
+            oath.secret_depuis_entree(None, stdin=flux), "JBSWY3DPEHPK3PXP"
+        )
+
+    def test_un_terminal_passe_par_une_invite_sans_echo(self):
+        # getpass n'écho rien et ne passe par aucun historique : c'est LA
+        # raison d'être de la branche interactive. On vérifie qu'elle est bien
+        # empruntée, et que l'entrée standard n'est PAS lue à la place.
+        appels = []
+
+        def faux_getpass(invite):
+            appels.append(invite)
+            return "  JBSWY3DPEHPK3PXP  "
+
+        flux = _Flux("CECI-NE-DOIT-PAS-ETRE-LU\n", tty=True)
+        got = oath.secret_depuis_entree(None, stdin=flux, getpass_fn=faux_getpass)
+        self.assertEqual(got, "JBSWY3DPEHPK3PXP")
+        self.assertEqual(len(appels), 1)
+
+    def test_le_tiret_vaut_absence(self):
+        flux = _Flux("SECRET\n", tty=False)
+        self.assertEqual(oath.secret_depuis_entree("-", stdin=flux), "SECRET")
+
+    def test_un_secret_explicite_reste_accepte(self):
+        # L'argument reste utilisable pour les scripts — son aide dit ce qu'il
+        # en coûte. Le vérifier interdit de « corriger » C1 en cassant l'usage
+        # scripté sans le dire.
+        flux = _Flux("AUTRE\n", tty=False)
+        self.assertEqual(oath.secret_depuis_entree("EXPLICITE", stdin=flux),
+                         "EXPLICITE")
+
+    def test_entree_standard_vide_est_une_erreur_nommee(self):
+        with self.assertRaises(oath.OathError):
+            oath.secret_depuis_entree(None, stdin=_Flux("", tty=False))
+
+    def test_une_ligne_blanche_ne_passe_pas_pour_un_secret(self):
+        with self.assertRaises(oath.OathError):
+            oath.secret_depuis_entree(None, stdin=_Flux("   \n", tty=False))
+
+
+# --------------------------------------------------------------------------
+# Le lot — C1 : douze comptes, deux appareils, zéro saisie manuelle
+# --------------------------------------------------------------------------
+class TestLot(unittest.TestCase):
+    def test_deux_champs_separes_par_un_blanc(self):
+        r = oath.parse_batch("GitHub:mae JBSWY3DPEHPK3PXP\n")
+        self.assertEqual(len(r), 1)
+        numero, nom, secret, err = r[0]
+        self.assertEqual((numero, nom, err), (1, "GitHub:mae", None))
+        self.assertEqual(secret, oath.decode_secret("JBSWY3DPEHPK3PXP"))
+
+    def test_la_tabulation_separe_aussi(self):
+        r = oath.parse_batch("GitHub:mae\tJBSWY3DPEHPK3PXP\n")
+        self.assertEqual(r[0][1], "GitHub:mae")
+        self.assertIsNone(r[0][3])
+
+    def test_lignes_vides_et_commentaires_ignores(self):
+        texte = "# export Proton\n\nA:x JBSWY3DPEHPK3PXP\n   \n"
+        r = oath.parse_batch(texte)
+        self.assertEqual([l[1] for l in r], ["A:x"])
+
+    def test_une_ligne_mal_formee_n_arrete_pas_les_suivantes(self):
+        """LE point du lot : rendre compte de TOUT, ne s'arrêter sur rien.
+
+        Une migration à moitié faite dont on ignore la moitié est pire qu'un
+        échec net. Les trois lignes suivantes se suivent : bonne, cassée,
+        bonne — la troisième doit être analysée quand même.
+        """
+        texte = ("A:x JBSWY3DPEHPK3PXP\n"
+                 "B:y\n"                       # un seul champ
+                 "C:z JBSWY3DPEHPK3PXP\n")
+        r = oath.parse_batch(texte)
+        self.assertEqual(len(r), 3)
+        self.assertIsNone(r[0][3])
+        self.assertIsNotNone(r[1][3])
+        self.assertIsNone(r[2][3], "la ligne d'APRÈS l'erreur est traitée")
+
+    def test_trois_champs_sont_refuses_plutot_que_devines(self):
+        # « OVH:mae dupont SECRET » : couper au premier blanc mettrait
+        # « dupont » en tête du secret, et « dupontJBSW… » reste du base32
+        # valide — le compte serait provisionné avec un secret FAUX, en
+        # silence. Un refus nommé vaut mieux qu'une devinette muette.
+        r = oath.parse_batch("OVH:mae dupont JBSWY3DPEHPK3PXP\n")
+        self.assertEqual(len(r), 1)
+        self.assertIsNone(r[0][2])
+        self.assertIn("deux attendus", r[0][3])
+
+    def test_un_secret_base32_invalide_est_nomme_avant_toute_ecriture(self):
+        r = oath.parse_batch("A:x PAS!DU!BASE32\n")
+        self.assertIsNone(r[0][2])
+        self.assertIsNotNone(r[0][3])
+
+    def test_un_nom_trop_long_est_rejete_comme_la_cle_le_ferait(self):
+        long_nom = "x" * oath.SEC_LABEL_LEN
+        r = oath.parse_batch(f"{long_nom} JBSWY3DPEHPK3PXP\n")
+        self.assertIsNone(r[0][2])
+        self.assertIsNotNone(r[0][3])
+
+    def test_un_doublon_dans_le_lot_est_refuse(self):
+        # Provisionner puis écraser demanderait un appui au milieu d'une
+        # migration automatique, sans que personne sache lequel des deux
+        # secrets a gagné.
+        texte = "A:x JBSWY3DPEHPK3PXP\nA:x MZXW6YTBOI======\n"
+        r = oath.parse_batch(texte)
+        self.assertIsNone(r[0][3])
+        self.assertIsNotNone(r[1][3])
+
+    def test_les_numeros_de_ligne_designent_le_fichier_d_origine(self):
+        # Compter les lignes EXPLOITABLES ferait désigner la mauvaise ligne
+        # dans le rapport, donc envoyer Mae corriger un compte qui va bien.
+        texte = "# entête\n\nA:x PAS!DU!BASE32\n"
+        r = oath.parse_batch(texte)
+        self.assertEqual(r[0][0], 3)
+
+
+# --------------------------------------------------------------------------
+# RESET — I5 : le rempart côté hôte, avant tout envoi
+# --------------------------------------------------------------------------
+class TestResetHote(unittest.TestCase):
+    def test_le_texte_nomme_chaque_compte_et_leur_nombre(self):
+        # « 12 comptes » ne permet pas de reconnaître qu'on s'est trompé de
+        # clé ; l'écran de la clé ne peut afficher que le nombre, donc c'est à
+        # l'hôte — qui a la place — de dire le reste.
+        t = oath.texte_reset([b"OVH:perso", b"OVH:pro", b"GitHub:mae"])
+        for nom in ("OVH:perso", "OVH:pro", "GitHub:mae"):
+            self.assertIn(nom, t)
+        self.assertIn("3", t)
+
+    def test_un_magasin_vide_le_dit(self):
+        t = oath.texte_reset([])
+        self.assertIn("aucun compte", t.lower())
+
+    def test_le_mot_exact_est_exige(self):
+        self.assertTrue(oath.reponse_confirme_le_reset("EFFACER"))
+        self.assertTrue(oath.reponse_confirme_le_reset("  EFFACER \n"))
+
+    def test_tout_le_reste_renonce(self):
+        # « oui » et un Entrée réflexe sont exactement les deux saisies qu'un
+        # geste automatique produit : elles ne doivent rien autoriser.
+        for saisie in ("", "  ", "oui", "o", "y", "effacer", "Effacer",
+                       "EFFACER TOUT", "EFFACE", None):
+            self.assertFalse(oath.reponse_confirme_le_reset(saisie),
+                             f"« {saisie} » ne doit pas autoriser le RESET")
+
+
+# --------------------------------------------------------------------------
+# RENAME et RESET — les trames, I5
+# --------------------------------------------------------------------------
+class TestApduDestructrices(unittest.TestCase):
+    def test_reset_porte_les_deux_octets_de_verrouillage(self):
+        # P1/P2 = DE:AD SONT le verrou : c'est leur unique raison d'être, et
+        # sans eux la clé répond 6A80 (OATH_RESET_P1/P2, oath_proto.c).
+        self.assertEqual(oath.apdu_reset(), b"\x00\x04\xde\xad")
+
+    def test_reset_est_une_apdu_de_cas_1(self):
+        # Quatre octets, pas de Lc ni de Le : apdu_parse() du firmware traite
+        # len==4 comme le cas 1. Un octet de plus en ferait une autre commande.
+        self.assertEqual(len(oath.apdu_reset()), 4)
+
+    def test_rename_porte_deux_0x71_dans_l_ordre(self):
+        # oath_do_rename() lit le PREMIER 0x71 comme la CIBLE et cherche le
+        # second dans ce qui SUIT sa valeur : les inverser renommerait un
+        # compte inconnu, ou le compte en lui-même sans erreur visible.
+        trame = oath.apdu_rename("vieux", "neuf")
+        self.assertEqual(trame[:4], b"\x00\x05\x00\x00")
+        tlvs = oath.tlv_parse(trame[5:])
+        self.assertEqual(tlvs, [(0x71, b"vieux"), (0x71, b"neuf")])
+
+    def test_rename_refuse_un_nom_identique(self):
+        with self.assertRaises(ValueError):
+            oath.apdu_rename("pareil", "pareil")
+
+    def test_rename_borne_les_deux_noms(self):
+        with self.assertRaises(ValueError):
+            oath.apdu_rename("a", "x" * oath.SEC_LABEL_LEN)
+        with self.assertRaises(ValueError):
+            oath.apdu_rename("", "b")
 
 
 if __name__ == "__main__":
