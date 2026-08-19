@@ -20,6 +20,17 @@
 #     nix-shell
 #     fido2-token -L                 # liste les authentificateurs
 #     fido2-token -I /dev/hidrawN    # décrit la clé
+#
+# Il fournit aussi pyusb, pour tools/niphar-oath — le client hôte de l'applet
+# OATH. Celui-là EST un client maison, contrairement au parti pris ci-dessus,
+# et pour une raison mesurée : `ykman` exige pcscd, que la configuration NixOS
+# de cette machine désactive délibérément parce qu'il saisirait l'interface
+# CCID avant scdaemon et casserait `gpg --card-status`. Le firmware, lui, reste
+# du YKOATH standard : n'importe quelle machine avec pcscd peut y brancher
+# `ykman`, qui reste l'oracle indépendant le jour où il y en aura une.
+#
+#     nix-shell
+#     ./tools/niphar-oath list       # la clé doit être en « usb mode oath »
 
 { pkgs ? import <nixpkgs> { } }:
 
@@ -41,7 +52,11 @@ pkgs.mkShell {
     gcc
 
     # --- Outillage du dépôt -----------------------------------------------
-    python3 # tools/svg2bitmap.py et ses tests, scripts de sonde
+    # python3 avec pyusb : tools/svg2bitmap.py, ses tests, et le client CCID
+    # tools/niphar-oath. Les TESTS de ce client, eux, tournent sans pyusb —
+    # scripts/fast.sh les lance avec le python3 du système, d'où l'import
+    # différé dans le client.
+    (python3.withPackages (ps: [ ps.pyusb ]))
     usbutils # lsusb, pour vérifier l'énumération des descripteurs
   ];
 

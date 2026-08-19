@@ -206,6 +206,23 @@ if ! out=$(python3 tools/test_svg2bitmap.py 2>&1); then
     exit 1
 fi
 
+# tools/niphar-oath est le client hôte de l'applet OATH. Trois de ses calculs
+# ne sont rattrapés par AUCUN oracle en aval — ni la carte, ni le build :
+#   1. le compteur de temps, huit octets gros-boutiens, que la clé ne calcule
+#      pas (elle n'a pas d'horloge) ;
+#   2. le modulo de la RFC 4226, que la carte NE FAIT PAS exprès
+#      (oath_dynamic_binary, main/security/oath_proto.h) ;
+#   3. l'absorption des trames WTX pendant l'attente de l'appui.
+# Se tromper sur 1 ou 2 rend un code parfaitement formé et faux ; sur 3, un
+# client qui conclut à un firmware cassé. Ces tests n'ont besoin ni de la carte
+# ni de pyusb — l'import de la bibliothèque est différé dans le client pour
+# cette raison précise.
+if ! out=$(python3 tools/test_niphar_oath.py 2>&1); then
+    echo "tests de tools/niphar-oath en échec :" >&2
+    printf '%s\n' "$out" | tail -30 >&2
+    exit 1
+fi
+
 # --- Build ----------------------------------------------------------------
 if ! command -v idf.py >/dev/null 2>&1; then
     # shellcheck disable=SC1091

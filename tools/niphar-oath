@@ -1,0 +1,818 @@
+#!/usr/bin/env python3
+"""niphar-oath — client hôte de l'applet OATH/TOTP de la clé Niphar.
+
+POURQUOI CE CLIENT EXISTE, ET PAS `ykman`
+=========================================
+
+Le firmware parle du YKOATH standard : sur une machine avec `pcscd`, `ykman`
+fonctionne dessus (`ykman --reader <nom>`, la clé ne s'appelant pas
+« Yubico YubiKey »). Cette machine-ci n'en a pas, et c'est délibéré : sa
+configuration NixOS désactive `pcscd` parce qu'il saisirait l'interface CCID
+avant `scdaemon` et casserait `gpg --card-status`, donc l'authentification SSH
+par carte à puce de la propriétaire. Ajouter la clé à la liste de lecteurs de
+`libccid` ferait passer son `gpg` par PC/SC — même dégât, par un autre chemin.
+
+Ce client parle donc CCID directement par libusb, exactement comme le pilote
+CCID interne de `scdaemon` le fait déjà pour le dongle OpenPGP. Aucune
+configuration système ne bouge. Le firmware, lui, n'est pas modifié pour nous.
+
+TROIS POINTS QUI DÉCIDENT SI ÇA MARCHE
+======================================
+
+1. LE COMPTEUR DE TEMPS EST PORTÉ PAR L'HÔTE. La clé n'a pas d'horloge et n'en
+   veut pas (décision 1 de la spec) : c'est ce fichier qui calcule
+   `int(time.time()) // période`, sur huit octets gros-boutiens. Une erreur de
+   boutisme ou de période rend un code plausible et faux.
+
+2. LA CARTE N'APPLIQUE PAS LE MODULO. La réponse `0x76` porte
+   `[chiffres][4 octets bruts]` ; c'est `format_code()` ci-dessous qui fait
+   `(valeur & 0x7FFFFFFF) % 10**chiffres`, comme `_format_code()` de ykman.
+   Afficher les quatre octets tels quels ferait croire le firmware cassé —
+   c'est le firmware qui a raison, voir le commentaire d'`oath_dynamic_binary`
+   dans main/security/oath_proto.h.
+
+3. L'ATTENTE DE L'APPUI SE FAIT EN ABSORBANT LES WTX. La carte tient l'APDU
+   ouverte pendant qu'elle attend le bouton et émet, toutes les 1,5 s, une
+   trame CCID d'extension de temps (`RDR_to_PC_DataBlock`, bStatus=0x80,
+   bError=0x02 — main/security/ccid.c, `ccid_send_wtx_cb`). C'est une invite à
+   patienter, PAS une réponse : un client qui la prend pour la réponse rend une
+   trame vide. `await_final_frame()` les compte pour rien et continue d'attendre.
+
+CE QUE LE CLIENT NE FAIT PAS
+============================
+
+Pas de RENAME, pas de RESET, pas de SET CODE/VALIDATE (la clé n'a pas de mot de
+passe — décision 3). Quatre sous-commandes : `list`, `add`, `code`, `delete`.
+`add` sur un nom déjà présent ÉCRASE, donc détruit un secret, donc demande un
+appui (`OATH_TOUCH_REPLACE`).
+
+PRÉ-REQUIS
+==========
+
+La clé doit être en `usb mode oath` : à froid elle démarre en `USB_MODE_NONE` et
+n'expose RIEN. Le sélecteur est la console série (voir CLAUDE.md).
+
+    nix-shell            # fournit python3 + pyusb
+    ./tools/niphar-oath list
+"""
+
+import argparse
+import base64
+import binascii
+import re
+import sys
+import time
+
+# ---------------------------------------------------------------------------
+# Constantes du protocole
+#
+# Toutes relevées dans main/security/oath_proto.{c,h} et dans yubikit/oath.py
+# de ykman 5.9.1. Rien n'est deviné ici : une divergence entre ce tableau et le
+# firmware est un défaut, pas une adaptation.
+# ---------------------------------------------------------------------------
+AID = bytes([0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01])
+
+TAG_NAME = 0x71
+TAG_NAME_LIST = 0x72
+TAG_KEY = 0x73
+TAG_CHALLENGE = 0x74
+TAG_RESPONSE = 0x75
+TAG_TRUNCATED = 0x76
+TAG_PROPERTY = 0x78
+TAG_VERSION = 0x79
+TAG_TOUCH = 0x7C
+
+INS_PUT = 0x01
+INS_DELETE = 0x02
+INS_LIST = 0xA1
+INS_CALCULATE = 0xA2
+INS_SELECT = 0xA4
+INS_SEND_REMAINING = 0xA5
+
+# Le SEUL type de compte que la clé accepte : TOTP (0x20) sur HMAC-SHA1 (0x01).
+# Un 0x22 (SHA-256) serait refusé par 6A81 — cf. OATH_ALGO_TOTP_SHA1.
+ALGO_TOTP_SHA1 = 0x21
+
+# Bornes du magasin (main/security/sec_store.h). Les vérifier ICI plutôt que de
+# laisser la carte répondre 6A80 permet de nommer ce qui cloche.
+SEC_LABEL_LEN = 64
+SEC_SECRET_MAX = 64
+
+VID = 0x303A
+PID = 0x4021
+
+CCID_HDR_LEN = 10
+PC_TO_RDR_ICC_POWER_ON = 0x62
+PC_TO_RDR_XFR_BLOCK = 0x6F
+RDR_TO_PC_DATA_BLOCK = 0x80
+
+# La clé abandonne l'attente au bout de SEC_CONFIRM_TIMEOUT_MS (15 s) et répond
+# 6985. On lui laisse de la marge : c'est elle qui doit trancher, jamais nous —
+# un client qui lâche le premier laisse une commande en vol côté carte.
+TOUCH_TIMEOUT_S = 30.0
+PLAIN_TIMEOUT_S = 6.0
+# La carte émet un WTX toutes les 1,5 s : au-delà de trois périodes sans rien,
+# ce n'est plus de la patience, c'est une panne.
+READ_TIMEOUT_MS = 5000
+
+
+class OathError(Exception):
+    """Erreur de protocole, de trame, ou d'usage."""
+
+
+class CcidError(OathError):
+    """Erreur au niveau du transport CCID (trame, statut, silence)."""
+
+
+# ===========================================================================
+# LOGIQUE PURE — tout ce qui suit est testé par tools/test_niphar_oath.py et
+# ne touche ni à libusb ni à l'horloge (sauf où le paramètre est injecté).
+# ===========================================================================
+
+# --------------------------------------------------------------------------
+# TLV
+# --------------------------------------------------------------------------
+def tlv(tag, value=b""):
+    """Un TLV YKOATH : un octet de tag, un octet de longueur, la valeur."""
+    if len(value) > 0xFF:
+        raise ValueError(f"valeur de {len(value)} octets — le TLV YKOATH est "
+                         "borné à 255, il n'y a pas de forme longue ici")
+    return bytes([tag, len(value)]) + bytes(value)
+
+
+def tlv_parse(data):
+    """Découpe une suite de TLV. Rend une LISTE, pas un dictionnaire.
+
+    Le RENAME porte deux 0x71 de suite (l'ancien nom puis le nouveau) et le
+    CALCULATE ALL un 0x71 + 0x7C par compte : un dictionnaire perdrait toutes
+    les répétitions sauf une.
+    """
+    out = []
+    i = 0
+    n = len(data)
+    while i < n:
+        if i + 2 > n:
+            raise OathError(f"TLV tronqué à l'offset {i} : il manque l'octet "
+                            "de longueur")
+        tag = data[i]
+        length = data[i + 1]
+        if i + 2 + length > n:
+            raise OathError(f"TLV 0x{tag:02X} annonce {length} octets, il n'en "
+                            f"reste que {n - i - 2}")
+        out.append((tag, bytes(data[i + 2:i + 2 + length])))
+        i += 2 + length
+    return out
+
+
+def tlv_first(tlvs, tag):
+    """La valeur du PREMIER TLV portant `tag`, ou None."""
+    for t, v in tlvs:
+        if t == tag:
+            return v
+    return None
+
+
+# --------------------------------------------------------------------------
+# APDU (ISO 7816-4, forme courte)
+# --------------------------------------------------------------------------
+def apdu(cla, ins, p1, p2, data=b""):
+    """Une APDU de commande, cas 1 (en-tête seul) ou cas 3S (avec données).
+
+    Jamais de Le : `apdu_parse()` du firmware (main/security/apdu.c) traite une
+    APDU de 4 octets comme le cas 1, et de 5+Lc comme le cas 3S. Ajouter un Le
+    ferait basculer un SEND REMAINING de 4 octets en cas 2S — une autre
+    commande.
+    """
+    if len(data) > 0xFF:
+        raise ValueError(f"{len(data)} octets de données : au-delà de 255 il "
+                         "faudrait une APDU étendue, que ces commandes "
+                         "n'utilisent pas")
+    head = bytes([cla, ins, p1, p2])
+    if not data:
+        return head
+    return head + bytes([len(data)]) + bytes(data)
+
+
+def check_name(name):
+    """Borne un nom de compte comme le fait `oath_name_copy()` du firmware."""
+    raw = name.encode("utf-8")
+    if not raw:
+        raise ValueError("nom de compte vide")
+    if b"\x00" in raw:
+        raise ValueError("nom de compte contenant un octet nul")
+    if len(raw) >= SEC_LABEL_LEN:
+        raise ValueError(f"nom de {len(raw)} octets : la clé en accepte "
+                         f"{SEC_LABEL_LEN - 1} au plus")
+    return raw
+
+
+def apdu_select():
+    return apdu(0x00, INS_SELECT, 0x04, 0x00, AID)
+
+
+def apdu_send_remaining():
+    return apdu(0x00, INS_SEND_REMAINING, 0x00, 0x00)
+
+
+def apdu_list():
+    return apdu(0x00, INS_LIST, 0x00, 0x00)
+
+
+def apdu_calculate(name, challenge):
+    """CALCULATE, P2=01 — la forme tronquée, celle qui rend un 0x76.
+
+    P2=00 rendrait le HMAC complet (0x75), qu'il faudrait tronquer nous-mêmes :
+    deux implémentations de la RFC 4226 au lieu d'une, pour rien.
+    """
+    if len(challenge) != 8:
+        raise ValueError(f"défi de {len(challenge)} octets — la clé exige "
+                         "exactement 8 (OATH_CHALLENGE_LEN) et répond 6A80 "
+                         "sinon")
+    body = tlv(TAG_NAME, check_name(name)) + tlv(TAG_CHALLENGE, challenge)
+    return apdu(0x00, INS_CALCULATE, 0x00, 0x01, body)
+
+
+def apdu_put(name, secret, digits):
+    """PUT — le 0x73 porte [type|algo][chiffres][secret]."""
+    if digits not in (6, 8):
+        raise ValueError(f"{digits} chiffres : la clé n'accepte que 6 ou 8")
+    if not secret:
+        raise ValueError("secret vide")
+    if len(secret) > SEC_SECRET_MAX:
+        raise ValueError(f"secret de {len(secret)} octets : la clé en accepte "
+                         f"{SEC_SECRET_MAX} au plus")
+    body = tlv(TAG_NAME, check_name(name))
+    body += tlv(TAG_KEY, bytes([ALGO_TOTP_SHA1, digits]) + bytes(secret))
+    return apdu(0x00, INS_PUT, 0x00, 0x00, body)
+
+
+def apdu_delete(name):
+    return apdu(0x00, INS_DELETE, 0x00, 0x00, tlv(TAG_NAME, check_name(name)))
+
+
+# --------------------------------------------------------------------------
+# Le compteur de temps — porté par l'hôte, jamais par la clé
+# --------------------------------------------------------------------------
+def totp_challenge(now_s, period):
+    """Le pas de temps RFC 6238, sur huit octets GROS-BOUTIENS.
+
+    `struct.pack(">q", int(now) // period)`. Le boutisme n'est pas un détail de
+    présentation : le HMAC porte sur ces octets, donc un petit-boutien rendrait
+    un code parfaitement formé et faux — la panne la plus coûteuse à
+    diagnostiquer, puisqu'elle ressemble à un décalage d'horloge.
+    """
+    if period <= 0:
+        raise ValueError("période nulle ou négative")
+    return int(int(now_s) // period).to_bytes(8, "big", signed=False)
+
+
+_PERIOD_RE = re.compile(r"^(\d+)/(.+)$")
+
+
+def parse_period(name):
+    """Sépare la période du nom : « 60/GitHub:mae » → (60, « GitHub:mae »).
+
+    Convention YKOATH : ykman ne préfixe que lorsque la période diffère de 30,
+    donc un nom sans préfixe vaut 30. La lire de travers rend un code faux sans
+    rien signaler — d'où la règle ici plutôt qu'un 30 codé en dur.
+
+    Le nom rendu n'est PAS celui qu'on envoie à la clé : l'identifiant du compte
+    reste le nom COMPLET, préfixe compris. Seul le calcul du pas s'en sert.
+    """
+    m = _PERIOD_RE.match(name)
+    if not m:
+        return 30, name
+    period = int(m.group(1))
+    if period <= 0:
+        raise ValueError(f"période « {m.group(1)} » dans « {name} »")
+    return period, m.group(2)
+
+
+# --------------------------------------------------------------------------
+# Le modulo, que la carte ne fait pas
+# --------------------------------------------------------------------------
+def format_code(digits, raw):
+    """(valeur & 0x7FFFFFFF) % 10**chiffres, zéros de tête compris.
+
+    Identique à `_format_code()` de yubikit/oath.py. La carte s'arrête au code
+    dynamique de la RFC 4226 (`oath_dynamic_binary()`) et laisse le modulo à
+    l'hôte : c'est écrit noir sur blanc dans main/security/oath_proto.h, et
+    l'ignorer afficherait quatre octets bruts en croyant le firmware cassé.
+    """
+    if len(raw) != 4:
+        raise OathError(f"code tronqué de {len(raw)} octets — la RFC 4226 en "
+                        "donne exactement 4")
+    if not 1 <= digits <= 10:
+        raise OathError(f"{digits} chiffres : valeur hors de tout sens")
+    value = int.from_bytes(raw, "big") & 0x7FFFFFFF
+    return str(value % (10 ** digits)).zfill(digits)
+
+
+def parse_truncated(data):
+    """Déballe un 0x76 : [chiffres][4 octets] → le code formaté."""
+    tlvs = tlv_parse(data)
+    val = tlv_first(tlvs, TAG_TRUNCATED)
+    if val is None:
+        if tlv_first(tlvs, TAG_RESPONSE) is not None:
+            raise OathError("la clé a répondu un 0x75 (HMAC complet) là où un "
+                            "0x76 était demandé — P2 n'a pas été lu comme 01")
+        raise OathError("pas de 0x76 dans la réponse : "
+                        f"tags reçus {[hex(t) for t, _ in tlvs]}")
+    if len(val) != 5:
+        raise OathError(f"0x76 de {len(val)} octets, 5 attendus "
+                        "([chiffres][4 octets])")
+    return format_code(val[0], val[1:])
+
+
+# --------------------------------------------------------------------------
+# Secret base32
+# --------------------------------------------------------------------------
+def decode_secret(text):
+    """Décode un secret base32 tel que le donne un site (espaces, minuscules).
+
+    Le padding est ajouté plutôt qu'exigé : personne ne recopie les « = » d'un
+    QR code, et refuser là-dessus ferait échouer la migration des douze comptes
+    sur un détail de présentation.
+    """
+    cleaned = re.sub(r"[\s-]", "", text).upper()
+    if not cleaned:
+        raise ValueError("secret vide")
+    cleaned += "=" * (-len(cleaned) % 8)
+    try:
+        raw = base64.b32decode(cleaned, casefold=False)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"secret base32 invalide : {exc}") from exc
+    if not raw:
+        raise ValueError("secret vide après décodage")
+    if len(raw) > SEC_SECRET_MAX:
+        raise ValueError(f"secret de {len(raw)} octets : la clé en accepte "
+                         f"{SEC_SECRET_MAX} au plus (SEC_SECRET_MAX)")
+    return raw
+
+
+# --------------------------------------------------------------------------
+# Trames CCID — le point où un client naïf échoue
+# --------------------------------------------------------------------------
+def ccid_xfr(apdu_bytes, seq, slot=0):
+    """PC_to_RDR_XfrBlock : 10 octets d'en-tête, dwLength en PETIT-boutien."""
+    return (bytes([PC_TO_RDR_XFR_BLOCK])
+            + len(apdu_bytes).to_bytes(4, "little")
+            + bytes([slot, seq, 0x00, 0x00, 0x00])
+            + bytes(apdu_bytes))
+
+
+def ccid_power_on(seq, slot=0):
+    """PC_to_RDR_IccPowerOn — la carte répond son ATR."""
+    return bytes([PC_TO_RDR_ICC_POWER_ON, 0, 0, 0, 0, slot, seq, 0x00, 0, 0])
+
+
+def is_wtx(frame):
+    """La trame est-elle une extension de temps (« patiente ») ?
+
+    bmCommandStatus vit dans les bits 7:6 de bStatus : 00b = terminé,
+    01b = échec, 10b = extension de temps. Comparer `frame[7] == 0x80` marcherait
+    ici (bmICCStatus vaut 00b) mais confondrait un jour un échec avec une
+    patience — d'où le masque explicite.
+    """
+    return (len(frame) >= CCID_HDR_LEN
+            and frame[0] == RDR_TO_PC_DATA_BLOCK
+            and (frame[7] & 0xC0) == 0x80)
+
+
+def ccid_payload(frame):
+    """Les abData d'une trame RDR_to_PC, dwLength faisant foi."""
+    if len(frame) < CCID_HDR_LEN:
+        raise CcidError(f"trame CCID de {len(frame)} octets, 10 au minimum")
+    length = int.from_bytes(frame[1:5], "little")
+    if len(frame) < CCID_HDR_LEN + length:
+        raise CcidError(f"trame CCID annonçant {length} octets, "
+                        f"{len(frame) - CCID_HDR_LEN} reçus")
+    return frame[CCID_HDR_LEN:CCID_HDR_LEN + length]
+
+
+def read_ccid_message(read):
+    """Recolle une trame CCID complète à partir de lectures bulk successives.
+
+    Une réponse peut arriver en plusieurs paquets, et le firmware envoie une ZLP
+    quand le total est un multiple exact du wMaxPacketSize (ccid_zlp.h) : une
+    lecture vide n'est donc pas une fin de trame, juste un paquet sans octets.
+    """
+    buf = b""
+    while True:
+        if len(buf) >= CCID_HDR_LEN:
+            want = CCID_HDR_LEN + int.from_bytes(buf[1:5], "little")
+            if len(buf) >= want:
+                return buf[:want]
+        chunk = read()
+        if not chunk:
+            continue
+        buf += bytes(chunk)
+
+
+def await_final_frame(read, timeout_s, now=time.monotonic):
+    """Attend la RÉPONSE, en absorbant les extensions de temps.
+
+    C'est le cœur du point 3 : pendant que la clé attend l'appui, elle émet un
+    WTX toutes les 1,5 s. Il faut les compter pour rien et continuer d'attendre.
+    Un client qui rend la première trame venue rend une trame vide et conclut à
+    un firmware cassé.
+
+    L'échéance sert de garde-fou, pas d'arbitre : c'est la clé qui décide, au
+    bout de ses quinze secondes, et qui répond alors 6985. On ne veut lâcher
+    avant elle sous aucun prétexte — une commande abandonnée côté hôte reste en
+    vol côté carte.
+    """
+    deadline = now() + timeout_s
+    while True:
+        frame = read_ccid_message(read)
+        if is_wtx(frame):
+            if now() >= deadline:
+                raise CcidError(
+                    f"la clé demande encore à patienter après {timeout_s:.0f} s "
+                    "— attente abandonnée côté hôte")
+            continue
+        status = frame[7]
+        if status & 0xC0:
+            raise CcidError(
+                f"la clé a refusé la commande CCID "
+                f"(bStatus=0x{status:02X}, bError=0x{frame[8]:02X})")
+        return frame
+
+
+# --------------------------------------------------------------------------
+# Mots d'état
+# --------------------------------------------------------------------------
+SW_NOMS = {
+    0x9000: "succès",
+    0x6985: "appui non donné (refusé, ou quinze secondes écoulées)",
+    0x6A80: "trame refusée par la clé (longueur ou contenu hors bornes)",
+    0x6A81: "commande hors périmètre (HOTP, SHA-256, mot de passe)",
+    0x6A82: "compte inconnu, ou applet non sélectionné",
+    0x6A84: "magasin plein (seize slots)",
+    0x6581: "la clé n'a pas pu persister — l'état en mémoire a déjà changé",
+    0x6700: "APDU malformée",
+    0x6D00: "instruction inconnue de l'applet",
+    0x6E00: "classe inconnue de l'applet",
+}
+
+
+def sw_message(sw):
+    nom = SW_NOMS.get(sw)
+    if nom:
+        return f"{sw:04X} — {nom}"
+    return f"mot d'état {sw:04X} inattendu"
+
+
+def split_sw(resp):
+    """Sépare les données du mot d'état de fin."""
+    if len(resp) < 2:
+        raise OathError(f"réponse APDU de {len(resp)} octet(s) : même un mot "
+                        "d'état en fait deux")
+    return resp[:-2], (resp[-2] << 8) | resp[-1]
+
+
+def sw_has_more(sw):
+    """61xx : il reste des octets, un SEND REMAINING les réclame.
+
+    Sans ce chaînage, `list` marche avec trois comptes et casse avec douze —
+    c'est-à-dire juste après la migration.
+    """
+    return (sw & 0xFF00) == 0x6100
+
+
+# --------------------------------------------------------------------------
+# Réponses de l'applet
+# --------------------------------------------------------------------------
+def parse_select(data):
+    """La réponse au SELECT : version (0x79) et sel (0x71)."""
+    tlvs = tlv_parse(data)
+    version = tlv_first(tlvs, TAG_VERSION)
+    if version is None:
+        raise OathError("réponse au SELECT sans 0x79 : ce n'est pas l'applet "
+                        "OATH (ykman lèverait ici aussi)")
+    salt = tlv_first(tlvs, TAG_NAME)
+    if salt is None:
+        raise OathError("réponse au SELECT sans 0x71 : pas d'identifiant "
+                        "d'appareil")
+    return ".".join(str(b) for b in version), salt
+
+
+def algo_nom(octet):
+    if octet == ALGO_TOTP_SHA1:
+        return "TOTP/SHA1"
+    return f"type inconnu 0x{octet:02X}"
+
+
+def parse_list(data):
+    """La réponse au LIST : une entrée 0x72 par compte, [algo][nom]."""
+    out = []
+    for tag, val in tlv_parse(data):
+        if tag != TAG_NAME_LIST:
+            continue
+        if not val:
+            raise OathError("entrée 0x72 vide : il manque l'octet de type")
+        out.append((val[0], val[1:].decode("utf-8", "backslashreplace")))
+    return out
+
+
+# ===========================================================================
+# TRANSPORT — à partir d'ici, pyusb. Import DIFFÉRÉ : les tests de la logique
+# pure tournent dans scripts/fast.sh, sur une machine qui n'a pas la
+# bibliothèque.
+# ===========================================================================
+class Cle:
+    """La clé Niphar vue en lecteur CCID, par libusb."""
+
+    def __init__(self, verbose=False):
+        self.verbose = verbose
+        self._seq = 0
+        self._dev = None
+        self._itf = None
+        self._ep_in = None
+        self._ep_out = None
+        self._detached = False
+
+    # -- ouverture ---------------------------------------------------------
+    def __enter__(self):
+        try:
+            import usb.core
+            import usb.util
+        except ImportError as exc:
+            raise OathError(
+                "pyusb est absent. `nix-shell` à la racine du dépôt fournit un "
+                "python3 qui l'a.") from exc
+        self._usb = usb
+
+        dev = usb.core.find(idVendor=VID, idProduct=PID)
+        if dev is None:
+            raise OathError(
+                f"aucun appareil {VID:04x}:{PID:04x}. La clé démarre en "
+                "USB_MODE_NONE et n'expose RIEN tant qu'on ne lui a rien "
+                "demandé : « usb mode oath » sur sa console série.")
+        self._dev = dev
+
+        try:
+            cfg = dev.get_active_configuration()
+        except usb.core.USBError:
+            dev.set_configuration()
+            cfg = dev.get_active_configuration()
+
+        # 0x0B = classe carte à puce. On la cherche plutôt que de figer un
+        # numéro d'interface : le mode OATH n'en expose qu'une, mais rien ne
+        # garantit que ce sera toujours la zéro.
+        itf = usb.util.find_descriptor(cfg, bInterfaceClass=0x0B)
+        if itf is None:
+            raise OathError(
+                "l'appareil est là mais n'expose pas d'interface CCID : il est "
+                "probablement dans un autre mode (storage, pgp, otp, fido).")
+        self._itf = itf
+
+        try:
+            if dev.is_kernel_driver_active(itf.bInterfaceNumber):
+                # Sur cette machine il n'y a pas de pcscd, donc personne ne
+                # devrait tenir l'interface. Si quelqu'un la tient, le dire.
+                if self.verbose:
+                    print("note : un pilote noyau tenait l'interface CCID, "
+                          "il est détaché le temps de l'échange",
+                          file=sys.stderr)
+                dev.detach_kernel_driver(itf.bInterfaceNumber)
+                self._detached = True
+        except NotImplementedError:
+            pass
+
+        def _bulk(direction):
+            return usb.util.find_descriptor(
+                itf,
+                custom_match=lambda e: (
+                    usb.util.endpoint_direction(e.bEndpointAddress) == direction
+                    and usb.util.endpoint_type(e.bmAttributes)
+                    == usb.util.ENDPOINT_TYPE_BULK))
+
+        self._ep_out = _bulk(usb.util.ENDPOINT_OUT)
+        self._ep_in = _bulk(usb.util.ENDPOINT_IN)
+        if self._ep_out is None or self._ep_in is None:
+            raise OathError("interface CCID sans paire de points bulk")
+
+        try:
+            usb.util.claim_interface(dev, itf.bInterfaceNumber)
+        except usb.core.USBError as exc:
+            raise OathError(
+                f"interface CCID non réclamable ({exc}). Sans règle udev, "
+                "libusb n'a pas le droit d'écrire sur l'appareil.") from exc
+
+        # Mise sous tension : c'est la séquence qu'un hôte CCID exécute, et le
+        # firmware y répond son ATR. La sauter marcherait, mais laisserait le
+        # client se comporter autrement que scdaemon — donc éprouver un chemin
+        # que personne n'emprunte.
+        self._power_on()
+        return self
+
+    def __exit__(self, *exc):
+        if self._dev is None:
+            return False
+        try:
+            self._usb.util.release_interface(self._dev, self._itf.bInterfaceNumber)
+        except Exception:
+            pass
+        if self._detached:
+            try:
+                self._dev.attach_kernel_driver(self._itf.bInterfaceNumber)
+            except Exception:
+                pass
+        try:
+            self._usb.util.dispose_resources(self._dev)
+        except Exception:
+            pass
+        return False
+
+    # -- couche CCID -------------------------------------------------------
+    def _next_seq(self):
+        self._seq = (self._seq + 1) & 0xFF
+        return self._seq
+
+    def _reader(self):
+        taille = max(self._ep_in.wMaxPacketSize, 64)
+
+        def lire():
+            try:
+                return bytes(self._ep_in.read(taille, READ_TIMEOUT_MS))
+            except self._usb.core.USBError as exc:
+                raise CcidError(
+                    f"rien reçu de la clé en {READ_TIMEOUT_MS} ms alors qu'elle "
+                    "doit émettre un WTX toutes les 1,5 s tant qu'elle "
+                    f"attend : {exc}") from exc
+
+        return lire
+
+    def _trace(self, sens, data):
+        if self.verbose:
+            print(f"  {sens} {data.hex()}", file=sys.stderr)
+
+    def _power_on(self):
+        trame = ccid_power_on(self._next_seq())
+        self._trace("<<", trame)
+        self._ep_out.write(trame, READ_TIMEOUT_MS)
+        frame = await_final_frame(self._reader(), PLAIN_TIMEOUT_S)
+        self._trace(">>", frame)
+
+    def _xfr(self, apdu_bytes, timeout_s):
+        """Un aller-retour APDU brut, WTX absorbés."""
+        trame = ccid_xfr(apdu_bytes, self._next_seq())
+        self._trace("<<", trame)
+        self._ep_out.write(trame, READ_TIMEOUT_MS)
+        frame = await_final_frame(self._reader(), timeout_s)
+        self._trace(">>", frame)
+        return ccid_payload(frame)
+
+    # -- couche APDU -------------------------------------------------------
+    def exchange(self, apdu_bytes, timeout_s=PLAIN_TIMEOUT_S):
+        """Une commande, réponse recollée si la clé la découpe en 61xx."""
+        data, sw = split_sw(self._xfr(apdu_bytes, timeout_s))
+        while sw_has_more(sw):
+            suite, sw = split_sw(self._xfr(apdu_send_remaining(), PLAIN_TIMEOUT_S))
+            data += suite
+        return data, sw
+
+    def expect_ok(self, apdu_bytes, quoi, timeout_s=PLAIN_TIMEOUT_S):
+        data, sw = self.exchange(apdu_bytes, timeout_s)
+        if sw != 0x9000:
+            raise OathError(f"{quoi} : {sw_message(sw)}")
+        return data
+
+    # -- commandes de l'applet --------------------------------------------
+    def select(self):
+        return parse_select(self.expect_ok(apdu_select(), "SELECT"))
+
+    def list(self):
+        return parse_list(self.expect_ok(apdu_list(), "LIST"))
+
+
+# ===========================================================================
+# Sous-commandes
+# ===========================================================================
+def _resoudre(cle, nom):
+    """Le nom doit correspondre EXACTEMENT à un compte du magasin.
+
+    Pas de correspondance approchée : la clé identifie les comptes par leur nom
+    exact (`oath_find_slot`, comparaison sur la longueur EXACTE), et deviner
+    ferait confirmer à Mae un compte qu'elle n'a pas demandé — l'écran
+    afficherait bien le bon nom, mais elle aurait déjà appuyé.
+    """
+    comptes = [n for _, n in cle.list()]
+    if nom in comptes:
+        return nom
+    if not comptes:
+        raise OathError("aucun compte sur la clé")
+    proches = [n for n in comptes if nom.lower() in n.lower()]
+    detail = "\n".join(f"    {n}" for n in (proches or comptes))
+    quoi = "comptes approchants" if proches else "comptes présents"
+    raise OathError(f"aucun compte nommé exactement « {nom} ».\n"
+                    f"  {quoi} :\n{detail}")
+
+
+def cmd_list(cle, args):
+    comptes = cle.list()
+    if not comptes:
+        print("aucun compte")
+        return 0
+    largeur = max(len(n) for _, n in comptes)
+    for algo, nom in comptes:
+        print(f"{nom.ljust(largeur)}  {algo_nom(algo)}")
+    return 0
+
+
+def cmd_add(cle, args):
+    secret = decode_secret(args.secret)
+    nom = args.nom
+    existant = any(n == nom for _, n in cle.list())
+    if existant:
+        # Le firmware exige l'appui sur un PUT qui écrase : remplacer détruit
+        # l'ancien secret aussi sûrement qu'un DELETE, en moins visible.
+        print(f"« {nom} » existe déjà — l'écraser détruit son secret.")
+        print("Appuyez sur le bouton de la clé (quinze secondes)…")
+    trame = apdu_put(nom, secret, args.digits)
+    _, sw = cle.exchange(trame, TOUCH_TIMEOUT_S if existant else PLAIN_TIMEOUT_S)
+    if sw == 0x9000:
+        print(f"« {nom} » {'remplacé' if existant else 'ajouté'} "
+              f"({args.digits} chiffres, TOTP/SHA1).")
+        return 0
+    print(f"échec : {sw_message(sw)}", file=sys.stderr)
+    return 1
+
+
+def cmd_code(cle, args):
+    nom = _resoudre(cle, args.nom)
+    periode, _ = parse_period(nom)
+    maintenant = int(time.time())
+    defi = totp_challenge(maintenant, periode)
+
+    print(f"« {nom} » — appuyez sur le bouton de la clé (quinze secondes)…")
+    data, sw = cle.exchange(apdu_calculate(nom, defi), TOUCH_TIMEOUT_S)
+    if sw != 0x9000:
+        print(f"échec : {sw_message(sw)}", file=sys.stderr)
+        return 1
+    code = parse_truncated(data)
+    reste = periode - (maintenant % periode)
+    print(f"{code}   (valide encore {reste} s)")
+    return 0
+
+
+def cmd_delete(cle, args):
+    nom = _resoudre(cle, args.nom)
+    print(f"« {nom} » — appuyez sur le bouton de la clé pour EFFACER "
+          "(quinze secondes)…")
+    _, sw = cle.exchange(apdu_delete(nom), TOUCH_TIMEOUT_S)
+    if sw == 0x9000:
+        print(f"« {nom} » effacé.")
+        return 0
+    print(f"échec : {sw_message(sw)}", file=sys.stderr)
+    return 1
+
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="niphar-oath",
+        description="Client CCID direct de l'applet OATH/TOTP de la clé "
+                    "Niphar (la clé doit être en « usb mode oath »).")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="trace les trames CCID sur la sortie d'erreur")
+    sub = p.add_subparsers(dest="commande", required=True)
+
+    s = sub.add_parser("list", help="liste les comptes (sans appui)")
+    s.set_defaults(fn=cmd_list)
+
+    s = sub.add_parser("add", help="provisionne un compte")
+    s.add_argument("nom", help="p. ex. « GitHub:mae@exemple.org »")
+    s.add_argument("secret", help="le secret en base32, tel que donné par le site")
+    s.add_argument("--digits", type=int, default=6, choices=(6, 8),
+                   help="longueur du code (défaut : 6)")
+    s.set_defaults(fn=cmd_add)
+
+    s = sub.add_parser("code", help="calcule un code (demande un appui)")
+    s.add_argument("nom")
+    s.set_defaults(fn=cmd_code)
+
+    s = sub.add_parser("delete", help="efface un compte (demande un appui)")
+    s.add_argument("nom")
+    s.set_defaults(fn=cmd_delete)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        with Cle(verbose=args.verbose) as cle:
+            version, sel = cle.select()
+            if args.verbose:
+                print(f"applet OATH {version}, sel {sel.hex()}", file=sys.stderr)
+            return args.fn(cle, args)
+    except (OathError, ValueError) as exc:
+        print(f"erreur : {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\ninterrompu", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
