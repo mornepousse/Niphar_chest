@@ -99,6 +99,7 @@ répondrait une réponse de SELECT à une demande de codes.
 | `03` | SET CODE | `6A81` | décision 3 : pas de mot de passe |
 | `A3` | VALIDATE | `6A81` | sans mot de passe, rien à valider |
 | — | PUT d'un compte HOTP | `6A81` | voir « Portée » |
+| — | PUT d'un compte SHA-256 | `6A81` | voir « Portée » — divergence déclarée |
 
 ### Réponse au SELECT
 
@@ -182,11 +183,23 @@ qui n'existe pas.
 
 ## Portée
 
-**Dedans** : TOTP SHA-1 et SHA-256, six ou huit chiffres, période portée par le
-nom (`30/Issuer:compte`, convention YKOATH).
+**Dedans** : TOTP **SHA-1**, six ou huit chiffres, période portée par le nom
+(`30/Issuer:compte`, convention YKOATH).
 
 **Dehors, et refusé explicitement** :
 
+- **SHA-256** (`6A81`). **Cette ligne disait le contraire jusqu'au 2026-08-19**
+  — la section annonçait « TOTP SHA-1 **et SHA-256** » dedans, alors que
+  `oath_do_put()` refuse tout ce qui n'est pas `OATH_ALGO_TOTP_SHA1` (`0x21`)
+  depuis le premier jour. Le choix est maintenu : implémenter un algorithme
+  qu'**aucun compte réel n'exerce** serait spéculatif, et un HMAC-SHA-256 que
+  rien ne teste rendrait des codes parfaitement formés et faux, pour toujours,
+  sans qu'aucune erreur ne le dise. Un refus franc vaut mieux qu'un mensonge
+  silencieux. **On le fera si l'export Proton en contient** — c'est la
+  migration des douze comptes qui tranchera, pas une supposition.
+  Le défaut n'était pas le refus mais son absence de déclaration : il est
+  désormais inscrit dans `.tripwire-divergences`, qui rendra rouge la
+  disparition silencieuse de la garde.
 - **HOTP** (`6A81`). Il exige un compteur persistant incrémenté à chaque usage :
   une machine à états et une écriture NVS par code produit, pour un besoin que
   Mae n'a pas. Si l'export Proton contient du HOTP, on le verra à la migration.
@@ -199,17 +212,47 @@ nom (`30/Issuer:compte`, convention YKOATH).
 Le nom vient de l'hôte : jusqu'à 64 octets arbitraires, dessinés sur un écran
 dont Mae se sert pour décider. Trois règles, toutes en logique pure et testables.
 
-1. **Garder l'issuer.** `GitHub:mae@exemple.org` → `GITHUB`. C'est la partie que
-   Mae reconnaît ; le compte importe peu quand on n'en a qu'un par service.
+1. **Garder le nom complet, sans le préfixe de période.**
+   `30/GitHub:mae@ex.org` → `GITHUB:MAE@EX.ORG`. Le `30/` est de la convention
+   YKOATH, pas du sens : il ne dit rien à qui regarde l'écran. Tout le reste
+   est gardé.
+
+   > **Amendée le 2026-08-19 — la version précédente était fausse.** Elle
+   > disait : « Garder l'issuer. `GitHub:mae@exemple.org` → `GITHUB`. C'est la
+   > partie que Mae reconnaît ; **le compte importe peu quand on n'en a qu'un
+   > par service.** » La prémisse en gras est démentie par la propriétaire :
+   > OVH et Ankama auront chacun **un compte perso et un compte pro**.
+   > `OVH:perso` et `OVH:pro` rendaient donc tous deux `OVH` — strictement
+   > indiscernables sur l'écran qui sert à décider. Pour ces comptes-là,
+   > l'appui redevenait un interrupteur de présence, et la décision 4 ne
+   > protégeait plus rien. La paire est au test central
+   > `test_noms_distincts_restent_distincts`, constatée rouge avant la
+   > correction.
 2. **Tout caractère sans glyphe devient `?`, jamais un blanc.** La police de
    `screen.c` définit `A-Z`, `a-z`, `0-9` et `?` — **aucune ponctuation** — et
    son repli actuel rend un glyphe vide pour un caractère non dessiné situé dans
    l'intervalle. Sans cette règle, `GitHub:mae` et `GitHub mae` s'afficheraient
    **identiquement** : exactement l'attaque que la décision 4 vise à empêcher.
-3. **Tronquer à dix caractères avec un marqueur visible.** Dix est la largeur
-   réelle en police double hauteur sur 128 px. Sans marqueur, deux comptes dont
-   les noms divergent après le dixième caractère seraient indiscernables, et
-   l'appui redeviendrait aveugle.
+3. **Tronquer à vingt-et-un caractères avec un marqueur visible.** Sans
+   marqueur, deux comptes dont les noms divergent après la coupe seraient
+   indiscernables, et l'appui redeviendrait aveugle. L'avant-dernier caractère
+   dessiné porte une empreinte du nom entier, pour la même raison.
+
+   > **Corrigée le 2026-08-19 — c'était une erreur de police.** La version
+   > précédente disait « tronquer à **dix** caractères. Dix est la largeur
+   > réelle en police **double hauteur** sur 128 px ». La mesure était juste,
+   > mais elle ne s'applique pas à cette ligne : dans `main/hmi/screen.c`,
+   > l'étiquette de compte est dessinée par `draw_text_centered()` — police
+   > **simple** hauteur, `SCREEN_CHAR_PX` = 6 px, donc 128 / 6 = **21**
+   > caractères. Seul le libellé d'opération (`CODE OTP`, `RESET OATH`) passe
+   > par `draw_text_2x_centered()` et subit la contrainte des dix. Le budget
+   > d'affichage du nom était donc divisé par deux sans raison, ce qui rendait
+   > la troncature bien plus agressive qu'il ne fallait — et pesait
+   > directement sur la règle 1. `OATH_NAME_DISPLAY_MAX` vaut désormais 22
+   > (21 dessinés + terminateur) ; un vingt-deuxième caractère ferait 132 px,
+   > `screen_center_x()` collerait à gauche et `fb_set_pixel()` amputerait le
+   > dernier glyphe — celui qui porte le marqueur. Vérifié par
+   > `test_le_nom_de_compte_tient_en_police_simple`.
 
 La règle 2 corrige un défaut de la police qui touchera aussi l'affichage du site
 pour les passkeys FIDO2 (tâche #42) : le corriger ici le corrige pour les deux.

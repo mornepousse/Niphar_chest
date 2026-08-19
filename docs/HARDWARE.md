@@ -823,6 +823,12 @@ chemin OATH lui-même, et pas seulement par extrapolation depuis U2F.
 
 **Non éprouvé, à faire avec Mae** : l'écran pendant l'attente — qu'il nomme bien
 le compte demandé (décision 4 de la spec) et que la barre de décompte s'y vide
-une seule fois ; `delete` et `reset` avec leur écran distinct (« EFFACER »,
-« TOUT EFFACER » et le nombre de comptes) ; et la migration des douze comptes
-de Proton.
+une seule fois ; `delete` et `reset` avec leur écran distinct (« EFFACER », « RESET OATH » et le
+nombre de comptes) ; et la migration des douze comptes de Proton.
+
+> Ce paragraphe annonçait « TOUT EFFACER » jusqu'à la revue finale de branche.
+> C'était faux : `screen_op_short(SEC_OP_OATH_RESET)` rend `"RESET OATH"`, et ne
+> peut pas rendre autre chose — douze caractères déborderaient les dix de la
+> police double hauteur (`test_op_short_fits_the_double_height_font`). Une doc
+> qui annonce un libellé que l'écran n'affichera jamais fait conclure à un
+> défaut inexistant au moment de la vérification à l'œil.
