@@ -812,9 +812,17 @@ module existe), `list` (LIST), `code` (CALCULATE avec confirmation), l'attente
 de quinze secondes avec absorption des trames d'extension de temps, et le refus
 `6985` quand l'appui ne vient pas.
 
+**Le bouton commande bien la sortie d'un code — 2026-08-19.** Mae a lancé
+`niphar-oath code Test:mae` et appuyé : le code est sorti en deux secondes.
+Deux essais antérieurs **sans** appui avaient expiré à quinze secondes sur
+`6985`. La porte de présence est donc exigée, vue, et suffisante — sur le
+chemin OATH lui-même, et pas seulement par extrapolation depuis U2F.
+
+`add` d'un nom inconnu et `list` ne demandent aucun appui, comme spécifié :
+`GitHub:mae` a été provisionné sans geste, et le magasin tient deux comptes.
+
 **Non éprouvé, à faire avec Mae** : l'écran pendant l'attente — qu'il nomme bien
 le compte demandé (décision 4 de la spec) et que la barre de décompte s'y vide
-une seule fois ; l'appui sur le bouton pour un code (le grant est venu de la
-béquille console `sec confirm`, le bouton étant prouvé séparément le 2026-08-18
-par un enregistrement U2F) ; `delete` et `reset` avec leur écran distinct ; et
-la migration des douze comptes de Proton.
+une seule fois ; `delete` et `reset` avec leur écran distinct (« EFFACER »,
+« TOUT EFFACER » et le nombre de comptes) ; et la migration des douze comptes
+de Proton.
