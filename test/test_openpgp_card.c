@@ -71,9 +71,29 @@ static bool fake_genkey(uint8_t algo, uint8_t d_out[32])
 
 static const uint8_t OPGP_AID[] = {0xD2,0x76,0x00,0x01,0x24,0x01};
 
-static uint16_t build_select(uint8_t *buf,
+/*
+ * SELECT. `cap` n'est pas decoratif : cette fonction ecrivait 5 + aid_len
+ * octets sans rien savoir de la taille du tampon, et trois tests
+ * (test_get_data_5e, test_gf_management, test_6e_contains_7f74) lui passaient
+ * un uint8_t[8] pour un AID de six octets — onze octets ecrits dans huit.
+ * Le debordement ne changeait aucune assertion (il ecrasait de la pile que
+ * personne ne relisait) et la suite restait verte pendant des mois ; ASan
+ * l'arrete des le premier appel, donc TOUTE execution instrumentee avortait
+ * ici avant d'atteindre le reste. La borne est verifiee plutot que supposee :
+ * un futur AID plus long, ou un tampon retreci, redeviendrait sinon le meme
+ * defaut silencieux.
+ *
+ * Les appelants ne repetent pas cette taille a la main — voir la macro
+ * do_select() plus bas, qui la prend au sizeof du tableau appelant.
+ */
+static uint16_t build_select(uint8_t *buf, size_t cap,
                              const uint8_t *aid, uint8_t aid_len)
 {
+    /* TEST_ASSERT compte l'echec et CONTINUE : sans le retour ci-dessous, la
+     * garde signalerait le debordement puis le commettrait quand meme. */
+    TEST_ASSERT((size_t)5 + aid_len <= cap,
+                "build_select: le tampon de l'appelant tient l'APDU");
+    if ((size_t)5 + aid_len > cap) return 0;
     buf[0] = 0x00; buf[1] = 0xA4; buf[2] = 0x04; buf[3] = 0x00;
     buf[4] = aid_len;
     memcpy(buf + 5, aid, aid_len);
@@ -189,12 +209,22 @@ static int find_index(const uint8_t *hay, uint16_t hlen,
 /* Shared test helpers                                                 */
 /* ------------------------------------------------------------------ */
 
-static void do_select(uint8_t *cmd, uint8_t *rsp)
+/*
+ * do_select() est une MACRO, pas une fonction, pour une seule raison : elle
+ * prend la taille du tampon au sizeof du tableau de l'appelant. Une fonction
+ * ne recevrait qu'un uint8_t* et devrait croire l'appelant sur parole — c'est
+ * exactement ainsi que trois tests ont pu lui passer un uint8_t[8] pendant des
+ * mois sans que rien ne le dise. Les quarante sites d'appel s'ecrivent
+ * toujours « do_select(cmd, rsp) » : aucune taille n'est repetee a la main,
+ * donc aucune ne peut mentir.
+ */
+static void do_select_n(uint8_t *cmd, size_t cmd_sz, uint8_t *rsp)
 {
-    uint16_t clen = build_select(cmd, OPGP_AID, sizeof(OPGP_AID));
+    uint16_t clen = build_select(cmd, cmd_sz, OPGP_AID, sizeof(OPGP_AID));
     uint16_t rlen = openpgp_card_apdu(cmd, clen, rsp, 256);
     TEST_ASSERT_EQ(sw_of(rsp, rlen), 0x9000, "SELECT returns 9000");
 }
+#define do_select(cmd, rsp) do_select_n((cmd), sizeof(cmd), (rsp))
 
 static void setup_card(openpgp_card_hooks_t *h)
 {
@@ -252,13 +282,13 @@ static void test_select_ok(void)
     g_confirm_retval = 1;
 
     uint8_t cmd[64], rsp[256];
-    uint16_t clen = build_select(cmd, OPGP_AID, sizeof(OPGP_AID));
+    uint16_t clen = build_select(cmd, sizeof(cmd), OPGP_AID, sizeof(OPGP_AID));
     uint16_t rlen = openpgp_card_apdu(cmd, clen, rsp, sizeof(rsp));
     TEST_ASSERT_EQ(sw_of(rsp, rlen), 0x9000, "SELECT OpenPGP AID returns 9000");
 
     /* Unknown AID must be rejected */
     uint8_t bad_aid[] = {0x00, 0x11, 0x22, 0x33};
-    clen = build_select(cmd, bad_aid, sizeof(bad_aid));
+    clen = build_select(cmd, sizeof(cmd), bad_aid, sizeof(bad_aid));
     rlen = openpgp_card_apdu(cmd, clen, rsp, sizeof(rsp));
     TEST_ASSERT_EQ(sw_of(rsp, rlen), 0x6A88, "bad AID rejected with 6A88");
 }
@@ -584,7 +614,8 @@ static void test_login_data_empty(void)
     openpgp_card_hooks_t h = { .sign = fake_sign, .confirm = fake_confirm, .pubkey = fake_pubkey };
     setup_card(&h);
 
-    uint8_t cmd[8], rsp[256];
+    /* 16 et non 8 : do_select() ecrit onze octets (4 + Lc + AID de six). */
+    uint8_t cmd[16], rsp[256];
     uint16_t clen, rlen;
 
     do_select(cmd, rsp);
@@ -600,7 +631,8 @@ static void test_gf_management(void)
     openpgp_card_hooks_t h = { .sign = fake_sign, .confirm = fake_confirm, .pubkey = fake_pubkey };
     setup_card(&h);
 
-    uint8_t cmd[8], rsp[256];
+    /* 16 et non 8 : do_select() ecrit onze octets (4 + Lc + AID de six). */
+    uint8_t cmd[16], rsp[256];
     uint16_t clen, rlen;
 
     do_select(cmd, rsp);
@@ -619,7 +651,8 @@ static void test_6e_contains_7f74(void)
     openpgp_card_hooks_t h = { .sign = fake_sign, .confirm = fake_confirm, .pubkey = fake_pubkey };
     setup_card(&h);
 
-    uint8_t cmd[8], rsp[256];
+    /* 16 et non 8 : do_select() ecrit onze octets (4 + Lc + AID de six). */
+    uint8_t cmd[16], rsp[256];
     uint16_t clen, rlen;
 
     do_select(cmd, rsp);

@@ -12,3 +12,4 @@ compile_commands.json
 # Espace de travail des exécutions de plans (subagent-driven development)
 .superpowers/
 tools/__pycache__/
+test/build-asan/
