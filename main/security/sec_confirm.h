@@ -99,6 +99,15 @@ sec_confirm_state_t sec_confirm_peek(uint32_t now_ms);
  * cette distinction (voir CONCURRENCY MODEL, tete de sec_confirm.c), elle
  * ne se rouvre pas ici pour l'etiquette.
  *
+ * DEPUIS LA CINQUIEME (revue finale de branche OATH, I3), la fenetre n'est
+ * plus seulement etroite : cette fonction prend le verrou. L'argument de
+ * localite ci-dessus suffisait pour s_op, un entier dont le chargement est
+ * atomique — jamais pour s_label, dont la copie de douze octets peut se faire
+ * couper en deux par un arm() concurrent et rendre la moitie d'une etiquette
+ * collee a la moitie d'une autre. L'exigence d'UN SEUL accesseur reste :
+ * elle vaut desormais parce qu'un appelant qui appellerait deux fonctions
+ * verrouillees l'une apres l'autre rouvrirait la meme fenetre entre les deux.
+ *
  * `out_op` peut etre NULL si l'appelant ne veut que l'etat (role de peek()).
  * `out_label`, s'il n'est pas NULL, doit pointer vers au moins
  * OATH_NAME_DISPLAY_MAX octets ecrits en une seule fois ; toujours une

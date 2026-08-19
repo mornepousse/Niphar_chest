@@ -56,11 +56,14 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
  * UN ecrivain actif a la fois). D'ou la QUATRIEME correction, cette fois pas
  * seulement textuelle : le spinlock portMUX ci-dessus serialise desormais
  * arm(), reset(), poll() et authorize() entre eux, fermant la course plutot
- * que de continuer a plaider qu'elle est benigne. peek() et peek_labeled()
- * restent volontairement HORS verrou — voir leurs bullets respectifs plus
- * bas : ce sont des lecteurs face a UN SEUL ecrivain a la fois (le verrou
- * garantit que les quatre champs changent desormais comme un groupe), leur
- * analyse de torn read reste donc valide sans modification.
+ * que de continuer a plaider qu'elle est benigne. peek() reste volontairement
+ * HORS verrou — voir son bullet plus bas : c'est un lecteur face a UN SEUL
+ * ecrivain a la fois (le verrou garantit que les quatre champs changent
+ * desormais comme un groupe) et il ne lit que des entiers, donc son analyse de
+ * torn read reste valide sans modification. peek_labeled(), elle, a rejoint le
+ * verrou a la CINQUIEME correction (revue finale de branche OATH, I3) : elle
+ * copie douze octets d'etiquette, ce qu'aucun argument d'atomicite ne couvre —
+ * voir la fin du bullet sec_confirm_peek_labeled() et le corps de la fonction.
  * sec_confirm is a pure module (host-tested, no FreeRTOS). Entry points run
  * from at most THREE task contexts. The three security personalities
  * (OpenPGP CCID, OTP-HID, FIDO U2F) are NOT mutually exclusive AT BUILD —
@@ -230,6 +233,22 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
  *     (hmi.c, seul appelant, est derriere #if BOARD_CONFIRM_SOURCE). Le
  *     residu sur s_label est de meme nature que celui sur s_op ci-dessus :
  *     transitoire, auto-corrige au tick suivant, jamais un octroi errone.
+ *
+ *     CE DERNIER PARAGRAPHE ETAIT FAUX, et corrige a la revue finale de
+ *     branche OATH (I3) : le residu sur s_label n'est PAS de meme nature que
+ *     celui sur s_op. s_op est un entier, donc un seul chargement aligne : un
+ *     lecteur ne peut en tirer qu'une valeur perimee, jamais une valeur qui
+ *     n'a jamais ete ecrite. s_label est un memcpy de douze octets, que rien
+ *     ne rend atomique : un arm() concurrent peut atterrir en son milieu et
+ *     le lecteur repartir avec la moitie d'une etiquette collee a la moitie
+ *     d'une autre — un nom de compte que personne n'a jamais arme. Un label
+ *     PERIME est deja le defaut que ce bullet decrit ; un label FABRIQUE en
+ *     est un autre, et il ne se corrige pas en plaidant la probabilite.
+ *     sec_confirm_peek_labeled() prend donc desormais le verrou (voir son
+ *     corps) : elle n'est appelee qu'une fois par tick IHM, le cout est un
+ *     memcpy de douze octets sous portMUX. Tout ce bullet decrit donc
+ *     l'histoire d'une decision, pas l'etat actuel du code — seul
+ *     sec_confirm_peek(), qui ne lit que des entiers, reste hors verrou.
  *   - sec_confirm_reset() writes the same four fields, in the same order, as
  *     arm() (s_state, then s_slot, then s_op, then s_armed_ms — see above).
  *     CE QUI SUIT ETAIT FAUX (corrige a la revue finale de branche du plan
@@ -329,6 +348,15 @@ void sec_confirm_arm_named(uint8_t slot, sec_op_t op, const char *label, uint32_
      * que les cinq changent comme un seul groupe indivisible — meme
      * discipline que le reste de arm()/reset() (voir CONCURRENCY MODEL). */
     char formatted[OATH_NAME_DISPLAY_MAX];
+    /* Mis a zero AVANT le formatage, et pas seulement termine apres :
+     * oath_name_display() n'ecrit que jusqu'au terminateur, or le memcpy
+     * ci-dessous en recopie les DOUZE octets. Sans ce memset, des octets de
+     * pile non initialises entrent dans un statique que l'ecran dessine — et
+     * dans le memcmp de snap_differs() (hmi/screen.c), qui compare
+     * l'etiquette sur toute sa longueur : deux armements du meme compte
+     * pouvaient differer par de la pile, d'ou un redessin fantome. Corrige a
+     * la revue finale de branche OATH (m1). */
+    memset(formatted, 0, sizeof(formatted));
     oath_name_display(label, label ? (uint16_t)strlen(label) : 0u,
                       formatted, sizeof(formatted));
 
@@ -431,20 +459,38 @@ sec_confirm_state_t sec_confirm_peek(uint32_t now_ms)
 
 sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op, char *out_label)
 {
-    /* s_op et s_label sont lus EN PREMIER, cote a cote, avant le calcul
-     * d'echeance de peek() : voir le paragraphe CONCURRENCY MODEL, bullet
-     * sec_confirm_peek_labeled(), pour pourquoi cet ordre (et pas l'inverse)
-     * borne la fenetre de course sans la fermer. L'etiquette rejoint s_op
-     * dans CE meme corps de fonction — et pas un accesseur separe que
-     * l'appelant enchainerait a la main — precisement pour que la fenetre
-     * entre les deux lectures reste bornee par la localite du code (une
-     * interruption peut s'y glisser, rien d'autre) plutot que par une
-     * discipline d'appel que rien ne verifie. */
+    /*
+     * SOUS VERROU — corrige a la revue finale de branche OATH (I3).
+     *
+     * Ce qui etait faux : l'etiquette etait copiee HORS verrou, avec le meme
+     * argument que pour s_op — « lecture adjacente, fenetre bornee a quelques
+     * cycles, residu transitoire et auto-corrige ». L'argument ne se transpose
+     * PAS. s_op est un entier : sa lecture est un seul chargement aligne, donc
+     * jamais dechiree — le residu ne peut donner qu'une valeur perimee, jamais
+     * une valeur qui n'a jamais existe. s_label est un memcpy de douze octets,
+     * que rien ne rend atomique : arm() peut atterrir en plein milieu, et le
+     * lecteur reparte avec la MOITIE d'une etiquette collee a la moitie d'une
+     * autre. L'ecran nommerait alors un compte qui n'existe pas, pendant
+     * qu'un autre est vise — exactement ce que la decision 4 de la spec
+     * existe pour empecher, et pas seulement « un label perime ».
+     *
+     * Le cout est nul a l'echelle ou cette fonction vit : hmi.c l'appelle une
+     * fois par tick IHM, et la section critique se reduit a un memcpy de douze
+     * octets et deux comparaisons. Prendre le verrou ferme AUSSI, en prime, le
+     * residu sur s_op decrit au CONCURRENCY MODEL : les cinq champs sont
+     * desormais lus comme un groupe indivisible, du meme cote du verrou que
+     * arm(), reset() et poll() les ecrivent.
+     *
+     * sec_confirm_peek() (sans etiquette) reste volontairement hors verrou :
+     * elle ne lit que des entiers, son analyse de torn read tient, et elle est
+     * sur le chemin de tick d'appelants qui n'ont pas besoin du nom.
+     */
+    SEC_CONFIRM_LOCK();
     if (out_op) *out_op = s_op;
     if (out_label) memcpy(out_label, s_label, sizeof(s_label));
-    if (s_state == SEC_CONFIRM_PENDING &&
-        (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS) {
-        return SEC_CONFIRM_TIMEDOUT;
-    }
-    return s_state;
+    const int expire = (s_state == SEC_CONFIRM_PENDING &&
+                        (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS);
+    const sec_confirm_state_t st = s_state;
+    SEC_CONFIRM_UNLOCK();
+    return expire ? SEC_CONFIRM_TIMEDOUT : st;
 }

@@ -451,6 +451,49 @@ static void test_arm_sans_nom_laisse_l_etiquette_vide(void)
     TEST_ASSERT(label[0] == '\0', "arm() classique : rien a afficher sous le libelle");
 }
 
+/*
+ * Rien d'INDETERMINE ne franchit le terminateur de l'etiquette.
+ *
+ * Le defaut (m1 de la revue finale de branche) : sec_confirm_arm_named()
+ * formatait le nom dans un `char formatted[12]` de pile NON initialise, puis
+ * recopiait les DOUZE octets dans le statique — alors que oath_name_display()
+ * n'ecrit que jusqu'au terminateur. Les octets au-dela venaient donc de la
+ * pile. Consequence visible : snap_differs() (hmi/screen.c) compare
+ * l'etiquette au memcmp sur toute sa longueur, donc deux armements du MEME
+ * compte pouvaient differer par de la pile et provoquer un redessin fantome —
+ * et, plus grave a terme, des octets d'une operation precedente survivaient
+ * dans un champ que l'ecran dessine.
+ *
+ * Le test arme d'abord un nom qui REMPLIT les douze octets, puis un nom
+ * court : sans le memset, la queue du premier reste en place derriere le
+ * terminateur du second. Deux armements successifs plutot qu'un seul, parce
+ * qu'un unique appel sur une pile propre rendrait des zeros par accident et
+ * ne prouverait rien.
+ */
+static void test_aucun_octet_de_pile_ne_franchit_le_terminateur(void)
+{
+    char label[OATH_NAME_DISPLAY_MAX];
+    const char *long_nom = "ServiceExtremementLong:mae@exemple.org";
+
+    sec_confirm_reset();
+    /* Premier armement : occupe tout le tampon, terminateur compris. */
+    sec_confirm_arm_named(1, SEC_OP_OATH_CODE, long_nom, 1000);
+    sec_confirm_peek_labeled(1000, NULL, label);
+    TEST_ASSERT_EQ(strlen(label), OATH_NAME_DISPLAY_MAX - 1u,
+                   "le premier nom remplit bien le tampon — sinon le test ne prouve rien");
+
+    /* Second armement, nom court : tout ce qui suit son terminateur doit etre
+     * nul, et non la queue du precedent. */
+    sec_confirm_arm_named(1, SEC_OP_OATH_CODE, "AB", 1000);
+    memset(label, 0x5A, sizeof(label));   /* pollue la sortie : le peek doit tout ecraser */
+    sec_confirm_peek_labeled(1000, NULL, label);
+    TEST_ASSERT(strcmp(label, "AB") == 0, "l'etiquette courte est bien celle-la");
+    for (unsigned k = (unsigned)strlen(label) + 1u; k < OATH_NAME_DISPLAY_MAX; k++) {
+        TEST_ASSERT(label[k] == '\0',
+                    "au-dela du terminateur, que des zeros — jamais de la pile");
+    }
+}
+
 void test_sec_confirm(void)
 {
     TEST_SUITE("sec_confirm state machine");
@@ -479,4 +522,5 @@ void test_sec_confirm(void)
     TEST_RUN(test_poll_efface_aussi_l_etiquette);
     TEST_RUN(test_etiquette_de_longueur_maximale_est_recopiee_entiere);
     TEST_RUN(test_arm_sans_nom_laisse_l_etiquette_vide);
+    TEST_RUN(test_aucun_octet_de_pile_ne_franchit_le_terminateur);
 }
