@@ -59,8 +59,14 @@ static inline const char *screen_mode_name(usb_mode_t mode)
     case USB_MODE_PGP:     return "OpenPGP";
     case USB_MODE_OTP:     return "Cle OTP";
     case USB_MODE_FIDO:    return "Cle FIDO2";
-    /* « TOTP » et non « Comptes TOTP » : ce nom se dessine en police double
-     * hauteur, dont 128 px ne laissent passer que dix caracteres. Distinct de
+    /* « TOTP » et non « Comptes TOTP » : ce nom voyage avec le logo errant de
+     * la veille (draw_text() dans draw_logo_wander, screen.c), donc il doit
+     * rester ETROIT — le groupe logo+libelle se promene sur toute la dalle, et
+     * un libelle large reduirait sa course a rien. Ce n'est PAS une contrainte
+     * de police double hauteur : le mode s'ecrit en police simple, ici comme
+     * dans le bandeau. (La justification precedente invoquait « dix caracteres
+     * en double hauteur » — la meme erreur de police que celle corrigee sur
+     * OATH_NAME_DISPLAY_MAX, voir security/oath_name.h.) Distinct de
      * « Cle OTP » juste au-dessus, qui designe le defi/reponse CR-HMAC — deux
      * modes voisins par le nom mais pas par le protocole. */
     case USB_MODE_OATH:    return "TOTP";

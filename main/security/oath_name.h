@@ -7,28 +7,58 @@
 #pragma once
 #include <stdint.h>
 
-/* Dix caracteres visibles (la largeur reelle en police double hauteur sur
- * 128 px), un marqueur de troncature, un terminateur. */
-#define OATH_NAME_DISPLAY_MAX 12
+/*
+ * Budget d'affichage : VINGT-ET-UN caracteres dessines, plus le terminateur.
+ *
+ * Le chiffre vient de la police REELLE de cette ligne, mesuree dans
+ * hmi/screen.c : l'etiquette de compte est dessinee par draw_text_centered(),
+ * donc en police SIMPLE hauteur, dont la cellule fait SCREEN_CHAR_PX = 6 px
+ * (hmi/screen_layout.h). Sur les 128 px de la dalle : 128 / 6 = 21 caracteres,
+ * soit 126 px. Un vingt-deuxieme ferait 132 px — screen_center_x() rend alors
+ * 0 (voir sa garde), le texte part de la gauche et fb_set_pixel() coupe a
+ * droite : le dernier caractere serait AMPUTE, et c'est precisement celui qui
+ * porte le marqueur de troncature.
+ *
+ * CE QUI ETAIT FAUX : cette constante valait 12, justifiee par « la largeur
+ * reelle en police double hauteur ». La police double hauteur
+ * (draw_text_2x_centered) ne sert qu'au LIBELLE D'OPERATION — « CODE OTP »,
+ * « RESET OATH » — jamais au nom de compte. La contrainte etait donc reelle,
+ * mais appliquee a la mauvaise ligne : le budget etait divise par deux, et
+ * c'est ce qui rendait la troncature si agressive.
+ *
+ * Le marqueur de troncature et l'empreinte se prennent DANS ces vingt-et-un,
+ * pas au-dela : voir oath_name_display().
+ */
+#define OATH_NAME_DISPLAY_MAX 22
 
 /* Taille minimale de `out_sz` en dessous de laquelle `oath_name_display` ne
- * garantit que la chaine vide : il faut au moins un caractere utile, le
- * marqueur de troncature et le terminateur pour qu'une troncature ait un sens
- * sans deborder. Voir la garde en tete de la fonction. */
+ * garantit que la chaine vide : il faut au moins l'empreinte, le marqueur de
+ * troncature et le terminateur pour qu'une troncature ait un sens sans
+ * deborder. Voir la garde en tete de la fonction. */
 #define OATH_NAME_OUT_SZ_MIN 3
 
 /*
  * Ecrit dans `out` une version affichable de `raw` :
- *   1. l'issuer seul — « 30/GitHub:mae@x.org » -> « GITHUB » — parce que c'est
- *      ce que Mae reconnait, et parce qu'un seul compte par service rend le
- *      reste inutile ;
+ *   1. le nom COMPLET, en majuscules, prive du seul prefixe de periode —
+ *      « 30/GitHub:mae@x.org » -> « GITHUB:MAE@X.ORG ». Le « 30/ » est du
+ *      protocole (convention YKOATH), pas du sens : il ne dit rien a qui
+ *      regarde l'ecran. Tout le reste est garde.
+ *
+ *      CE QUI ETAIT FAUX : cette regle ne gardait que l'emetteur (« GITHUB »),
+ *      au motif qu'« un seul compte par service rend le reste inutile ».
+ *      L'hypothese est dementie par la proprietaire : OVH et Ankama auront
+ *      chacun un compte perso ET un compte pro. « OVH:perso » et « OVH:pro »
+ *      rendaient tous deux « OVH », donc l'ecran ne pouvait plus dire lequel
+ *      etait vise — et l'appui redevenait un interrupteur de presence pour
+ *      ces comptes-la, ce que la decision 4 de la spec existe pour empecher.
+ *      Voir test_noms_distincts_restent_distincts, qui porte la paire.
  *   2. tout caractere non imprimable devient « ? », JAMAIS un blanc : un nom
  *      bricole doit se voir plutot que se deguiser en nom propre ;
- *   3. troncature a dix caracteres avec un marqueur visible, complete par une
- *      empreinte du nom entier en dernier caractere visible plutot qu'un
- *      dixieme caractere litteral de plus — sans quoi deux comptes divergeant
- *      au-dela du dixieme caractere, ou confondus par l'assainissement du
- *      point 2, seraient indiscernables.
+ *   3. troncature a OATH_NAME_DISPLAY_MAX - 1 caracteres avec un marqueur
+ *      visible, complete par une empreinte du nom entier en avant-dernier
+ *      caractere visible plutot qu'un caractere litteral de plus — sans quoi
+ *      deux comptes divergeant au-dela de la coupe, ou confondus par
+ *      l'assainissement du point 2, seraient indiscernables.
  *
  * `out` est toujours une chaine terminee, meme si `raw` est NULL ou vide, ou
  * si `out_sz` est sous OATH_NAME_OUT_SZ_MIN (auquel cas `out` recoit la
@@ -58,9 +88,9 @@ void oath_name_display(const char *raw, uint16_t raw_len, char *out, uint8_t out
  * POURQUOI ICI, et pas formatee sur place dans le mode USB : cette chaine
  * traverse ensuite oath_name_display() comme n'importe quelle etiquette
  * venue de l'hote (sec_confirm_arm_named() l'y passe sans distinction
- * d'origine). Elle est donc soumise a la coupe au premier ':', au retrait
- * d'un prefixe numerique suivi de '/', et a la troncature a dix caracteres
- * visibles. Une forme mal choisie ressortirait amputee ou vide, et l'ecran
+ * d'origine). Elle est donc soumise au retrait d'un prefixe numerique suivi
+ * de '/', a l'assainissement des caracteres non imprimables, et a la
+ * troncature. Une forme mal choisie ressortirait amputee ou vide, et l'ecran
  * annoncerait un effacement total SANS dire combien de comptes partent.
  * Cette contrainte se PROUVE — test_reset_label_traverse_l_affichage_intact,
  * qui fait le passage bout en bout — ce qui exige que le formatage soit de

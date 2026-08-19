@@ -369,6 +369,60 @@ static void test_op_short_fits_the_double_height_font(void)
                 "onze caracteres en double hauteur depassent 128 px");
 }
 
+/*
+ * L'ETIQUETTE DE COMPTE, elle, est en police SIMPLE hauteur.
+ *
+ * hmi/screen.c la dessine par draw_text_centered() — pas par
+ * draw_text_2x_centered(), qui ne sert qu'au libelle d'operation juste
+ * au-dessus. Ces deux lignes n'ont donc PAS le meme budget de caracteres, et
+ * c'est exactement l'erreur qui avait fige OATH_NAME_DISPLAY_MAX a 12 : la
+ * contrainte de la police double hauteur, appliquee a une ligne qui ne s'en
+ * sert pas.
+ *
+ * Le test relie la constante a la geometrie plutot que de reciter un nombre :
+ * il verifie que le budget maximal tient sur 128 px, que le caractere suivant
+ * ne tiendrait pas (borne serree des deux cotes), et que le centrage ne se
+ * replie ni a l'un ni a l'autre.
+ */
+static void test_le_nom_de_compte_tient_en_police_simple(void)
+{
+    /* La chaine la plus longue que oath_name_display() puisse produire. */
+    char plein[OATH_NAME_DISPLAY_MAX];
+    memset(plein, 'W', sizeof(plein) - 1);
+    plein[sizeof(plein) - 1] = '\0';
+    TEST_ASSERT_EQ(strlen(plein), 21u,
+                   "vingt-et-un caracteres dessines, terminateur exclu");
+
+    TEST_ASSERT(screen_text_px(plein) <= 128u,
+                "le plus long nom affichable tient sur 128 px en police simple");
+    TEST_ASSERT_EQ(screen_text_px(plein), 126u, "126 px exactement : 21 x 6");
+    TEST_ASSERT_EQ(screen_center_x(128, screen_text_px(plein)), 1,
+                   "centre sans repli : un pixel de marge a gauche");
+
+    /* Et la borne est serree : un vingt-deuxieme caractere deborde, et
+     * screen_center_x() colle alors a gauche — donc fb_set_pixel() AMPUTE le
+     * dernier caractere dessine, qui est justement le marqueur de troncature.
+     * C'est la raison pour laquelle OATH_NAME_DISPLAY_MAX vaut 22 et pas 23. */
+    char un_de_trop[OATH_NAME_DISPLAY_MAX + 1];
+    memset(un_de_trop, 'W', sizeof(un_de_trop) - 1);
+    un_de_trop[sizeof(un_de_trop) - 1] = '\0';
+    TEST_ASSERT_EQ(strlen(un_de_trop), 22u, "vingt-deux caracteres");
+    TEST_ASSERT(screen_text_px(un_de_trop) > 128u,
+                "vingt-deux caracteres depassent la dalle");
+    TEST_ASSERT_EQ(screen_center_x(128, screen_text_px(un_de_trop)), 0,
+                   "trop large : origine collee a gauche, la fin est coupee");
+
+    /* Le nom complet des comptes que la proprietaire a annonces doit passer
+     * ENTIER — c'est la raison d'etre de l'elargissement. */
+    const char *cas[] = { "OVH:PERSO", "OVH:PRO", "ANKAMA:PERSO", "ANKAMA:PRO" };
+    for (unsigned i = 0; i < sizeof(cas) / sizeof(cas[0]); i++) {
+        TEST_ASSERT(strlen(cas[i]) <= OATH_NAME_DISPLAY_MAX - 1u,
+                    "les comptes annonces tiennent sans troncature");
+        TEST_ASSERT(screen_text_px(cas[i]) <= 128u,
+                    "et tiennent sur la dalle");
+    }
+}
+
 static void test_op_short_maps_each_operation(void)
 {
     /*
@@ -679,6 +733,7 @@ void test_screen_layout(void)
     TEST_RUN(test_blank_only_after_a_full_minute);
     TEST_RUN(test_blank_survives_millisecond_wraparound);
     TEST_RUN(test_op_short_fits_the_double_height_font);
+    TEST_RUN(test_le_nom_de_compte_tient_en_police_simple);
     TEST_RUN(test_op_short_maps_each_operation);
     TEST_RUN(test_op_short_out_of_range_says_unknown);
     TEST_RUN(test_op_has_deadline_distinguishes_fido_from_the_rest);

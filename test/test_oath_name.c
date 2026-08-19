@@ -2,18 +2,29 @@
 #include "oath_name.h"
 #include "sec_store.h"
 
-/* Le nom YKOATH s'ecrit « [periode/][Issuer:]compte ». Ce que Mae reconnait
- * d'un coup d'oeil est l'issuer, pas l'adresse. */
-static void test_issuer_extrait(void)
+/*
+ * Le nom YKOATH s'ecrit « [periode/][Issuer:]compte ». Le nom COMPLET est
+ * affiche — emetteur ET compte — parce que la proprietaire a deux comptes
+ * chez le meme emetteur (voir test_noms_distincts_restent_distincts). Seul le
+ * prefixe de periode part : c'est du protocole, pas du sens.
+ */
+static void test_nom_complet_affiche(void)
 {
     char out[OATH_NAME_DISPLAY_MAX];
-    const char *n = "GitHub:mae@exemple.org";
+    const char *n = "GitHub:mae@ex.org";
     oath_name_display(n, (uint16_t)strlen(n), out, sizeof(out));
-    TEST_ASSERT(strcmp(out, "GITHUB") == 0, "l'issuer seul, en majuscules");
+    TEST_ASSERT(strcmp(out, "GITHUB:MAE@EX.ORG") == 0,
+                "le nom entier, en majuscules, ':' compris");
 
     const char *p = "30/GitLab:mae";
     oath_name_display(p, (uint16_t)strlen(p), out, sizeof(out));
-    TEST_ASSERT(strcmp(out, "GITLAB") == 0, "le prefixe de periode est retire");
+    TEST_ASSERT(strcmp(out, "GITLAB:MAE") == 0,
+                "le prefixe de periode est retire, le reste est garde");
+
+    /* Le compte SEUL ne suffit pas non plus : c'est la paire qui identifie. */
+    const char *q = "OVH:pro";
+    oath_name_display(q, (uint16_t)strlen(q), out, sizeof(out));
+    TEST_ASSERT(strcmp(out, "OVH:PRO") == 0, "emetteur et compte, tous deux");
 }
 
 /*
@@ -25,6 +36,17 @@ static void test_issuer_extrait(void)
 static void test_noms_distincts_restent_distincts(void)
 {
     const char *paires[][2] = {
+        /*
+         * DEUX COMPTES CHEZ LE MEME EMETTEUR. La proprietaire en a : OVH et
+         * Ankama auront chacun un compte perso et un compte pro. La regle
+         * « ne garder que l'emetteur » les rendait strictement indiscernables
+         * a l'ecran — les deux rendaient « OVH » — et son appui redevenait un
+         * interrupteur de presence pour ceux-la, exactement ce que la
+         * decision 4 de la spec existe pour empecher. Ces deux paires sont la
+         * raison pour laquelle le nom COMPLET est desormais affiche.
+         */
+        { "OVH:perso",         "OVH:pro"     },
+        { "Ankama:perso",      "Ankama:pro"  },
         { "GitHub:mae",        "GitHub mae"  },   /* ponctuation vs espace */
         { "Banque",            "Ban\x01que"  },   /* caractere de controle */
         { "MonServiceTresLong1", "MonServiceTresLong2" }, /* divergence tardive */
@@ -32,10 +54,10 @@ static void test_noms_distincts_restent_distincts(void)
          * distincts retombent tous deux sur « ? »), meme queue masquee : si
          * l'empreinte ne portait que sur la queue, ces deux noms rendraient
          * la meme chaine — c'est exactement le trou que corrige la ronde 1. */
-        { "Ban\x01que" "XXXXXXXXXXXX", "Ban\x02que" "XXXXXXXXXXXX" },
+        { "Ban\x01que" "XXXXXXXXXXXXXXXX", "Ban\x02que" "XXXXXXXXXXXXXXXX" },
         /* Ronde 3 : cible directement le poids de l'empreinte (Horner sur
          * l'issuer entier), pas seulement l'idee generale de collision. Meme
-         * prefixe visible de 9 caracteres (« SERVICE12 »), meme dernier
+         * prefixe visible de OATH_NAME_DISPLAY_MAX-3 caracteres, meme dernier
          * octet (« X », poids base^0 = 1), et un AVANT-dernier octet qui
          * differe de PRECISEMENT 12 (« A »=0x41=65 contre « M »=0x4D=77) — le
          * seul octet dont le poids est base^1. Avec une base 33,
@@ -46,7 +68,7 @@ static void test_noms_distincts_restent_distincts(void)
          * autre paire distante de 12 a cette position rejoue la meme preuve,
          * mais une distance differente (ou une position differente) ne la
          * rejoue PAS forcement. */
-        { "SERVICE12AX", "SERVICE12MX" },
+        { "SERVICE1234567890ABXAX", "SERVICE1234567890ABXMX" },
     };
     for (unsigned i = 0; i < sizeof(paires) / sizeof(paires[0]); i++) {
         char a[OATH_NAME_DISPLAY_MAX], b[OATH_NAME_DISPLAY_MAX];
@@ -68,15 +90,37 @@ static void test_caractere_indessinable_visible(void)
     TEST_ASSERT(strchr(out, '\x01') == NULL, "l'octet brut ne passe pas");
 }
 
-/* Troncature marquee : sans marqueur, deux noms qui divergent au-dela du
- * dixieme caractere seraient indiscernables et l'appui redeviendrait aveugle. */
+/*
+ * Troncature marquee : sans marqueur, deux noms qui divergent au-dela de la
+ * coupe seraient indiscernables et l'appui redeviendrait aveugle.
+ *
+ * Les longueurs sont exprimees en OATH_NAME_DISPLAY_MAX et non en litteraux :
+ * cette constante a deja bouge une fois (12 -> 22, apres qu'on a mesure la
+ * VRAIE police de cette ligne), et des « 11 » en dur avaient alors fige un
+ * budget qui n'existait plus.
+ *
+ * La borne exacte est verifiee des DEUX cotes : le plus long nom qui tient
+ * entier ne porte pas de marqueur, celui d'un caractere de plus en porte un.
+ * Verifier un seul cote laisserait passer une coupe decalee d'un.
+ */
 static void test_troncature_marquee(void)
 {
     char out[OATH_NAME_DISPLAY_MAX];
+    /* Vingt-deux caracteres : un de trop pour les vingt-et-un dessinables. */
     const char *n = "ServiceExtremementLong";
+    TEST_ASSERT_EQ(strlen(n), OATH_NAME_DISPLAY_MAX, "le cas de reference deborde bien d'un");
     oath_name_display(n, (uint16_t)strlen(n), out, sizeof(out));
-    TEST_ASSERT(strlen(out) == 11, "dix caracteres plus le marqueur");
-    TEST_ASSERT(out[10] == '?', "le marqueur de troncature termine la ligne");
+    TEST_ASSERT_EQ(strlen(out), OATH_NAME_DISPLAY_MAX - 1u,
+                   "tout le budget dessinable est occupe");
+    TEST_ASSERT(out[OATH_NAME_DISPLAY_MAX - 2u] == '?',
+                "le marqueur de troncature termine la ligne");
+
+    /* Vingt-et-un caracteres : le plus long qui tienne entier. */
+    const char *pile = "ServiceExtremementLon";
+    TEST_ASSERT_EQ(strlen(pile), OATH_NAME_DISPLAY_MAX - 1u, "exactement le budget");
+    oath_name_display(pile, (uint16_t)strlen(pile), out, sizeof(out));
+    TEST_ASSERT(strcmp(out, "SERVICEEXTREMEMENTLON") == 0,
+                "vingt-et-un caracteres passent entiers, sans marqueur");
 
     const char *court = "Court";
     oath_name_display(court, (uint16_t)strlen(court), out, sizeof(out));
@@ -92,8 +136,14 @@ static void test_entrees_degenerees(void)
     TEST_ASSERT(out[0] == '\0', "nom vide -> chaine vide, pas de pile dessinee");
     oath_name_display(NULL, 0, out, sizeof(out));
     TEST_ASSERT(out[0] == '\0', "nom absent -> chaine vide");
+    /* Un nom reduit a son seul prefixe de periode : il ne reste rien a
+     * montrer. Remplace l'ancien cas « ':' -> chaine vide », qui ne tenait que
+     * par la regle « emetteur seul » — un ':' isole est desormais un nom d'un
+     * caractere, imprimable, et s'affiche. */
+    oath_name_display("30/", 3, out, sizeof(out));
+    TEST_ASSERT(out[0] == '\0', "rien apres le prefixe de periode -> chaine vide");
     oath_name_display(":", 1, out, sizeof(out));
-    TEST_ASSERT(out[0] == '\0', "issuer vide -> chaine vide");
+    TEST_ASSERT(strcmp(out, ":") == 0, "un ':' seul est un nom d'un caractere");
 }
 
 /* Bords de out_sz : la fonction promet toujours une chaine terminee, y
@@ -131,9 +181,9 @@ static void test_out_sz_borne(void)
 /*
  * Cette chaine n'est PAS un nom venu de l'hote — c'est nous qui la
  * fabriquons — mais elle traverse exactement le meme traitement
- * (sec_confirm_arm_named -> oath_name_display) : coupe au premier ':',
- * retrait d'un prefixe numerique suivi de '/', assainissement, troncature a
- * dix caracteres. Une forme mal choisie ressortirait tronquee ou vide, et
+ * (sec_confirm_arm_named -> oath_name_display) : retrait d'un prefixe
+ * numerique suivi de '/', assainissement, troncature. Une forme mal choisie
+ * ressortirait tronquee ou vide, et
  * l'ecran annoncerait un effacement total sans dire combien de comptes
  * partent — l'inverse exact de ce que cette etiquette existe pour dire.
  */
@@ -171,9 +221,9 @@ static void test_reset_label_accorde_le_singulier(void)
  * PERDRE UN OCTET, pour toutes les valeurs que le magasin peut produire.
  *
  * L'egalite stricte, et pas « non vide » : c'est elle qui attrape une forme
- * qui contiendrait un ':' (coupee), un prefixe « 30/ » (ampute), ou qui
- * depasserait les dix caracteres visibles (tronquee, avec une empreinte a la
- * place du dernier chiffre). Aucun de ces trois defauts ne se voit sur la
+ * qui porterait un prefixe « 30/ » (ampute), ou qui
+ * depasserait le budget de caracteres visibles (tronquee, avec une empreinte
+ * a la place du dernier chiffre). Aucun de ces trois defauts ne se voit sur la
  * seule chaine formatee — ils n'apparaissent qu'apres le traitement.
  */
 static void test_reset_label_traverse_l_affichage_intact(void)
@@ -223,7 +273,7 @@ static void test_reset_label_borne_le_tampon(void)
 void test_oath_name(void)
 {
     TEST_SUITE("oath_name");
-    TEST_RUN(test_issuer_extrait);
+    TEST_RUN(test_nom_complet_affiche);
     TEST_RUN(test_noms_distincts_restent_distincts);
     TEST_RUN(test_caractere_indessinable_visible);
     TEST_RUN(test_troncature_marquee);
