@@ -229,4 +229,27 @@ if ! command -v idf.py >/dev/null 2>&1; then
     . "${IDF_EXPORT:-$HOME/esp/esp-idf/export.sh}" >/dev/null 2>&1
 fi
 
-exec idf.py build
+# La carte se lit dans .tripwire-variant, PAS dans le défaut de CMakeLists.txt.
+#
+# Ce qui était faux avant : un « idf.py build » nu, sans -DBOARD, construisait
+# le dossier build/ avec le défaut du projet — jc_devkit, une carte SANS écran.
+# Tout le corps de main/hmi/screen.c vit derrière « #if defined(BOARD_OLED_SCL) »
+# (boards/wt9932_key/board.h le seul à le définir) : la phase rapide, donc le
+# hook Stop, validait du code d'écran sans JAMAIS le compiler. Or c'est cet
+# écran qui nomme le compte OATH visé — la décision 4 de la spec vit entièrement
+# dans ce fichier, et cette branche est la première à y dessiner de la donnée
+# fournie par l'hôte.
+#
+# Construire la carte réellement flashée (celle que /esp-flash prendrait) rend
+# la phase rapide cohérente avec ce que Mae fait tourner. Les deux autres cartes
+# restent couvertes par scripts/full.sh, qui les rebâtit toutes les trois.
+VARIANT="$(tr -d '[:space:]' < .tripwire-variant 2>/dev/null || true)"
+if [ -z "$VARIANT" ] || [ ! -f "boards/$VARIANT/board.h" ]; then
+    echo "ERREUR : .tripwire-variant ne nomme pas une carte connue (« $VARIANT »)."
+    echo "         La phase rapide refuse de retomber sur un défaut implicite :"
+    echo "         c'est exactement ainsi qu'elle a cessé de compiler l'écran."
+    exit 1
+fi
+
+exec idf.py -B "build_$VARIANT" -DBOARD="$VARIANT" \
+            -DSDKCONFIG="build_$VARIANT/sdkconfig" build
