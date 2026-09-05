@@ -14,6 +14,27 @@
 # Elle porte AUSSI le harnais hôte sous sanitiseurs — voir plus bas.
 #
 set -euo pipefail
+
+# --- Repli sur l'atelier Nix quand la toolchain manque ---------------------
+#
+# Sur NixOS, le venv d'ESP-IDF (~/.espressif/python_env/...) capture des chemins
+# /nix/store qui finissent ramassés par le garbage collector : export.sh échoue
+# alors avec « virtual environment not found » et idf.py reste introuvable. Le
+# tripwire devient rouge par ABSENCE D'OUTIL, ce qui est indiscernable d'une
+# régression pour qui lit le verdict — exactement le mode de panne que
+# CLAUDE.md interdit (« un outil absent n'est pas une régression »).
+#
+# On se relance donc une fois dans le devShell du flake, qui fournit IDF 5.5.2
+# sans venv. Le sentinelle évite la récursion ; le coût n'est payé QUE si la
+# toolchain manque vraiment.
+if ! command -v idf.py >/dev/null 2>&1 \
+   && [ -z "${NIPHAR_NIX_IDF:-}" ] \
+   && command -v nix >/dev/null 2>&1 \
+   && [ -f "${NIPHAR_IDF_FLAKE:-$HOME/nixos-config}/flake.nix" ]; then
+    export NIPHAR_NIX_IDF=1
+    exec nix develop "${NIPHAR_IDF_FLAKE:-$HOME/nixos-config}#esp-idf" \
+         --command "$0" "$@"
+fi
 cd "$(dirname "$0")/.."
 
 # --- Harnais hôte sous ASan/UBSan ----------------------------------------
