@@ -1,0 +1,67 @@
+#pragma once
+
+/*
+ * Transport du lien S3↔coffre — SPI2 en ESCLAVE, `spi_slave_hd`.
+ *
+ * Ce module ne décide de rien. Il installe le périphérique sur le brochage de
+ * board.h, publie le bloc de registres que link/link_proto.c sérialise, relit
+ * l'octet de confirmation que le maître y écrit, et pilote la ligne IRQ. Toute
+ * la logique qui peut être fausse sans être visible — carte des registres, CRC,
+ * détection d'absence, comparaison de version — vit dans link_proto, pur et
+ * testé sur l'hôte. Rien de tout ça ne doit redescendre ici.
+ *
+ * Conception : docs/superpowers/specs/2026-08-07-lien-s3-coffre-design.md
+ *
+ * CE QUI PÈSE PLUS QUE LE RESTE. Le bus SCK/MOSI/MISO n'appartient pas au
+ * coffre : c'est celui de la moitié gauche du clavier, partagé avec la nRF24
+ * (et, côté droit, l'écran Sharp). Un esclave qui garde MISO en sortie hors
+ * sélection tient le bus et rend la radio muette — même en fonctionnant
+ * parfaitement. Ce n'est pas une hypothèse : un P4 non programmé l'a fait le
+ * 2026-09-05, une heure de diagnostic, consigné dans docs/HARDWARE.md
+ * (« Lien S3↔coffre — le brochage existe au PCB, pas dans la doc du clavier »).
+ * D'où le contrat de ce module :
+ *
+ *   - les trois lignes partagées ne sont JAMAIS configurées en sortie ici, à
+ *     aucun moment, même transitoirement ; seul le pilote SPI esclave y touche,
+ *     et il ne les active que sous CS (« is only active on the bus when the
+ *     Host asserts the Device's individual CS line », ESP-IDF
+ *     docs/en/api-reference/peripherals/spi_slave.rst:24) ;
+ *   - link_spi_init() s'appelle le PLUS TÔT possible dans app_main(), avant la
+ *     microSD et l'USB : avant elle, ces broches ne sont que des GPIO, et cette
+ *     fenêtre est le seul moment où le coffre n'a rien promis au clavier ;
+ *   - un échec d'init laisse les cinq broches en ENTRÉE sans pull, et le dit au
+ *     journal. Un échec qui laisserait des sorties actives serait pire que pas
+ *     de lien du tout : le coffre survit sans lien, le clavier ne survit pas à
+ *     un bus cloué.
+ */
+
+#include <stdbool.h>
+
+#include "esp_err.h"
+
+/*
+ * Installe le transport. À appeler tôt — voir ci-dessus.
+ *
+ * Rend ESP_ERR_NOT_SUPPORTED sur une carte sans lien (BOARD_LINK_AVAILABLE 0),
+ * ce qui n'est pas une panne : le kit et la carte-clé n'ont pas ce câblage.
+ * Idempotente : un second appel sur un lien déjà installé rend ESP_OK.
+ *
+ * Un échec rend le code du pilote, après avoir remis les broches en entrée.
+ */
+esp_err_t link_spi_init(void);
+
+/* Le transport est-il installé ? Faux avant link_spi_init(), après son échec,
+ * et toujours sur une carte sans lien. */
+bool link_spi_is_up(void);
+
+/*
+ * Bascule le bit LINK_STATE_READY du bloc de registres.
+ *
+ * « Prêt » veut dire une chose précise et vérifiable : app_main() est allé au
+ * bout de son démarrage. Ce n'est pas la même information que « le lien
+ * répond » — le bloc est publié bien avant, justement pour que le clavier
+ * puisse voir un coffre en cours de démarrage plutôt que rien du tout.
+ *
+ * Sans effet sur une carte sans lien.
+ */
+void link_spi_set_ready(bool ready);

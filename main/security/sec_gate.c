@@ -3,6 +3,7 @@
 #include "esp_log.h"
 
 #include "board.h"
+#include "link/link_spi.h"
 #include "sec_confirm.h"
 
 static const char *TAG = "sec_gate";
@@ -11,15 +12,32 @@ static const char *TAG = "sec_gate";
 
 esp_err_t sec_gate_init(void)
 {
-    /* La source réelle est le lien SPI. Tant qu'il n'est pas écrit, aucune
-     * confirmation n'est accordée et les opérations expirent. */
-    ESP_LOGW(TAG, "lien S3 pas encore implémenté — toute confirmation expirera");
+    /*
+     * Le GPIO et le périphérique sont installés par link_spi_init(), appelé
+     * bien plus tôt dans app_main() — ce module ne connaît que la source, pas
+     * le matériel, exactement comme la variante à bouton plus bas.
+     *
+     * Ce qui reste à faire ici : DIRE si cette source existe vraiment. Un
+     * transport absent n'est pas une panne silencieuse à découvrir au moment où
+     * une signature expire sans raison visible.
+     */
+    if (!link_spi_is_up()) {
+        ESP_LOGE(TAG, "lien S3 non installé — aucune confirmation ne pourra être accordée");
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGI(TAG, "confirmation par le lien S3 : le clavier écrit l'appui, le coffre le relaie");
     return ESP_OK;
 }
 
 const char *sec_gate_source(void)
 {
-    return "lien S3 (non implémenté)";
+    /*
+     * Deux chaînes et pas une : le coffre n'a pas d'écran ni de bouton, et
+     * cette ligne est tout ce qui distingue « le lien attend un appui » de
+     * « rien ne viendra jamais ».
+     */
+    return link_spi_is_up() ? "lien S3 (SPI esclave)"
+                            : "lien S3 (transport non installé)";
 }
 
 #elif BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_BUTTON

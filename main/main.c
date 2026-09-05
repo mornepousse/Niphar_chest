@@ -17,6 +17,7 @@
 #include "console/console.h"
 #include "hmi/hmi.h"
 #include "hmi/screen.h"
+#include "link/link_spi.h"
 #include "sec_gate.h"
 #include "storage/sd_card.h"
 #include "usb/usb_mode.h"
@@ -54,6 +55,30 @@ void app_main(void)
 #else
     ESP_LOGI(TAG, "lien S3 : indisponible sur cette carte");
 #endif
+
+    /*
+     * LE LIEN EN PREMIER, avant la microSD et avant l'USB — et cet ordre est du
+     * matériel, pas du confort.
+     *
+     * SCK/MOSI/MISO ne sont pas au coffre : ce sont les lignes du bus SPI de la
+     * moitié gauche du clavier, partagées avec la nRF24. Tant que le pilote
+     * esclave n'est pas installé, ce ne sont que des GPIO, et un P4 qui les
+     * tiendrait rendrait la radio muette — c'est arrivé le 2026-09-05, une
+     * heure de diagnostic (docs/HARDWARE.md). Chaque milliseconde passée avant
+     * cet appel est une milliseconde où le clavier n'a aucune garantie ; le
+     * sondage de la carte SD, lui, se compte en centaines.
+     *
+     * Un échec n'est pas fatal : link_spi_init() remet les broches en entrée et
+     * le dit. Le coffre survit sans lien — le clavier ne survivrait pas à un bus
+     * cloué.
+     */
+    esp_err_t link_err = link_spi_init();
+    if (link_err == ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGI(TAG, "pas de lien S3 sur cette carte — transport SPI non installé");
+    } else if (link_err != ESP_OK) {
+        ESP_LOGE(TAG, "lien S3 indisponible : %s — broches relâchées, le coffre continue",
+                 esp_err_to_name(link_err));
+    }
 
     /*
      * Une carte absente n'est pas une erreur fatale : le coffre doit rester
@@ -138,6 +163,14 @@ void app_main(void)
         ESP_LOGW(TAG, "ecran indisponible : %s — la cle reste utilisable sans lui",
                  esp_err_to_name(screen_err));
     }
+
+    /*
+     * Le démarrage est allé au bout : le clavier peut le lire dans le bloc de
+     * registres (LINK_STATE_READY). Ici et pas plus tôt — annoncer « prêt »
+     * pendant que la microSD ou l'USB montent encore ferait du bit un ornement.
+     * Sans effet sur une carte sans lien.
+     */
+    link_spi_set_ready(true);
 
     /*
      * La console en dernier, et elle ne rend pas la main. Si son démarrage

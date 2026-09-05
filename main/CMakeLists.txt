@@ -3,6 +3,8 @@ set(srcs
     "storage/sd_card.c"
     "sys/nvs_utils.c"
     "sys/cr_crc16.c"
+    "link/link_proto.c"
+    "link/link_spi.c"
     "usb/usb_device.c"
     "usb/usb_mode.c"
     "usb/hid_dispatch.c"
@@ -48,7 +50,7 @@ idf_component_register(
     # chaque synchronisation amont.
     INCLUDE_DIRS "${BOARD_DIR}" "." "sys" "security"
     # Volontairement réduit à ce que le code utilise vraiment.
-    REQUIRES esp_driver_gpio esp_driver_i2c spi_flash sdmmc esp_driver_sdmmc console
+    REQUIRES esp_driver_gpio esp_driver_i2c esp_driver_spi spi_flash sdmmc esp_driver_sdmmc console
              espressif__tinyusb esp_timer nvs_flash mbedtls espressif__led_strip
     PRIV_REQUIRES usb
 )
