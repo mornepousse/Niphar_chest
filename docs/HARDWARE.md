@@ -832,3 +832,42 @@ nombre de comptes) ; et la migration des douze comptes de Proton.
 > police double hauteur (`test_op_short_fits_the_double_height_font`). Une doc
 > qui annonce un libellé que l'écran n'affichera jamais fait conclure à un
 > défaut inexistant au moment de la vérification à l'œil.
+
+### Lien S3↔coffre — le brochage existe au PCB, pas dans la doc du clavier
+
+*Établi le 2026-09-05, en lisant le projet KiCad plutôt que la doc dérivée.*
+
+`docs/NIPHARGUS_V2_HARDWARE.md` de `KeSp_firmware` — pourtant « vérifié à la
+netlist » — **ne mentionne ni CS ni IRQ pour le P4**. Il va jusqu'à lister,
+parmi les « conséquences de conception non traitées », le fait que trois
+esclaves partagent le bus « chacun son CS », comme si celui du P4 restait à
+inventer.
+
+C'est faux, et la source de vérité est le projet PCB, pas ce document. Les nets
+**`CS_P4` et `IRQ_P4` existent** dans `Niphargus/hardware/pcb/` — présents dans
+`s3.kicad_sch` comme dans `p4.kicad_sch`, donc câblés des deux côtés.
+
+| net | côté S3 | côté coffre (P4) |
+|---|---|---|
+| `CS_P4` | IO7 | GPIO7 (`BOARD_LINK_CS`) |
+| `IRQ_P4` | IO11 | GPIO11 (`BOARD_LINK_IRQ`) |
+| SCK / MISO / MOSI | 38 / 39 / 40, **partagés** | 9 / 10 / 8 |
+
+Le brochage S3 vient de Mae, pas d'une lecture automatique du schéma : les noms
+de broches vivent dans la bibliothèque de symboles, pas dans le fichier de
+feuille, et suivre le fil à la main n'aurait pas été une preuve. **À revérifier
+au schéma avant de souder ou de conclure sur un silence du lien.**
+
+**Le bus est partagé à trois** — nRF24 (`CSN` GPIO16), écran Sharp (`LCD_CS`
+GPIO14, actif HAUT), et le coffre. Deux conséquences qui pèsent sur notre
+firmware :
+
+- **Le coffre doit relâcher MISO hors sélection.** Un esclave qui garde MISO en
+  sortie tient le bus même en fonctionnant parfaitement — et rend la radio
+  muette. C'est écrit côté clavier après un diagnostic d'une heure.
+- **Rien n'arbitre les accès** entre les trois esclaves à ce jour.
+
+**Dette à remonter chez KeSp** : ce brochage manque à leur document matériel, et
+son absence a déjà coûté une heure de diagnostic le 2026-09-05 — un P4 non
+programmé cloue SCK/MISO/MOSI, la nRF24 devient muette, et la cause est trouvée
+en dernier.
