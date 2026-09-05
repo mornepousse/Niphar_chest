@@ -123,6 +123,43 @@ static void test_user_confirm_outside_crc(void)
                 "écriture du maître n'invalide pas le CRC du coffre");
 }
 
+/*
+ * Plus fort que le test précédent, et pour une autre raison : celui du dessus
+ * dit que le CRC ne COUVRE pas 0x0C, celui-ci que pack_status n'y ÉCRIT rien.
+ *
+ * C'est la différence qui porte le transport. link/link_spi.c publie le bloc en
+ * DEUX plages — 0x00..0x0B puis 0x0D..0x0F — et saute délibérément 0x0C, parce
+ * que cet octet appartient au maître : le S3 peut y avoir posé un appui que le
+ * coffre n'a pas encore lu. Cette découpe ne vaut que si pack_status ne
+ * prétend rien mettre là. Le jour où il y écrirait un zéro « pour propreté »,
+ * publier le bloc entier en un seul appel redeviendrait tentant, et effacerait
+ * silencieusement une confirmation réelle — un défaut invisible aux tests du
+ * CRC, puisque le bloc resterait parfaitement valide.
+ */
+static void test_pack_leaves_user_confirm_untouched(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    const link_status_t in = {
+        .state = LINK_STATE_READY,
+        .pending_op = 0x1234,
+        .confirm_count = 7,
+    };
+
+    /* Motif témoin : n'importe quelle valeur que pack_status n'a aucune raison
+     * d'écrire, pour distinguer « laissé tel quel » de « remis à zéro ». */
+    memset(regs, 0xA5, sizeof(regs));
+    link_proto_pack_status(regs, &in);
+    TEST_ASSERT_EQ(regs[LINK_REG_USER_CONFIRM], 0xA5,
+                   "octet du maître laissé tel quel");
+
+    /* Le cas qui compte vraiment : un appui déjà posé survit à une
+     * republication de l'état du coffre. */
+    regs[LINK_REG_USER_CONFIRM] = LINK_USER_CONFIRM_MAGIC;
+    link_proto_pack_status(regs, &in);
+    TEST_ASSERT_EQ(regs[LINK_REG_USER_CONFIRM], LINK_USER_CONFIRM_MAGIC,
+                   "appui non lu non effacé par une republication");
+}
+
 /* ------------------------------------------------------------------------ */
 /* Absence — le cas normal, et celui qu'on code à l'envers                    */
 /* ------------------------------------------------------------------------ */
@@ -195,6 +232,7 @@ void test_link_proto(void)
     TEST_RUN(test_reject_bad_version);
     TEST_RUN(test_reject_corrupted_payload);
     TEST_RUN(test_user_confirm_outside_crc);
+    TEST_RUN(test_pack_leaves_user_confirm_untouched);
     TEST_RUN(test_absent_all_zero);
     TEST_RUN(test_absent_all_ones);
     TEST_RUN(test_present_not_absent);
