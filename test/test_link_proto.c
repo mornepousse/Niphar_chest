@@ -110,8 +110,10 @@ static void test_reject_corrupted_payload(void)
 }
 
 /* La confirmation vient du S3 : elle est hors de la zone couverte par le CRC du
- * coffre, sinon toute écriture du maître invaliderait le bloc. */
-static void test_user_confirm_outside_crc(void)
+ * coffre, sinon toute écriture du maître invaliderait le bloc. Et pas seulement
+ * l'octet de confirmation : AUCUN octet de la plage du maître n'entre dans le
+ * CRC — il pourra s'y ajouter un champ sans invalider quoi que ce soit. */
+static void test_master_range_outside_crc(void)
 {
     uint8_t regs[LINK_REG_SIZE];
     const link_status_t in = { .state = 0, .pending_op = 0, .confirm_count = 0 };
@@ -121,22 +123,30 @@ static void test_user_confirm_outside_crc(void)
     regs[LINK_REG_USER_CONFIRM] = LINK_USER_CONFIRM_MAGIC;
     TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out),
                 "écriture du maître n'invalide pas le CRC du coffre");
+
+    for (unsigned i = 0; i < LINK_REG_MASTER_LEN; i++) {
+        link_proto_pack_status(regs, &in);
+        regs[LINK_REG_MASTER_BASE + i] ^= 0xFF;
+        TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out),
+                    "octet quelconque du maître hors du CRC du coffre");
+    }
 }
 
 /*
  * Plus fort que le test précédent, et pour une autre raison : celui du dessus
- * dit que le CRC ne COUVRE pas 0x0C, celui-ci que pack_status n'y ÉCRIT rien.
+ * dit que le CRC ne COUVRE pas la plage du maître, celui-ci que pack_status n'y
+ * ÉCRIT rien — sur TOUTE la plage, pas seulement sur l'octet de confirmation.
  *
- * C'est la différence qui porte le transport. link/link_spi.c publie le bloc en
- * DEUX plages — 0x00..0x0B puis 0x0D..0x0F — et saute délibérément 0x0C, parce
- * que cet octet appartient au maître : le S3 peut y avoir posé un appui que le
- * coffre n'a pas encore lu. Cette découpe ne vaut que si pack_status ne
- * prétend rien mettre là. Le jour où il y écrirait un zéro « pour propreté »,
- * publier le bloc entier en un seul appel redeviendrait tentant, et effacerait
- * silencieusement une confirmation réelle — un défaut invisible aux tests du
- * CRC, puisque le bloc resterait parfaitement valide.
+ * C'est la différence qui porte le transport. link/link_spi.c publie la zone du
+ * coffre d'un seul bloc et s'arrête net avant la plage du maître, parce que le
+ * S3 peut y avoir posé un appui que le coffre n'a pas encore lu. Cette découpe
+ * ne vaut que si pack_status ne prétend rien mettre là. Le jour où il y
+ * écrirait un zéro « pour propreté », publier le bloc entier en un seul appel
+ * redeviendrait tentant, et effacerait silencieusement une confirmation réelle
+ * — un défaut invisible aux tests du CRC, puisque le bloc resterait
+ * parfaitement valide.
  */
-static void test_pack_leaves_user_confirm_untouched(void)
+static void test_pack_leaves_master_range_untouched(void)
 {
     uint8_t regs[LINK_REG_SIZE];
     const link_status_t in = {
@@ -149,8 +159,10 @@ static void test_pack_leaves_user_confirm_untouched(void)
      * d'écrire, pour distinguer « laissé tel quel » de « remis à zéro ». */
     memset(regs, 0xA5, sizeof(regs));
     link_proto_pack_status(regs, &in);
-    TEST_ASSERT_EQ(regs[LINK_REG_USER_CONFIRM], 0xA5,
-                   "octet du maître laissé tel quel");
+    for (unsigned i = 0; i < LINK_REG_MASTER_LEN; i++) {
+        TEST_ASSERT_EQ(regs[LINK_REG_MASTER_BASE + i], 0xA5,
+                       "octet du maître laissé tel quel");
+    }
 
     /* Le cas qui compte vraiment : un appui déjà posé survit à une
      * republication de l'état du coffre. */
@@ -158,6 +170,103 @@ static void test_pack_leaves_user_confirm_untouched(void)
     link_proto_pack_status(regs, &in);
     TEST_ASSERT_EQ(regs[LINK_REG_USER_CONFIRM], LINK_USER_CONFIRM_MAGIC,
                    "appui non lu non effacé par une republication");
+}
+
+/* ------------------------------------------------------------------------ */
+/* Propriété des mots — l'invariant qui a fait rouvrir la carte des registres */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Le tampon partagé du `spi_slave_hd` s'écrit PAR MOTS de 32 bits côté
+ * application, et par octets côté maître. Une écriture qui ne remplit pas un mot
+ * entier passe donc par un lire-modifier-écrire — et un appui de la propriétaire
+ * qui arrive pendant ces quelques cycles est perdu. Tant qu'un mot porte à la
+ * fois un champ du coffre et un champ du maître, ce lire-modifier-écrire est
+ * inévitable ; s'ils ne partagent aucun mot, il disparaît.
+ *
+ * D'où la propriété testée ici : chaque octet du bloc a exactement UN
+ * propriétaire, et les quatre octets d'un même mot ont TOUS le même. Elle porte
+ * sur les plages, pas sur la liste des offsets — recopier les constantes ne
+ * prouverait que la recopie.
+ */
+
+#define WORD_BYTES 4
+
+/* Propriétaire déclaré d'un octet, d'après les seules plages. Rend '!' si les
+ * deux plages le revendiquent, '?' si aucune ne le couvre. */
+static char owner_of(unsigned off)
+{
+    /* Soustraction non signée plutôt qu'un encadrement en deux comparaisons :
+     * un offset sous la base repasse par le haut et sort de la plage tout seul.
+     * Une base à zéro rendrait sinon « >= base » toujours vrai, ce que -Wextra
+     * refuse à juste titre. */
+    const int chest  = (unsigned)(off - LINK_REG_CHEST_BASE)  < LINK_REG_CHEST_LEN;
+    const int master = (unsigned)(off - LINK_REG_MASTER_BASE) < LINK_REG_MASTER_LEN;
+
+    if (chest && master) {
+        return '!';
+    }
+    if (chest) {
+        return 'C';
+    }
+    if (master) {
+        return 'M';
+    }
+    return '?';
+}
+
+/* Chaque octet appartient à exactement un des deux côtés : ni octet orphelin
+ * (que personne ne publierait, donc que personne ne garantirait), ni octet
+ * disputé (que les deux écriraient). */
+static void test_every_byte_has_exactly_one_owner(void)
+{
+    for (unsigned off = 0; off < LINK_REG_SIZE; off++) {
+        const char o = owner_of(off);
+        TEST_ASSERT(o == 'C' || o == 'M', "octet ni orphelin ni disputé");
+    }
+}
+
+/* Le cœur du sujet : aucun mot de 32 bits n'est à cheval sur les deux côtés. */
+static void test_no_word_straddles_the_two_owners(void)
+{
+    TEST_ASSERT_EQ(LINK_REG_SIZE % WORD_BYTES, 0,
+                   "le bloc fait un nombre entier de mots");
+
+    for (unsigned base = 0; base < LINK_REG_SIZE; base += WORD_BYTES) {
+        const char first = owner_of(base);
+        for (unsigned i = 1; i < WORD_BYTES; i++) {
+            TEST_ASSERT_EQ(owner_of(base + i), first,
+                           "les quatre octets d'un mot ont le même propriétaire");
+        }
+    }
+}
+
+/* Et les champs nommés tombent du bon côté, sur toute leur largeur : une plage
+ * juste qui décrirait mal les champs ne protégerait rien. */
+static void test_named_fields_fall_on_their_owner_side(void)
+{
+    const struct { unsigned off, len; char owner; } fields[] = {
+        { LINK_REG_MAGIC,         4, 'C' },
+        { LINK_REG_VERSION,       1, 'C' },
+        { LINK_REG_STATE,         1, 'C' },
+        { LINK_REG_PENDING_OP,    2, 'C' },
+        { LINK_REG_CONFIRM_COUNT, 4, 'C' },
+        { LINK_REG_CRC,           2, 'C' },
+        { LINK_REG_USER_CONFIRM,  1, 'M' },
+    };
+
+    for (size_t f = 0; f < sizeof(fields) / sizeof(fields[0]); f++) {
+        for (unsigned i = 0; i < fields[f].len; i++) {
+            TEST_ASSERT_EQ(owner_of(fields[f].off + i), fields[f].owner,
+                           "champ entièrement du côté de son propriétaire");
+        }
+    }
+
+    /* Le CRC ne couvre que le coffre : l'inclure ferait invalider le bloc à
+     * chaque écriture légitime du maître. */
+    for (unsigned off = 0; off < LINK_REG_CRC_SPAN; off++) {
+        TEST_ASSERT_EQ(owner_of(off), 'C', "la zone couverte par le CRC est au coffre");
+    }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -231,8 +340,11 @@ void test_link_proto(void)
     TEST_RUN(test_reject_bad_magic);
     TEST_RUN(test_reject_bad_version);
     TEST_RUN(test_reject_corrupted_payload);
-    TEST_RUN(test_user_confirm_outside_crc);
-    TEST_RUN(test_pack_leaves_user_confirm_untouched);
+    TEST_RUN(test_master_range_outside_crc);
+    TEST_RUN(test_pack_leaves_master_range_untouched);
+    TEST_RUN(test_every_byte_has_exactly_one_owner);
+    TEST_RUN(test_no_word_straddles_the_two_owners);
+    TEST_RUN(test_named_fields_fall_on_their_owner_side);
     TEST_RUN(test_absent_all_zero);
     TEST_RUN(test_absent_all_ones);
     TEST_RUN(test_present_not_absent);

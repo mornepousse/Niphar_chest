@@ -47,12 +47,18 @@ void link_proto_pack_status(uint8_t *regs, const link_status_t *st)
     regs[LINK_REG_STATE] = st->state;
     put_u16(&regs[LINK_REG_PENDING_OP], st->pending_op);
     put_u32(&regs[LINK_REG_CONFIRM_COUNT], st->confirm_count);
-    regs[LINK_REG_RESERVED] = 0x00;
+
+    /* Le réservé du coffre court jusqu'au bout de sa plage : calculé, pas
+     * recopié, pour qu'un champ ajouté avant lui ne laisse pas d'octet non
+     * initialisé dans un bloc qu'on publie d'un seul tenant. */
+    memset(&regs[LINK_REG_RESERVED], 0x00,
+           (LINK_REG_CHEST_BASE + LINK_REG_CHEST_LEN) - LINK_REG_RESERVED);
 
     /*
-     * L'octet de confirmation (LINK_REG_USER_CONFIRM) appartient au maître : ni
-     * écrit ici, ni couvert par le CRC. L'inclure ferait invalider le bloc à
-     * chaque écriture légitime du S3.
+     * La plage du maître (LINK_REG_MASTER_BASE, dont LINK_REG_USER_CONFIRM) lui
+     * appartient : ni écrite ici, ni couverte par le CRC. L'inclure ferait
+     * invalider le bloc à chaque écriture légitime du S3 ; l'écrire effacerait
+     * un appui qu'il aurait posé et que le coffre n'aurait pas encore lu.
      */
     put_u16(&regs[LINK_REG_CRC], cr_crc16(regs, LINK_REG_CRC_SPAN));
 }

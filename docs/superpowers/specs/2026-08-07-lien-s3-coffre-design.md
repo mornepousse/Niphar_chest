@@ -115,14 +115,63 @@ du choix de `spi_slave_hd` plutôt que de l'esclave classique : ce dernier exige
 que l'esclave ait posté un tampon avant chaque transaction, ce qui demanderait
 une ligne « ready » qu'on n'a pas.
 
-| offset | champ | sens |
-|---|---|---|
-| 0x00-0x03 | mot magique `NIPH` | coffre→S3, présence |
-| 0x04 | version du protocole | coffre→S3 |
-| 0x05 | état (bits : carte SD présente, USB monté, prêt) | coffre→S3 |
-| 0x06-0x07 | code de l'opération en attente de confirmation | coffre→S3 |
-| 0x08-0x0B | compteur de confirmations consommées | coffre→S3 |
-| 0x0C | confirmation utilisateur | S3→coffre |
+**Vingt octets, cinq mots de 32 bits, et aucun mot partagé entre les deux
+extrémités.** C'est la contrainte structurante de cette table, et elle prime sur
+la compacité.
+
+| offset | mot | champ | propriétaire |
+|---|---|---|---|
+| 0x00-0x03 | 0 | mot magique `NIPH` | coffre→S3, présence |
+| 0x04 | 1 | version du protocole | coffre→S3 |
+| 0x05 | 1 | état (bits : carte SD présente, USB monté, prêt) | coffre→S3 |
+| 0x06-0x07 | 1 | code de l'opération en attente de confirmation (petit-boutiste) | coffre→S3 |
+| 0x08-0x0B | 2 | compteur de confirmations consommées (petit-boutiste) | coffre→S3 |
+| 0x0C-0x0D | 3 | CRC16 sur 0x00..0x0B (petit-boutiste) | coffre→S3 |
+| 0x0E-0x0F | 3 | réservé, à zéro | coffre→S3 |
+| 0x10 | 4 | confirmation utilisateur | S3→coffre |
+| 0x11-0x13 | 4 | réservé, à zéro | S3→coffre |
+
+Le coffre possède les mots 0 à 3 (`0x00..0x0F`) et **les publie d'un seul
+bloc** ; le maître possède le mot 4 (`0x10..0x13`).
+
+**Pourquoi l'alignement sur les mots, et pas seulement la séparation des
+champs.** Le tampon partagé du `spi_slave_hd` s'écrit par mots de 32 bits côté
+application, et par octets côté maître (`spi_slave_hd.rst`, « Writing/Reading
+Shared Registers »). Une écriture qui ne remplit pas un mot entier passe donc
+par un lire-modifier-écrire dans le pilote. Tant qu'un champ du coffre loge dans
+le mot du maître, republier ce champ — le CRC, typiquement, qui change à chaque
+changement d'état — impose cette relecture, et **un appui de la propriétaire
+arrivé pendant ces quelques cycles est perdu**. La fenêtre est étroite et non
+silencieuse (le compteur de confirmations ne bouge pas, donc le maître peut
+réessayer), mais c'est une perte de geste sur un lien dont le seul rôle est de
+transporter des gestes.
+
+La première version de cette table mettait le CRC en `0x0E` et l'octet du maître
+en `0x0C` : le même mot. Séparer les deux extrémités en mots distincts ferme la
+fenêtre **à la source** au lieu de la réduire. Corrigé pendant que le maître
+n'existait pas encore — c'était le seul moment où le changement était gratuit ;
+plus tard, il aurait exigé de reflasher les deux dépôts ensemble.
+
+Le CRC ne couvre que `0x00..0x0B`, c'est-à-dire les seuls champs du coffre, et
+**pas** la plage du maître : l'y inclure ferait invalider le bloc à chaque
+écriture légitime du S3. Les octets réservés sont à zéro, chacun écrit par son
+propriétaire — un champ ajouté plus tard dans le mot 4 n'obligera pas le coffre
+à changer.
+
+Une seule écriture du coffre traverse le mot du maître, et le protocole
+l'exige : la reprise de l'octet de confirmation après lecture, sans quoi le même
+appui se rejouerait. Elle n'a lieu qu'immédiatement après un appui déjà reçu,
+au moment où le maître attend justement de voir bouger le compteur.
+
+**Sémantique de `LINK_STATE_READY`** — figée ici parce que le maître s'en
+servira pour décider s'il peut demander quelque chose : le bit signifie
+**`app_main()` est allé au bout**. Toutes les initialisations du coffre ont été
+tentées (microSD, USB, source de confirmation, IHM, écran) et la console tourne.
+Il ne dit **pas** qu'elles ont réussi : elles ne sont pas fatales une à une, et
+le coffre démarre délibérément sans rien exposer (`USB_MODE_NONE`). L'état réel
+des sous-systèmes se lit aux autres bits. Sa valeur est à l'envers : tant qu'il
+est à zéro sur un coffre présent, le démarrage est en cours et une requête
+tomberait sur des modules à moitié installés.
 
 **Canal de données** pour les messages plus longs — spécifié ici, **non
 implémenté dans cet incrément**. Il portera le pilotage des options.
@@ -184,6 +233,11 @@ Sur l'hôte, sans matériel :
 - rejet d'une version inconnue ;
 - détection d'absence sur `0x00` et sur `0xFF` ;
 - aller-retour de la carte de registres ;
+- **propriété des mots** : chaque octet du bloc a exactement un propriétaire,
+  et les quatre octets d'un même mot ont tous le même — exprimé sur les plages
+  de propriété, pas sur une liste d'offsets recopiée, sinon le test ne
+  prouverait que la recopie ;
+- `pack_status()` n'écrit **aucun** octet de la plage du maître ;
 - comportement de `sec_confirm` (tests portés depuis KeSp).
 
 Sur le kit de dev, ce qui reste vérifiable : le build `jc_devkit` passe avec le

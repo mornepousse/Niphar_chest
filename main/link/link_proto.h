@@ -27,30 +27,71 @@
  *   0x05       bits d'état               coffre→S3
  *   0x06-0x07  opération en attente      coffre→S3   (petit-boutiste)
  *   0x08-0x0B  confirmations consommées  coffre→S3   (petit-boutiste)
- *   0x0C       confirmation utilisateur  S3→coffre
- *   0x0D       réservé, à zéro
- *   0x0E-0x0F  CRC16 sur 0x00..0x0B      coffre→S3   (petit-boutiste)
+ *   0x0C-0x0D  CRC16 sur 0x00..0x0B      coffre→S3   (petit-boutiste)
+ *   0x0E-0x0F  réservé, à zéro           coffre→S3
+ *   0x10       confirmation utilisateur  S3→coffre
+ *   0x11-0x13  réservé, à zéro           S3→coffre
  *
- * Le CRC ne couvre QUE les champs écrits par le coffre : l'octet de
- * confirmation appartient au maître, l'inclure ferait invalider le bloc par
- * toute écriture légitime.
+ * VINGT octets, cinq mots, et AUCUN mot partagé entre les deux extrémités.
+ * C'est la seule chose qui compte dans cette disposition, et elle a coûté une
+ * révision : le tampon partagé du `spi_slave_hd` s'écrit par mots de 32 bits
+ * côté application. Un champ du coffre logé dans le mot du maître impose donc
+ * un lire-modifier-écrire pour republier — et un appui de la propriétaire qui
+ * arrive pendant ces quelques cycles est perdu. La carte précédente mettait le
+ * CRC du coffre en 0x0E et l'octet du maître en 0x0C : le même mot. Les séparer
+ * ferme la fenêtre à la source plutôt que de la réduire.
+ *
+ * Corrigé pendant que le maître n'existait pas encore — plus tard, il aurait
+ * fallu reflasher les deux dépôts ensemble.
+ *
+ * Le CRC ne couvre QUE les champs écrits par le coffre (LINK_REG_CRC_SPAN) :
+ * la plage du maître, l'inclure ferait invalider le bloc par toute écriture
+ * légitime du S3.
  */
 #define LINK_REG_MAGIC          0x00
 #define LINK_REG_VERSION        0x04
 #define LINK_REG_STATE          0x05
 #define LINK_REG_PENDING_OP     0x06
 #define LINK_REG_CONFIRM_COUNT  0x08
-#define LINK_REG_USER_CONFIRM   0x0C
-#define LINK_REG_RESERVED       0x0D
-#define LINK_REG_CRC            0x0E
-#define LINK_REG_SIZE           0x10
+#define LINK_REG_CRC            0x0C
+#define LINK_REG_RESERVED       0x0E
+#define LINK_REG_USER_CONFIRM   0x10
+#define LINK_REG_SIZE           0x14
 
 /* Étendue couverte par le CRC : du début jusqu'à la fin du compteur. */
 #define LINK_REG_CRC_SPAN       0x0C
 
+/*
+ * Les deux plages de propriété, déclarées comme plages et pas comme liste
+ * d'offsets : c'est sur elles que porte l'invariant du transport, et une
+ * propriété se vérifie, une liste se recopie.
+ *
+ * Chaque plage couvre un nombre entier de mots et commence sur une frontière de
+ * mot : c'est ce qui permet à chaque côté de publier le sien d'un seul bloc.
+ */
+#define LINK_REG_CHEST_BASE     0x00
+#define LINK_REG_CHEST_LEN      0x10
+#define LINK_REG_MASTER_BASE    0x10
+#define LINK_REG_MASTER_LEN     0x04
+
 /* Bits d'état. */
 #define LINK_STATE_SD_PRESENT   (1u << 0)
 #define LINK_STATE_USB_MOUNTED  (1u << 1)
+/*
+ * LINK_STATE_READY — sémantique figée, parce que le maître va s'en servir pour
+ * décider s'il peut demander quelque chose : **`app_main()` est allé au bout**.
+ * Toutes les initialisations du coffre ont été tentées (microSD, USB, source de
+ * confirmation, IHM, écran) et la console tourne.
+ *
+ * Ce que le bit ne dit PAS, et qu'il ne faut pas lui faire dire : que ces
+ * initialisations aient RÉUSSI. Elles ne sont pas fatales une à une, et le
+ * coffre démarre volontairement sans rien exposer. L'état réel des sous-systèmes
+ * se lit aux autres bits (LINK_STATE_SD_PRESENT, LINK_STATE_USB_MOUNTED).
+ *
+ * À l'envers, c'est ce qui le rend utile : tant qu'il est à zéro sur un coffre
+ * présent, le démarrage est en cours, et une requête du maître tomberait sur des
+ * modules à moitié installés.
+ */
 #define LINK_STATE_READY        (1u << 2)
 
 /* Valeur que le S3 écrit pour signaler un appui réel. Une valeur choisie plutôt
@@ -66,7 +107,8 @@ typedef struct {
 
 /*
  * Sérialise l'état du coffre dans `regs` (LINK_REG_SIZE octets), CRC compris.
- * N'écrit pas l'octet de confirmation, qui appartient au maître.
+ * N'écrit AUCUN octet de la plage du maître (LINK_REG_MASTER_BASE), qui lui
+ * appartient — un appui déjà posé et pas encore lu y survit intact.
  */
 void link_proto_pack_status(uint8_t *regs, const link_status_t *st);
 

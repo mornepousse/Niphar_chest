@@ -47,40 +47,43 @@ static const char *TAG = "link";
 #define LINK_TASK_PRIO      4
 
 /* ------------------------------------------------------------------------- */
-/* Ce que la découpe des écritures suppose de la carte de registres.          */
+/* Ce que la publication des registres suppose de leur carte.                 */
 /* ------------------------------------------------------------------------- */
 
 /*
- * Le bloc se publie en DEUX plages, jamais en une : 0x00..0x0B (les champs du
- * coffre, couverts par le CRC) puis 0x0D..0x0F (l'octet réservé et le CRC).
- * L'octet 0x0C est sauté parce qu'il appartient au maître — l'écrire effacerait
- * un appui déjà posé par le S3 et pas encore lu.
+ * Le bloc se publie en UNE SEULE plage : 0x00..0x0F, toute la zone du coffre.
  *
- * Ces trois assertions verrouillent l'arithmétique de cette découpe. Si un jour
- * la carte des registres bouge dans link_proto.h, le build casse ici plutôt
- * que de produire un firmware qui écrase silencieusement les confirmations.
+ * Ça n'a pas toujours été possible. La carte des registres logeait le CRC du
+ * coffre (0x0E) dans le même mot de 32 bits que l'octet du maître (0x0C), ce
+ * qui obligeait à publier en deux morceaux et à sauter l'octet du maître — et
+ * le second morceau, incomplet, passait par un lire-modifier-écrire pendant
+ * lequel un appui du S3 pouvait être perdu. link_proto.h a séparé les deux
+ * extrémités dans des mots distincts ; la découpe n'a plus de raison d'être.
+ *
+ * L'application écrit ce tampon PAR MOTS de 32 bits, le maître le lit et
+ * l'écrit PAR OCTETS (spi_slave_hd.rst, « Writing/Reading Shared Registers ») :
+ * une écriture qui ne remplit pas un mot entier passe par un
+ * lire-modifier-écrire (hal/esp32p4/include/hal/spi_ll.h,
+ * spi_ll_write_buffer_byte). La zone du coffre fait exactement quatre mots
+ * pleins et commence sur une frontière de mot — donc aucune relecture, donc
+ * aucune fenêtre.
+ *
+ * Ces assertions verrouillent cet argument. Si un jour la carte des registres
+ * bouge dans link_proto.h, le build casse ici plutôt que de produire un
+ * firmware qui écrase silencieusement les confirmations.
  */
-_Static_assert(LINK_REG_CRC_SPAN == LINK_REG_USER_CONFIRM,
-               "la zone du coffre doit s'arreter exactement ou commence l'octet du maitre");
-_Static_assert(LINK_REG_RESERVED == LINK_REG_USER_CONFIRM + 1,
-               "la seconde plage publiee doit reprendre juste apres l'octet du maitre");
+_Static_assert(LINK_REG_CHEST_BASE + LINK_REG_CHEST_LEN == LINK_REG_MASTER_BASE,
+               "la zone du coffre doit s'arreter exactement ou commence celle du maitre");
+_Static_assert(LINK_REG_MASTER_BASE + LINK_REG_MASTER_LEN == LINK_REG_SIZE,
+               "les deux zones doivent couvrir le bloc entier, sans octet orphelin");
+_Static_assert(LINK_REG_CHEST_BASE % 4 == 0 && LINK_REG_CHEST_LEN % 4 == 0
+                   && LINK_REG_MASTER_BASE % 4 == 0 && LINK_REG_MASTER_LEN % 4 == 0,
+               "chaque zone doit couvrir des mots entiers du tampon partage");
+_Static_assert(LINK_REG_CRC + 2 <= LINK_REG_CHEST_BASE + LINK_REG_CHEST_LEN
+                   && LINK_REG_CRC_SPAN <= LINK_REG_CRC,
+               "le CRC doit tenir dans la zone du coffre, apres ce qu'il couvre");
 _Static_assert(LINK_REG_SIZE <= SOC_SPI_MAXIMUM_BUFFER_SIZE,
                "le bloc de registres depasse le tampon partage du peripherique");
-
-/*
- * L'application écrit ce tampon PAR MOTS de 32 bits, le maître le lit et
- * l'écrit PAR OCTETS (spi_slave_hd.rst, « Writing/Reading Shared Registers »).
- * Une écriture qui ne remplit pas un mot entier passe donc par un
- * lire-modifier-écrire (hal/esp32p4/include/hal/spi_ll.h,
- * spi_ll_write_buffer_byte).
- *
- * La première plage fait exactement trois mots : aucune relecture, donc aucune
- * fenêtre. La seconde (0x0D..0x0F) partage son mot avec l'octet du maître et
- * passe forcément par un lire-modifier-écrire — c'est la seule fenêtre du
- * module, et elle est documentée à publish() plus bas.
- */
-_Static_assert(LINK_REG_MAGIC % 4 == 0 && LINK_REG_CRC_SPAN % 4 == 0,
-               "la zone du coffre doit couvrir des mots entiers du tampon partage");
 
 /* ------------------------------------------------------------------------- */
 /* État du module.                                                            */
@@ -102,9 +105,9 @@ static uint32_t s_confirm_count;  /* appuis relayés à sec_confirm */
 static volatile bool s_master_seen;
 
 /* Dernier bloc réellement poussé dans le tampon partagé, pour ne réécrire que
- * ce qui change — voir publish(). L'octet 0x0C y est tenu à zéro : il n'est
- * jamais publié, donc jamais comparé. */
-static uint8_t s_published[LINK_REG_SIZE];
+ * ce qui change — voir publish(). Dimensionné à la SEULE zone du coffre : ce
+ * qu'on ne publie pas n'a pas à peser dans la décision de republier. */
+static uint8_t s_published[LINK_REG_CHEST_LEN];
 static bool    s_published_valid;
 
 static uint32_t now_ms(void)
@@ -221,43 +224,22 @@ static IRAM_ATTR bool on_master_touch(void *arg, spi_slave_hd_event_t *event, Ba
  */
 static void publish(uint8_t *regs)
 {
-    /* Plage 1 — les champs du coffre, exactement trois mots du tampon partagé,
-     * donc écrits d'un bloc sans relecture. */
-    if (!s_published_valid
-        || memcmp(&s_published[LINK_REG_MAGIC], &regs[LINK_REG_MAGIC], LINK_REG_CRC_SPAN) != 0) {
-        spi_slave_hd_write_buffer(LINK_HOST, LINK_REG_MAGIC, &regs[LINK_REG_MAGIC],
-                                  LINK_REG_CRC_SPAN);
-    }
-
     /*
-     * Plage 2 — l'octet réservé et le CRC. Elle partage son mot de 32 bits avec
-     * l'octet du maître (0x0C), donc le pilote la pose par lire-modifier-écrire :
-     * il relit le mot, y remet nos trois octets, et réécrit le tout. L'octet du
-     * maître survit dans le cas ordinaire, puisqu'il est relu juste avant.
+     * Une seule écriture, et c'est tout l'intérêt de la carte des registres
+     * actuelle : la zone du coffre fait quatre mots pleins alignés, le pilote
+     * les pose sans rien relire, donc rien de ce que le maître aurait écrit ne
+     * peut se perdre. Les assertions en tête de fichier tiennent cet argument.
      *
-     * Reste une fenêtre de quelques cycles : un appui écrit par le S3 ENTRE la
-     * relecture et la réécriture est perdu. On ne peut pas la fermer d'ici — le
-     * maître écrit par le matériel, sans nous demander la main — mais on la
-     * réduit à sa cause : cette plage n'est réécrite que si son contenu change,
-     * c'est-à-dire seulement quand l'état du coffre change, pas à chaque tour de
-     * boucle. Et l'appui perdu n'est pas silencieux pour le maître : le compteur
-     * de confirmations (0x08-0x0B) ne bouge pas, ce qui lui dit de réessayer.
-     *
-     * La vraie correction serait de sortir le CRC du mot du maître, dans la
-     * carte des registres — donc dans link_proto, et donc dans le contrat à
-     * écrire pour KeSp. Pas ici.
+     * Toujours conditionnée au changement : republier à l'identique vingt fois
+     * par seconde ferait travailler le bus pour rien.
      */
     if (!s_published_valid
-        || memcmp(&s_published[LINK_REG_RESERVED], &regs[LINK_REG_RESERVED],
-                  LINK_REG_SIZE - LINK_REG_RESERVED) != 0) {
-        spi_slave_hd_write_buffer(LINK_HOST, LINK_REG_RESERVED, &regs[LINK_REG_RESERVED],
-                                  LINK_REG_SIZE - LINK_REG_RESERVED);
+        || memcmp(s_published, &regs[LINK_REG_CHEST_BASE], LINK_REG_CHEST_LEN) != 0) {
+        spi_slave_hd_write_buffer(LINK_HOST, LINK_REG_CHEST_BASE,
+                                  &regs[LINK_REG_CHEST_BASE], LINK_REG_CHEST_LEN);
     }
 
-    memcpy(s_published, regs, LINK_REG_SIZE);
-    /* Jamais publié, donc jamais comparé : le tenir à zéro évite qu'une valeur
-     * du maître entre dans la décision de réécrire. */
-    s_published[LINK_REG_USER_CONFIRM] = 0x00;
+    memcpy(s_published, &regs[LINK_REG_CHEST_BASE], LINK_REG_CHEST_LEN);
     s_published_valid = true;
 }
 
@@ -289,6 +271,9 @@ static void pack_current(uint8_t *regs, uint16_t pending_op)
         .confirm_count = s_confirm_count,
     };
 
+    /* Tampon de travail, jamais le miroir du tampon partagé : publish() n'en
+     * pousse que la zone du coffre, donc mettre à zéro celle du maître ici
+     * n'écrit rien chez lui. */
     memset(regs, 0, LINK_REG_SIZE);
     link_proto_pack_status(regs, &status);
 }
@@ -297,7 +282,24 @@ static void pack_current(uint8_t *regs, uint16_t pending_op)
 /* La boucle.                                                                 */
 /* ------------------------------------------------------------------------- */
 
-/* Relit l'octet du maître, le reprend, et relaie un appui réel. */
+/*
+ * Relit l'octet du maître, le reprend, et relaie un appui réel.
+ *
+ * C'est le SEUL endroit où le coffre écrit dans le mot du maître, et il faut
+ * bien qu'il y en ait un : reprendre l'octet fait partie du protocole, sinon
+ * l'appui se rejouerait à chaque tour. Cette écriture d'un octet passe donc par
+ * un lire-modifier-écrire de son mot, et un second appui arrivant dans ces
+ * quelques cycles serait perdu.
+ *
+ * Ça n'a rien de la fenêtre qu'on vient de fermer dans publish() : celle-là
+ * s'ouvrait à chaque changement d'état du coffre, sans rapport avec un appui.
+ * Celle-ci ne s'ouvre qu'immédiatement après un appui déjà reçu, alors que le
+ * maître attend justement de voir bouger le compteur de confirmations avant de
+ * considérer le sien consommé — un second appui dans cet intervalle serait de
+ * toute façon un doublon. Et on ne peut pas la fermer en écrivant le mot entier
+ * : les trois octets réservés qui suivent appartiennent au maître, les remettre
+ * à zéro d'autorité poserait un piège au premier champ qu'il y mettra.
+ */
 static void drain_user_confirm(uint32_t t)
 {
     uint8_t confirm = 0x00;
