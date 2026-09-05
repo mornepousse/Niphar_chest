@@ -70,13 +70,28 @@ différent était monté, l'écart se verrait au premier boot.
 Décidé le 2026-08-06. Le PCB était encore éditable ; le brochage ci-dessous est
 celui retenu côté coffre.
 
-| signal | coffre (P4) | S3 (clavier) |
+| signal | coffre (P4) | S3 (clavier) — **intention du 2026-08-06, PÉRIMÉE** |
 |---|---|---|
-| CS | GPIO7 | GPIO3 |
-| MOSI | GPIO8 | MOSI de SPI2, déjà routé |
-| SCK | GPIO9 | SCK de SPI2, déjà routé |
-| MISO | GPIO10 | MISO de SPI2, déjà routé |
-| IRQ (coffre→S3) | GPIO11 | GPIO46 |
+| CS | GPIO7 | ~~GPIO3~~ → **IO7** |
+| MOSI | GPIO8 | MOSI de SPI2, déjà routé (GPIO40) |
+| SCK | GPIO9 | SCK de SPI2, déjà routé (GPIO38) |
+| MISO | GPIO10 | MISO de SPI2, déjà routé (GPIO39) |
+| IRQ (coffre→S3) | GPIO11 | ~~GPIO46~~ → **IO11** |
+
+> **La colonne S3 de ce tableau était une intention, pas un routage.** Elle date
+> du jour où « le PCB était encore éditable ». GPIO3 et GPIO46 se sont révélés
+> **inutilisables** : `KeSp_firmware/docs/NIPHARGUS_V2_HARDWARE.md` les classe
+> parmi les non câblés (strapping et PSRAM octale), et
+> `test/test_niphar_left_pins.c` en fait un test qui mord. Le routage réel a donc
+> divergé, et les nets `CS_P4` / `IRQ_P4` du projet KiCad le confirment.
+>
+> **Brochage à jour : voir « Lien S3↔coffre — le brochage existe au PCB » en fin
+> de document** (IO7 et IO11 côté S3). La colonne coffre, elle, n'a pas bougé et
+> reste vérifiée : c'est le quatuor IOMUX natif de SPI2.
+>
+> Leçon de méthode, qui a déjà coûté ici : une intention de conception et un
+> routage se ressemblent dans un tableau. Dater la première et citer le fichier
+> de la seconde est le seul moyen de ne pas les confondre six semaines plus tard.
 
 C'est le **quatuor IOMUX natif de SPI2** sur P4 (`spi_slave.rst:157-162`, valeurs
 `esp32p4`), donc chemin direct sans matrice GPIO. Ça compte : le driver bascule
