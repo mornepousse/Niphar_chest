@@ -1,197 +1,199 @@
 # Niphar_chest — Claude Code instructions
 
-Firmware ESP32-P4 du **coffre** du clavier split
-[Niphargus](https://github.com/mornepousse/Niphargus) : un P4 embarqué dans la
-moitié gauche, derrière un hub USB, qui ne s'éveille qu'en filaire. Build via
-ESP-IDF 5.5.
+ESP32-P4 firmware for the **chest** of the
+[Niphargus](https://github.com/mornepousse/Niphargus) split keyboard: a P4
+embedded in the left half, behind a USB hub, that only wakes up when wired.
+Built with ESP-IDF 5.5.
 
 ## Repo
 
-- **Origin** : https://github.com/mornepousse/Niphar_chest
-- **Local** : `~/Documents/GitHub/Niphar_chest/`
-- **Voisins** : [KeSp_firmware](https://gitlab.com/harrael/KeSp_firmware) — pile
-  OpenPGP CCID déjà validée sur matériel (`main/security/`), à reprendre pour le
-  volet PGP/FIDO ; specs dans ses `docs/OPENPGP_CARD.md` et `docs/SECURITY_KEY.md`.
+- **Origin**: https://github.com/mornepousse/Niphar_chest
+- **Local**: `~/Documents/GitHub/Niphar_chest/`
+- **Neighbours**: [KeSp_firmware](https://gitlab.com/harrael/KeSp_firmware) —
+  OpenPGP CCID stack already validated on hardware (`main/security/`), to be
+  reused for the PGP/FIDO side; specs in its `docs/OPENPGP_CARD.md` and
+  `docs/SECURITY_KEY.md`.
 
-## Contraintes matérielles irréversibles
+## Irreversible hardware constraints
 
-Contrat complet : [`docs/HARDWARE.md`](docs/HARDWARE.md), vérifié à la netlist.
-Deux règles priment sur tout le reste :
+Full contract: [`docs/HARDWARE.md`](docs/HARDWARE.md), verified against the
+netlist. Two rules override everything else:
 
-1. **Ne jamais réaffecter GPIO24/25.** C'est l'USB-Serial-JTAG, et c'est le seul
-   chemin de flash et de debug du coffre : pas de bouton reset, pas d'accès
-   matériel au mode download. Un firmware qui casse ce lien se répare au fer à
-   souder.
-2. **Ne jamais entrer en deep-sleep permanent**, pour la même raison.
+1. **Never reassign GPIO24/25.** That is the USB-Serial-JTAG, and it is the
+   chest's only flashing and debugging path: no reset button, no hardware way
+   into download mode. A firmware that breaks that link is repaired with a
+   soldering iron.
+2. **Never enter permanent deep sleep**, for the same reason.
 
-`main/board_common.h` porte des `_Static_assert`, et `scripts/fast.sh` des greps, qui
-font échouer le build sur ces deux points. Ne pas les contourner.
+`main/board_common.h` carries `_Static_assert`s, and `scripts/fast.sh` greps,
+that fail the build on these two points. Do not work around them.
 
-**Le kit de dev pardonne, le coffre non.** Le JC-ESP32P4-M3-DEV a un CH340C et
-un bouton BOOTMODE ; ces règles n'y seront donc jamais vérifiées à l'exécution.
-Elles tiennent par construction, pas par expérience.
+**The dev kit forgives, the chest does not.** The JC-ESP32P4-M3-DEV has a CH340C
+and a BOOTMODE button; these rules will therefore never be checked at runtime on
+it. They hold by construction, not by experience.
 
-## Le coffre n'expose rien au démarrage
+## The chest exposes nothing at startup
 
-À froid, le coffre démarre en `USB_MODE_NONE` (`main/usb/usb_mode.h`) :
-**aucune** interface USB fonctionnelle n'est installée — ni disque, ni carte à
-puce, ni HID. C'est délibéré (« plein de choses, une à la fois », jamais deux
-en même temps) et **c'est le comportement normal**, pas une panne : un coffre
-qui vient d'être flashé ou reseté n'apparaîtra dans aucun `lsusb`/`lsblk`/
-`gpg --card-status` tant qu'on ne lui a rien demandé.
+From cold, the chest boots in `USB_MODE_NONE` (`main/usb/usb_mode.h`): **no**
+working USB interface is installed — no drive, no smart card, no HID. That is
+deliberate (“lots of things, one at a time”, never two at once) and **it is the
+normal behaviour**, not a failure: a chest that has just been flashed or reset
+will show up in no `lsusb`/`lsblk`/`gpg --card-status` as long as nothing has
+been asked of it.
 
-Le sélecteur est la console série (`main/console/console.c`), pas l'USB
-lui-même :
+The selector is the serial console (`main/console/console.c`), not USB itself:
 
 ```
-usb mode none       # rien exposé — l'état de repos
-usb mode storage     # microSD en MSC
-usb mode pgp          # carte OpenPGP en CCID
-usb mode otp          # clé CR-HMAC en HID
-usb mode fido          # authentificateur U2F/CTAP-HID
+usb mode none       # nothing exposed — the idle state
+usb mode storage     # microSD card as MSC
+usb mode pgp          # OpenPGP card over CCID
+usb mode otp          # CR-HMAC key over HID
+usb mode fido          # U2F/CTAP-HID authenticator
+usb mode oath          # YKOATH TOTP accounts over CCID
 ```
 
-Chaque bascule désinstalle d'abord le mode courant (`usb_device_uninstall()`
-— vraie déconnexion USB vue par l'hôte) avant d'installer le suivant : à tout
-instant, au plus un jeu de descripteurs est présent. Voir `main/usb/usb_mode.c`.
+Each switch first uninstalls the current mode (`usb_device_uninstall()` — a real
+USB disconnect as seen by the host) before installing the next: at any instant,
+at most one set of descriptors is present. See `main/usb/usb_mode.c`.
 
-**Effet de bord à connaître** : `usb mode pgp` recharge l'état persistant
-OpenPGP (DO, PIN, clés — `usb/mode_pgp.c:mode_pgp_data_load()`) à **chaque**
-entrée dans le mode, pas seulement au premier boot — nécessaire parce que
-`ccid_drv_init()` réarme les PIN d'usine en RAM à chaque bascule. Charger cet
-état au démarrage (comme `sd_probe()`/`sec_gate_init()`) aurait été plus
-simple mais contredit ce principe : mettre des clés privées en RAM avant que
-quiconque n'ait demandé le mode PGP n'a pas de sens. Détail et preuve sur
-matériel : [`docs/HARDWARE.md`](docs/HARDWARE.md#validation-openpgp-ccid--2026-08-07).
+**Side effect worth knowing**: `usb mode pgp` reloads the persistent OpenPGP
+state (DOs, PINs, keys — `usb/mode_pgp.c:mode_pgp_data_load()`) on **every**
+entry into the mode, not only at first boot — necessary because
+`ccid_drv_init()` rearms the factory PINs in RAM on every switch. Loading that
+state at startup (like `sd_probe()`/`sec_gate_init()`) would have been simpler
+but contradicts this principle: putting private keys in RAM before anyone has
+asked for PGP mode makes no sense. Detail and proof on hardware:
+[`docs/HARDWARE.md`](docs/HARDWARE.md#openpgp-ccid-validation--2026-08-07).
 
 ## Build
 
-Trois cartes. `jc_devkit` et `niphar_chest` ne divergent que sur le lien
-S3↔coffre, absent du kit ; tout le reste (microSD, USB) est commun et vit dans
-`main/board_common.h`. `wt9932_key` est la troisième — la clé de sécurité
-autonome (WT9932P4-TINY), sans lien S3 ni microSD, avec boutons et LED en
-façade — voir [`docs/HARDWARE.md`](docs/HARDWARE.md) pour son brochage.
+Three boards. `jc_devkit` and `niphar_chest` diverge only on the S3↔chest link,
+absent from the kit; everything else (microSD card, USB) is common and lives in
+`main/board_common.h`. `wt9932_key` is the third — the standalone security key
+(WT9932P4-TINY), with no S3 link and no microSD card, with buttons and an LED on
+the front panel — see [`docs/HARDWARE.md`](docs/HARDWARE.md) for its pinout.
 
-| carte | lien S3 | matériel |
+| board | S3 link | hardware |
 |---|---|---|
-| `jc_devkit` | non | le kit, premier matériel qui a existé |
-| `niphar_chest` | oui | le coffre, pas encore fabriqué |
-| `wt9932_key` *(variant courant, `.tripwire-variant`)* | non | la clé autonome, seul matériel réellement flashé au quotidien |
+| `jc_devkit` | no | the kit, the first hardware that existed |
+| `niphar_chest` | yes | the chest, built and flashed on 2026-09-05 |
+| `wt9932_key` *(current variant, `.tripwire-variant`)* | no | the standalone key, the only hardware actually flashed day to day |
 
 ```bash
 source ~/esp/esp-idf/export.sh
 idf.py -B build_wt9932_key -DBOARD=wt9932_key -DSDKCONFIG=build_wt9932_key/sdkconfig build
 ```
 
-`.tripwire-variant` (committé, lu par `.esp-dev.yml`) porte le nom de la carte
-que `/esp-build`/`/esp-flash`/`/esp-cycle` construisent et flashent par
-défaut — **vérifier sa valeur avant de flasher** : un défaut périmé y a déjà
-fait flasher le firmware `jc_devkit` (sans écran) sur la carte-clé, un
-incident documenté dans `docs/HARDWARE.md`. Le sens de l'erreur reste
-asymétrique entre cartes à lien S3 : flasher du `jc_devkit` sur un coffre ne
-fait que priver du lien, l'inverse enverrait du SPI dans le bus I2C du codec
-audio du kit — `wt9932_key` n'a ni l'un ni l'autre bus, donc n'est concerné
-que par la première règle générale (jamais GPIO24/25, jamais de deep-sleep
-permanent).
+`.tripwire-variant` (committed, read by `.esp-dev.yml`) carries the name of the
+board that `/esp-build`/`/esp-flash`/`/esp-cycle` build and flash by default —
+**check its value before flashing**: a stale default has already caused the
+`jc_devkit` firmware (no screen) to be flashed onto the `wt9932_key` board, an incident
+documented in `docs/HARDWARE.md`. The direction of the mistake remains
+asymmetric between boards that have an S3 link: flashing `jc_devkit` onto a
+chest merely deprives it of the link, whereas the opposite would send SPI into
+the I2C bus of the kit's audio codec — `wt9932_key` has neither bus, so it is
+only concerned by the first general rule (never GPIO24/25, never permanent deep
+sleep).
 
-Aucun source n'inclut un chemin de carte : `${BOARD_DIR}` est en tête des
-includes, donc `#include "board.h"` résout vers la carte sélectionnée.
+No source file includes a board path: `${BOARD_DIR}` is first in the include
+order, so `#include "board.h"` resolves to the selected board.
 
-Flash et monitor : `/esp-build`, `/esp-flash`, `/esp-cycle`, `/esp-monitor`
-(config dans `.esp-dev.yml`).
+Flash and monitor: `/esp-build`, `/esp-flash`, `/esp-cycle`, `/esp-monitor`
+(config in `.esp-dev.yml`).
 
-**Port série — attention.** Ne jamais élargir le glob à `/dev/ttyACM*` : sur
-cette machine, `/dev/ttyACM0` est le clavier KaSe V2 Debug (`cafe:4001`). Le
-port du P4 se désigne par
+**Serial port — careful.** Never widen the glob to `/dev/ttyACM*`: on this
+machine, `/dev/ttyACM0` is the KaSe V2 Debug keyboard (`cafe:4001`). The P4's
+port is designated by
 `/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00`.
 
-`idf.py monitor` exige un vrai TTY et ne marche donc pas depuis un agent. Pour
-capturer un boot sans TTY : reset en pulsant RTS seul (DTR bas straperait la
-puce en mode download) puis lire le port.
+`idf.py monitor` requires a real TTY and therefore does not work from an agent.
+To capture a boot without a TTY: reset by pulsing RTS alone (DTR low would strap
+the chip into download mode) then read the port.
 
 ## Versioning
 
-Source de vérité : le tag git `vX.Y.Z`, lu au build par `git describe --tags`.
-Pas de fichier VERSION. La macro `NIPHAR_VERSION` est appliquée au seul
-composant `main` : la passer en `add_compile_definitions()` global ferait
-recompiler tout le projet à chaque commit.
+Source of truth: the git tag `vX.Y.Z`, read at build time by
+`git describe --tags`. No VERSION file. The `NIPHAR_VERSION` macro is applied to
+the `main` component only: passing it as a global `add_compile_definitions()`
+would recompile the whole project on every commit.
 
-## Workflow anti-régression (OBLIGATOIRE)
+## Anti-regression workflow (MANDATORY)
 
-Source unique de vérité : `scripts/check.sh`.
-- `./scripts/check.sh --fast` — garde-fous matériels du coffre + build ESP-IDF incrémental (~secondes)
-- `./scripts/check.sh` — fast + le rebuild complet depuis zéro
+Single source of truth: `scripts/check.sh`.
+- `./scripts/check.sh --fast` — the chest's hardware guardrails + incremental ESP-IDF build (~seconds)
+- `./scripts/check.sh` — fast + the full rebuild from scratch
 
-`check.sh` n'exécute pas ces phases lui-même : il appelle `scripts/fast.sh` et
-`scripts/full.sh`. C'est là qu'on ajoute un garde-fou ou une suite de tests —
-`check.sh` est un fichier templaté que les mises à jour de tripwire réécrivent.
+`check.sh` does not run these phases itself: it calls `scripts/fast.sh` and
+`scripts/full.sh`. That is where a guardrail or a test suite gets added —
+`check.sh` is a templated file that tripwire updates rewrite.
 
-**Activation des hooks git (une fois par clone)** :
+**Enabling the git hooks (once per clone)**:
 ```bash
-./scripts/install-hooks.sh   # ou: git config core.hooksPath scripts/hooks
+./scripts/install-hooks.sh   # or: git config core.hooksPath scripts/hooks
 ```
-`pre-push` lance le check complet et bloque le push si rouge. WIP : `git push --no-verify`.
+`pre-push` runs the full check and blocks the push if red. WIP: `git push --no-verify`.
 
-**Hooks Claude Code** (`.claude/settings.json`, automatiques) :
-- `PostToolUse` sur édition d'un fichier surveillé → `check.sh --fast`, en
-  **avis non bloquant**. Il signale le rouge sans interrompre : la norme TDD
-  impose d'écrire l'assertion rouge AVANT l'implémentation, et bloquer là ferait
-  sonner l'alarme à chaque pas correct. Un avis n'est pas à ignorer pour autant.
-  Les chemins surveillés incluent `test/` : éditer un test déclenche la phase
-  rapide et la garde anti-affaiblissement (perte nette de `TEST_ASSERT` vs HEAD).
-- `Stop` → `check.sh --fast` et il **bloque** : on ne conclut pas un tour sur du
-  rouge. Le rebuild complet n'est PAS relancé à chaque fin de tour : il reste
-  garanti au pre-push git.
-- `pre-push` → check complet, **bloquant**.
+**Claude Code hooks** (`.claude/settings.json`, automatic):
+- `PostToolUse` on editing a watched file → `check.sh --fast`, as a
+  **non-blocking notice**. It reports red without interrupting: the TDD norm
+  requires writing the red assertion BEFORE the implementation, and blocking
+  there would sound the alarm at every correct step. A notice is not to be
+  ignored for all that. The watched paths include `test/`: editing a test
+  triggers the fast phase and the anti-weakening guard (net loss of
+  `TEST_ASSERT` vs HEAD).
+- `Stop` → `check.sh --fast`, and it **blocks**: a turn is not concluded on red.
+  The full rebuild is NOT re-run at the end of every turn: it stays guaranteed
+  at the git pre-push.
+- `pre-push` → full check, **blocking**.
 
-**Divergences déclarées** : `.tripwire-divergences` (committé) liste les écarts
-assumés au scaffold standard — mode maison, dégradation d'environnement, alias
-de dialecte. Une ligne `fichier<TAB>motif<TAB>pourquoi` ; `check.sh` rend rouge
-la disparition d'un motif déclaré. Le fichier hôte d'une divergence doit être
-**suivi par git** : un fichier gitignoré ne change pas l'empreinte du
-skip-si-déjà-vert, donc sa perte peut passer sous un « déjà vert — skip » — il
-n'est pas protégé de façon fiable. **Limite** : un écart non déclaré n'est
-protégé par rien et le prochain re-scaffold l'effacera — toute divergence
-délibérée se déclare au moment où on l'introduit.
+**Declared divergences**: `.tripwire-divergences` (committed) lists the accepted
+departures from the standard scaffold — in-house mode, environment degradation,
+dialect alias. One line `file<TAB>pattern<TAB>why`; `check.sh` turns red on the
+disappearance of a declared pattern. The host file of a divergence must be
+**tracked by git**: a gitignored file does not change the fingerprint of the
+skip-if-already-green, so its loss can slip past an “already green — skip” — it
+is not reliably protected. **Limit**: an undeclared departure is protected by
+nothing and the next re-scaffold will erase it — every deliberate divergence is
+declared at the moment it is introduced.
 
-### Quand invoquer les agents du projet
+### When to invoke the project's agents
 
-`.claude/agents/` contient cinq agents spécialisés au coffre :
+`.claude/agents/` contains five agents specialized to the chest:
 
-| Agent | Quand |
+| Agent | When |
 |---|---|
-| `niphar-test-author` | écrire ou restructurer des tests ; monter le harnais hôte quand la première logique pure arrive |
-| `niphar-code-reviewer` | avant un merge vers `main` ou une release, et après tout code non trivial |
-| `niphar-debugger` | build cassé, test rouge, panic, disque absent côté hôte, carte SD muette |
-| `niphar-maintainer` | bump de dépendance, montée d'ESP-IDF, changement de partitions ou de sdkconfig |
-| `niphar-security-auditor` | ajout d'un handler d'input externe (MSC, descripteurs, parsing SD, futur CCID/FIDO), et avant release |
+| `niphar-test-author` | writing or restructuring tests; standing up the host harness when the first pure logic arrives |
+| `niphar-code-reviewer` | before a merge to `main` or a release, and after any non-trivial code |
+| `niphar-debugger` | broken build, red test, panic, drive missing on the host side, silent SD card |
+| `niphar-maintainer` | dependency bump, ESP-IDF upgrade, partition or sdkconfig change |
+| `niphar-security-auditor` | adding a handler for external input (MSC, descriptors, SD parsing, future CCID/FIDO), and before a release |
 
-### Norme TDD — nouvelle logique pure
-Toute nouvelle fonction de logique pure (calcul d'adressage LBA, découpe de
-transferts, parsing d'en-têtes, machines à états) : test écrit **d'abord**,
-ajouté à la suite de tests de la phase rapide. Le test doit être rouge avant
-l'implémentation, vert après, et parallel-safe (pas d'état global muté).
+### TDD norm — new pure logic
+Every new pure-logic function (LBA addressing computation, transfer splitting,
+header parsing, state machines): test written **first**, added to the fast
+phase's test suite. The test must be red before the implementation, green after,
+and parallel-safe (no mutated global state).
 
-Le harnais hôte existe : `test/`, compilé par CMake avec le compilateur de la
-machine, lancé par `scripts/fast.sh` **avant** le build firmware. Le ratchet est
-actif (`.tripwire-testcount`, committé) et le pre-push refuse une baisse.
+The host harness exists: `test/`, compiled by CMake with the machine's compiler,
+run by `scripts/fast.sh` **before** the firmware build. The ratchet is active
+(`.tripwire-testcount`, committed) and pre-push refuses a decrease.
 
-Un test ne vaut que s'il mord : après l'avoir écrit, introduire un bug
-transitoire qui devrait le faire échouer, vérifier le rouge, revenir. C'est ce
-qui distingue un test d'une assertion décorative.
+A test is only worth something if it bites: after writing it, introduce a
+transient bug that should make it fail, check that it goes red, revert. That is
+what distinguishes a test from a decorative assertion.
 
-Seule la logique pure entre dans `test/` — pas d'appel ESP-IDF, sinon ça ne
-compile pas sur l'hôte. Cette contrainte est un outil de conception : ce qui
-n'est pas testable est presque toujours ce qui mélange calcul et matériel.
+Only pure logic goes into `test/` — no ESP-IDF call, otherwise it does not
+compile on the host. That constraint is a design tool: what is not testable is
+almost always what mixes computation and hardware.
 
-### Économie de modèles (subagents)
-Le pipeline check.sh permet de descendre en gamme SANS risque d'hallucination,
-mais seulement là où un oracle rattrape l'erreur :
-- **Modèle économique (haiku) OK** : transcription de code déjà spécifié,
-  refactors mécaniques, extraction citée (`fichier:ligne` obligatoire) — le
-  check, la compilation ou le recoupement des citations attrapent la dérive.
-- **Jamais en dessous de sonnet** : review, audit, debug, **et l'écriture
-  d'assertions de test** — une assertion tautologique ou un verdict halluciné
-  passent l'oracle mécanique au vert. Le jugement ne descend pas en gamme.
-- Toute tâche économique DOIT finir par `./scripts/check.sh --fast` vert, et
-  un test rewiré/écrit DOIT prouver qu'il mord (bug transitoire → rouge → revert).
+### Model economy (subagents)
+The check.sh pipeline makes it possible to drop down a tier WITHOUT risk of
+hallucination, but only where an oracle catches the mistake:
+- **Economy model (haiku) OK**: transcribing code that is already specified,
+  mechanical refactors, cited extraction (`file:line` mandatory) — the check,
+  the compilation or the cross-checking of the citations catch the drift.
+- **Never below sonnet**: review, audit, debug, **and writing test assertions**
+  — a tautological assertion or a hallucinated verdict pass the mechanical
+  oracle green. Judgment does not drop a tier.
+- Every economy task MUST end on a green `./scripts/check.sh --fast`, and a
+  rewired/written test MUST prove that it bites (transient bug → red → revert).

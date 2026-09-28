@@ -1,102 +1,105 @@
-# Carte-clé WT9932 — spécification de conception
+# WT9932 key board — design specification
 
 *2026-08-16*
 
-## Problème
+## Problem
 
-Le projet a deux cartes : le kit de dev, où la confirmation vient d'une commande
-console sans aucune valeur de sécurité, et le coffre, où elle viendra du clavier
-par un lien SPI qui n'existe pas encore. Aucune des deux ne permet aujourd'hui
-d'éprouver la chaîne complète — *l'hôte demande une signature, un humain touche
-un contact, l'opération passe* — parce qu'aucune n'a de contact.
+The project has two boards: the dev kit, where confirmation comes from a
+console command with no security value whatsoever, and the chest, where it will
+come from the keyboard over an SPI link that does not yet exist. Neither of
+them currently makes it possible to exercise the full chain — *the host asks
+for a signature, a human touches a contact, the operation goes through* —
+because neither has a contact.
 
-La carte WT9932P4-TINY change ça. Elle n'est ni un kit ni un coffre : c'est une
-**troisième variante de produit**, une clé de sécurité autonome, qui fait avec
-ses propres boutons ce que la variante intégrée fera avec le clavier. Les deux
-sont des produits ; ni l'une ni l'autre n'est la béquille de l'autre.
+The WT9932P4-TINY board changes that. It is neither a kit nor a chest: it is a
+**third product variant**, a standalone security key, which does with its own
+buttons what the integrated variant will do with the keyboard. Both are
+products; neither is the other's crutch.
 
-Cette spec couvre la carte, son IHM locale, et le remaniement de l'abstraction
-de carte que sa seule existence rend nécessaire.
+This spec covers the board, its local HMI, and the rework of the board
+abstraction that its mere existence makes necessary.
 
-## Portée
+## Scope
 
-**Dans la portée** : le fichier de carte, un sous-système IHM (deux boutons, une
-LED adressable), la séparation des drapeaux de carte, la désactivation de la
-microSD, et le branchement du bouton de confirmation sur `sec_confirm`.
+**In scope**: the board file, an HMI subsystem (two buttons, one addressable
+LED), separating the board flags, disabling the microSD, and wiring the
+confirmation button to `sec_confirm`.
 
-**Hors portée** : le lien S3 (tâche #9, inchangée), FIDO/CTAP, et toute
-modification de la pile OpenPGP ou OTP — cette carte les exécute telles quelles.
+**Out of scope**: the S3 link (task #9, unchanged), FIDO/CTAP, and any
+modification to the OpenPGP or OTP stack — this board runs them as they are.
 
-## Matériel — ce qui est établi et par quoi
+## Hardware — what is established, and by what
 
-Carte **WT9932P4-TINY_1v2**, module **WT0132P4-A1** (ESP32-P4 rev v1.0, 32 Mo
-PSRAM, 16 Mo flash). Source : le schéma constructeur `Schematic-ESP32P4-TINY-
-WT0132P4-A1-Pocket-Development-Board`, JLCEDA V1.0, révisé 2025-08-07.
+Board **WT9932P4-TINY_1v2**, module **WT0132P4-A1** (ESP32-P4 rev v1.0, 32 MB
+PSRAM, 16 MB flash). Source: the manufacturer schematic
+`Schematic-ESP32P4-TINY-WT0132P4-A1-Pocket-Development-Board`, JLCEDA V1.0,
+revised 2025-08-07.
 
-| élément | fait | source |
+| item | fact | source |
 |---|---|---|
-| LED adressable | `DIN ← IO51`, `VDD ← 5 V`, découplage 100 nF | schéma, bloc LED |
-| LED témoin | LED simple sur R13 1 kΩ, non pilotable | schéma, bloc LED |
-| Bouton BOOT | SW2 → **IO35**, R4 10 kΩ vers 3,3 V, C8 100 nF | schéma, bloc KEY |
-| Bouton RESET | SW1 → CHIP_PU, R1 10 kΩ, C1 100 nF | schéma, bloc KEY |
-| USB OTG HS | J4 → self L3 → `USB_DP`/`USB_DM` (broches PHY dédiées) | schéma, bloc USB |
-| USB-Serial-JTAG | J3 → self L2 → `IO25`/`IO24` | schéma, bloc USB串口 |
-| microSD | **absente** — aucun connecteur au schéma | schéma, page 1/2 |
-| Broches libres | IO26–IO33 sorties sur J7 | schéma, connecteur J7 |
+| Addressable LED | `DIN ← IO51`, `VDD ← 5 V`, 100 nF decoupling | schematic, LED block |
+| Indicator LED | plain LED on R13 1 kΩ, not software-driven | schematic, LED block |
+| BOOT button | SW2 → **IO35**, R4 10 kΩ to 3.3 V, C8 100 nF | schematic, KEY block |
+| RESET button | SW1 → CHIP_PU, R1 10 kΩ, C1 100 nF | schematic, KEY block |
+| USB OTG HS | J4 → inductor L3 → `USB_DP`/`USB_DM` (dedicated PHY pins) | schematic, USB block |
+| USB-Serial-JTAG | J3 → inductor L2 → `IO25`/`IO24` | schematic, USB串口 block |
+| microSD | **absent** — no connector on the schematic | schematic, page 1/2 |
+| Free pins | IO26–IO33 broken out on J7 | schematic, connector J7 |
 
-Vérifié sur le matériel le 2026-08-16 : PSRAM 32 Mo à 200 MHz en mode X16
-(`esp_psram: SPI SRAM memory test OK`, 32 320 K au tas), `gpg --card-status`
-répond sur le port OTG, et le cycle `none → pgp → otp → storage → none` passe.
+Verified on hardware on 2026-08-16: 32 MB PSRAM at 200 MHz in X16 mode
+(`esp_psram: SPI SRAM memory test OK`, 32,320 K on the heap),
+`gpg --card-status` answers on the OTG port, and the
+`none → pgp → otp → storage → none` cycle passes.
 
-### IO35 n'est pas utilisé, et c'est délibéré
+### IO35 is not used, and that is deliberate
 
-IO35 est le pin de strapping du mode de boot du P4 — l'équivalent de l'IO0 des
-ESP32-S3, et le constructeur y a placé le bouton BOOT pour cette raison.
+IO35 is the P4's boot-mode strapping pin — the equivalent of IO0 on the
+ESP32-S3, and the manufacturer put the BOOT button there for that reason.
 
-> « ESP32-P4 has five strapping pins: GPIO34, GPIO35, GPIO36, GPIO37, GPIO38 »
-> — *ESP32-P4 TRM*, ch. 11 « Chip Boot Control », p. 795
+> “ESP32-P4 has five strapping pins: GPIO34, GPIO35, GPIO36, GPIO37, GPIO38”
+> — *ESP32-P4 TRM*, ch. 11 “Chip Boot Control”, p. 795
 >
 > Table 11.2-2 — `SPI Boot mode (default) : GPIO35 = 1` ·
 > `Joint Download Boot mode : GPIO35 = 0, GPIO36 = 1`
-> — *idem*, p. 796
+> — *ibid.*, p. 796
 
-Le silicium autorise pourtant son usage : « After the reset is released, the
-strapping pins work as normal-function pins » (*idem*, §11.2.1). On s'en prive
-quand même, pour trois raisons cumulées :
+The silicon does allow it to be used: “After the reset is released, the
+strapping pins work as normal-function pins” (*ibid.*, §11.2.1). We forgo it
+anyway, for three cumulative reasons:
 
-1. **Un appui pendant la mise sous tension empêche la clé de démarrer** — elle
-   part en mode download. Un reset accidenté bouton enfoncé (brownout, chien de
-   garde) fait de même, et la clé disparaît du bus sans explication.
-2. **Le garde-fou n°1 de `scripts/fast.sh` resterait vert.** Il exclut déjà
-   `boards/*/board.h` de son grep — « ce sont eux qui les déclarent réservés ».
-   Déclarer `BOARD_BUTTON GPIO_NUM_35` y passerait donc sans bruit, alors que le
-   sens de GPIO35 s'y inverserait : de *réservé* à *bouton utilisateur*. Le garde
-   surveille le nom, pas l'intention.
-3. **La marge d'amorçage est étroite.** C8 (100 nF) charge à travers R4 (10 kΩ),
-   soit τ ≈ 1 ms sur un pin échantillonné au reset. Ce qui sauve la carte est le
-   RC identique sur CHIP_PU, qui retient la puce le temps que IO35 monte. Ça
-   fonctionne — vérifié une dizaine de fois — mais c'est un appariement de
-   constantes, pas une garantie.
+1. **A press during power-up prevents the key from booting** — it goes into
+   download mode. A reset that happens with the button held (brownout,
+   watchdog) does the same, and the key vanishes from the bus with no
+   explanation.
+2. **Guardrail no. 1 of `scripts/fast.sh` would stay green.** It already
+   excludes `boards/*/board.h` from its grep — “those are the files that
+   declare them reserved”. Declaring `BOARD_BUTTON GPIO_NUM_35` would therefore
+   pass silently, while the meaning of GPIO35 would be inverted there: from
+   *reserved* to *user button*. The guard watches the name, not the intent.
+3. **The boot margin is narrow.** C8 (100 nF) charges through R4 (10 kΩ), i.e.
+   τ ≈ 1 ms on a pin sampled at reset. What saves the board is the identical RC
+   on CHIP_PU, which holds the chip back long enough for IO35 to rise. It works
+   — verified a dozen times — but it is a matching of time constants, not a
+   guarantee.
 
-Les boutons vont donc sur **IO32** et **IO33**, câblés par l'utilisateur vers la
-masse, pull-up interne activé côté firmware. Ce sont, avec leurs voisins IO26–31,
-les seules broches du P4 dont les trois colonnes de la table GPIO sont vides :
-ni fonction analogique, ni LP GPIO, ni restriction.
+The buttons therefore go on **IO32** and **IO33**, wired by the user to ground,
+internal pull-up enabled in firmware. Together with their neighbours IO26–31,
+they are the only P4 pins whose three columns in the GPIO table are empty:
+no analog function, no LP GPIO, no restriction.
 
 > `GPIO26 | | |` … `GPIO33 | | |`
-> — *ESP-IDF Programming Guide*, « GPIO & RTC GPIO — ESP32-P4 », § GPIO Summary
+> — *ESP-IDF Programming Guide*, “GPIO & RTC GPIO — ESP32-P4”, § GPIO Summary
 
-Elles sont aussi hors des deux blocs occupés chez les cartes sœurs — SD sur
-39–48, lien S3 sur 7–11 — donc sans collision conceptuelle.
+They are also outside the two blocks occupied on the sister boards — SD on
+39–48, S3 link on 7–11 — hence with no conceptual collision.
 
 ## Architecture
 
-### 1. Séparer ce que `BOARD_LINK_AVAILABLE` confondait
+### 1. Separate what `BOARD_LINK_AVAILABLE` was conflating
 
-Ce drapeau répond aujourd'hui à deux questions à la fois : « y a-t-il un lien
-SPI ? » et « la béquille console est-elle permise ? ». La fusion tenait tant
-qu'il n'y avait que deux cartes. La troisième la casse : pas de lien, un bouton,
-et la console conservée.
+That flag currently answers two questions at once: “is there an SPI link?” and
+“is the console crutch allowed?”. The conflation held as long as there were
+only two boards. The third breaks it: no link, a button, and the console kept.
 
 ```c
 /* main/board_common.h */
@@ -105,18 +108,18 @@ et la console conservée.
 #define BOARD_CONFIRM_BUTTON  2   /* un bouton en façade */
 ```
 
-Trois questions, trois drapeaux :
+Three questions, three flags:
 
-| carte | `BOARD_CONFIRM_SOURCE` | `BOARD_LINK_AVAILABLE` | `BOARD_CONSOLE_ACTIONS` | `BOARD_HAS_SD` |
+| board | `BOARD_CONFIRM_SOURCE` | `BOARD_LINK_AVAILABLE` | `BOARD_CONSOLE_ACTIONS` | `BOARD_HAS_SD` |
 |---|---|---|---|---|
 | `jc_devkit` | `NONE` | 0 | 1 | 1 |
 | `niphar_chest` | `LINK` | 1 | **0** | 1 |
 | `wt9932_key` | `BUTTON` | 0 | 1 | **0** |
 
-`BOARD_LINK_AVAILABLE` retrouve un sens unique et littéral. Le garde-fou n°4 de
-`fast.sh` cesse de s'y référer et s'appuie sur `BOARD_CONSOLE_ACTIONS`, qui est
-la question qu'il pose réellement. Trois `_Static_assert` dans `board_common.h`
-verrouillent la cohérence :
+`BOARD_LINK_AVAILABLE` regains a single, literal meaning. Guardrail no. 4 of
+`fast.sh` stops referring to it and relies on `BOARD_CONSOLE_ACTIONS`, which is
+the question it actually asks. Three `_Static_assert` in `board_common.h` lock
+down the consistency:
 
 ```c
 _Static_assert(BOARD_CONFIRM_SOURCE == BOARD_CONFIRM_NONE
@@ -136,12 +139,12 @@ _Static_assert(BOARD_LINK_AVAILABLE,
 #endif
 ```
 
-### 2. `BOARD_HAS_SD` — sans quoi la clé met onze secondes à démarrer
+### 2. `BOARD_HAS_SD` — without which the key takes eleven seconds to start
 
-`board_common.h` définit aujourd'hui le brochage SD inconditionnellement et
-`main.c:58-62` sonde au démarrage. Sur une carte sans connecteur, le sondage
-échoue par expiration, deux fois (chemin externe puis LDO), et coûte **environ
-onze secondes** — mesuré sur ce module le 2026-08-16 :
+`board_common.h` currently defines the SD pinout unconditionally and
+`main.c:58-62` probes at startup. On a board with no connector, the probe fails
+by timeout, twice (external path then LDO), and costs **about eleven seconds**
+— measured on this module on 2026-08-16:
 
 ```
 E (1861)  sdmmc_periph: sdmmc_host_clock_update_command … returned 0x107
@@ -149,63 +152,62 @@ E (10861) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
 W (10891) sd: aucune carte (ESP_ERR_TIMEOUT) — le coffre reste utilisable, la SD non
 ```
 
-Onze secondes avant qu'une clé de sécurité ne réponde à son premier appui, pour
-chercher un composant qui n'est pas soudé. `BOARD_HAS_SD 0` supprime le
-sondage au démarrage et la commande console `sd` — pas le brochage.
+Eleven seconds before a security key responds to its first press, to look for a
+component that is not soldered on. `BOARD_HAS_SD 0` removes the startup probe
+and the `sd` console command — not the pinout.
 
-**Décidé autrement en cours de branche, et c'est le code livré qui fait foi
-ici** : `main/usb/msc_disk.c` appelle `sd_present()`/`sd_read_sectors()` sans
-condition, sur les trois cartes — c'est ce qui sert le mode `storage` du
-cycle USB. Pour que ça compile, `sd_card.c` doit compiler sur les trois
-cartes, donc le brochage microSD de `board_common.h` (six `_Static_assert`)
-reste **inconditionnel** : ni ces blocs, ni `sd_card.c`, ne passent sous
-`#if BOARD_HAS_SD`. Ce drapeau ne gouverne que deux choses, toutes deux dans
-des fichiers autres que `board_common.h` : le sondage au démarrage
-(`main.c`) et la commande console `sd` (`console.c`). Le mode `storage` du
-cycle de la carte-clé, lui, ne dépend pas de `BOARD_HAS_SD` — il est de toute
-façon absent du cycle par construction (`usb/usb_mode_cycle.h` : la clé n'a
-que deux crans, `pgp` et `otp`), indépendamment de la présence d'un
-connecteur microSD. Voir `.tripwire-divergences` pour la divergence
-correspondante déjà déclarée.
+**Decided otherwise during the branch, and it is the delivered code that is
+authoritative here**: `main/usb/msc_disk.c` calls
+`sd_present()`/`sd_read_sectors()` unconditionally, on all three boards — that
+is what serves the `storage` mode of the USB cycle. For that to compile,
+`sd_card.c` must compile on all three boards, so the microSD pinout in
+`board_common.h` (six `_Static_assert`) stays **unconditional**: neither those
+blocks nor `sd_card.c` go under `#if BOARD_HAS_SD`. That flag governs only two
+things, both in files other than `board_common.h`: the startup probe (`main.c`)
+and the `sd` console command (`console.c`). The `storage` mode of the key
+board's cycle, for its part, does not depend on `BOARD_HAS_SD` — it is absent
+from the cycle by construction anyway (`usb/usb_mode_cycle.h`: the key has only
+two steps, `pgp` and `otp`), independently of the presence of a microSD
+connector. See `.tripwire-divergences` for the corresponding divergence,
+already declared.
 
-### 3. Sous-système `main/hmi/`
+### 3. The `main/hmi/` subsystem
 
-Découpage selon la norme TDD du projet : ce qui calcule est pur et testé sur
-l'hôte, ce qui touche au matériel est mince et non testé.
+Split according to the project's TDD norm: what computes is pure and tested on
+the host, what touches hardware is thin and untested.
 
-| fichier | nature | responsabilité |
+| file | nature | responsibility |
 |---|---|---|
-| `hmi/button_debounce.h` | **pur** | filtre un niveau brut en fronts stables |
-| `hmi/led_state.h` | **pur** | `(mode, attente, verdict) → (couleur, couleur alt, motif)` |
-| `usb/usb_mode_cycle.h` | **pur** | `none → pgp`, puis `pgp ⇄ otp` |
-| `hmi/hmi.c` | matériel | GPIO d'entrée, `led_strip` en RMT, la tâche |
+| `hmi/button_debounce.h` | **pure** | filters a raw level into stable edges |
+| `hmi/led_state.h` | **pure** | `(mode, waiting, verdict) → (colour, alt colour, pattern)` |
+| `usb/usb_mode_cycle.h` | **pure** | `none → pgp`, then `pgp ⇄ otp` |
+| `hmi/hmi.c` | hardware | input GPIOs, `led_strip` over RMT, the task |
 
-**Deux boutons, un métier chacun.** IO32 bascule le mode, IO33 confirme. Aucun
-seuil de durée, donc aucune ambiguïté : un appui est une action, et rien d'autre.
-C'est la raison de fond du choix, pas un confort. Avec un bouton unique
-distinguant appui long et appui court, le seuil temporel serait la seule chose
-séparant « je confirme cette signature » de « je désinstalle le CCID pendant que
-l'hôte s'en sert » — un doigt qui traîne arracherait l'interface en pleine
-opération. Une porte de présence physique doit faire une chose.
+**Two buttons, one job each.** IO32 switches the mode, IO33 confirms. No
+duration threshold, hence no ambiguity: a press is one action, and nothing
+else. That is the underlying reason for the choice, not a convenience. With a
+single button distinguishing long and short presses, the time threshold would
+be the only thing separating “I confirm this signature” from “I uninstall the
+CCID while the host is using it” — a finger that lingers would tear the
+interface away mid-operation. A physical presence gate must do one thing.
 
-**L'appui long n'existe plus, et `usb_mode_set()` reste confiné.** Le garde-fou
-n°4 restreint ce symbole à `usb_mode.c` et `console.c` ; l'élargir à `hmi.c`
-affaiblirait le garde pour un gain nul. `usb_mode.c` expose donc
-`usb_mode_cycle_next()`, et la politique du cycle reste chez le module qui
-possède les modes.
+**The long press no longer exists, and `usb_mode_set()` stays confined.**
+Guardrail no. 4 restricts that symbol to `usb_mode.c` and `console.c`; widening
+it to `hmi.c` would weaken the guard for no gain. `usb_mode.c` therefore
+exposes `usb_mode_cycle_next()`, and the cycle policy stays with the module
+that owns the modes.
 
-### 4. `sec_confirm_peek()` — sans quoi la LED vole les signatures
+### 4. `sec_confirm_peek()` — without which the LED steals signatures
 
-La LED doit signaler quand une opération est armée, donc la tâche IHM doit
-connaître l'état de `sec_confirm`. Or `sec_confirm_poll()` **consomme** la
-permission :
+The LED has to signal when an operation is armed, so the HMI task must know
+`sec_confirm`'s state. But `sec_confirm_poll()` **consumes** the permission:
 
-> « AUTHORIZED -> writes slot to *out_slot, consumes (-> IDLE), returns AUTHORIZED »
+> “AUTHORIZED -> writes slot to *out_slot, consumes (-> IDLE), returns AUTHORIZED”
 > — `main/security/sec_confirm.h:20-21`
 
-Une tâche d'affichage qui appellerait `poll()` volerait la permission à celui qui
-l'attend, et la signature échouerait sans trace. Il faut donc une lecture sans
-effet de bord :
+A display task calling `poll()` would steal the permission from whoever is
+waiting for it, and the signature would fail with no trace. A side-effect-free
+read is therefore needed:
 
 ```c
 /* Lit l'état sans rien consommer ni expirer. Pour l'affichage seulement :
@@ -213,132 +215,130 @@ effet de bord :
 sec_confirm_state_t sec_confirm_peek(uint32_t now_ms);
 ```
 
-Pure, sans état muté, testable avec le reste de `sec_confirm`. `now_ms` sert à
-signaler une expiration déjà atteinte sans la consommer — la LED doit pouvoir
-montrer le refus.
+Pure, with no mutated state, testable along with the rest of `sec_confirm`.
+`now_ms` is there to report an expiry that has already been reached without
+consuming it — the LED must be able to show the refusal.
 
-## Comportement
+## Behaviour
 
 ```
-branchement ──▶ [none]  LED éteinte, rien sur le bus
+plug in ──────▶ [none]  LED off, nothing on the bus
                    │
-                   │ appui MODE (IO32)
+                   │ MODE press (IO32)
                    ▼
-              [pgp] ●bleu ◀── appui MODE ──▶ [otp] ●vert
+              [pgp] ●blue ◀── MODE press ──▶ [otp] ●green
 
-opération armée      ●bleu/●rouge (ou ●vert/●rouge en otp) — alternance
-                       pleine luminosité, 1 Hz, franche (pas de fondu)
-appui CONFIRM (IO33) ☀ flash blanc 120 ms — SEULEMENT si une opération
-                       était armée → sec_confirm_authorize()
-refus / expiration   ☀ flash rouge 120 ms
-bascule de mode      ☀ flash de la nouvelle couleur, 120 ms
+operation armed      ●blue/●red (or ●green/●red in otp) — alternating
+                       full brightness, 1 Hz, sharp (no fade)
+CONFIRM press (IO33) ☀ white flash 120 ms — ONLY if an operation
+                       was armed → sec_confirm_authorize()
+refusal / expiry     ☀ red flash 120 ms
+mode switch          ☀ flash of the new colour, 120 ms
 ```
 
-**Révision 2026-08-17, après usage réel de la carte.** L'attente de
-confirmation pulsait à l'origine en luminosité (0 → `LED_DIM` sur la couleur du
-mode). Éprouvée sur matériel, cette pulsation s'est révélée trop discrète : on
-la rate si on ne fixe pas la LED, et une porte de présence physique qu'on ne
-voit pas s'ouvrir fait rater des signatures. L'attente alterne désormais
-franchement entre la couleur du mode et le rouge, toutes deux à `LED_BRIGHT` —
-`led_state_view()` expose ce second terme via `rgb_alt`, et `hmi.c` bascule
-entre `rgb` et `rgb_alt` sans jamais connaître leur signification.
+**Revision 2026-08-17, after real use of the board.** Waiting for confirmation
+originally pulsed in brightness (0 → `LED_DIM` on the mode's colour). Tried on
+hardware, that pulsing proved too discreet: you miss it unless you stare at the
+LED, and a physical presence gate you cannot see opening makes you miss
+signatures. Waiting now alternates sharply between the mode's colour and red,
+both at `LED_BRIGHT` — `led_state_view()` exposes that second term via
+`rgb_alt`, and `hmi.c` switches between `rgb` and `rgb_alt` without ever
+knowing what they mean.
 
-**Réserve assumée.** Le rouge porte maintenant deux sens opposés — « refusé »
-sur le flash de 120 ms, « en attente » sur l'alternance 1 Hz. Ce n'est pas une
-ambiguïté fortuite : c'est un compromis délibéré, où la durée est le seul signe
-distinctif (120 ms contre 15 s, `SEC_CONFIRM_TIMEOUT_MS`). Retenu malgré la
-mise en garde, parce que rater une fenêtre de confirmation coûte plus cher
-qu'une seconde de lecture attentive sur la durée du signal.
+**Accepted reservation.** Red now carries two opposite meanings — “refused” on
+the 120 ms flash, “waiting” on the 1 Hz alternation. This is not an accidental
+ambiguity: it is a deliberate trade-off, where duration is the only
+distinguishing sign (120 ms against 15 s, `SEC_CONFIRM_TIMEOUT_MS`). Adopted
+despite the warning, because missing a confirmation window costs more than a
+second of attentive reading of the signal's duration.
 
-Conforme au principe du projet : **rien n'est exposé au démarrage**. La clé
-arrive muette et le premier appui MODE l'arme. `none` n'est plus atteint ensuite
-sans débrancher — décision assumée : deux crans valent mieux que trois à l'usage,
-et débrancher une clé est un geste naturel.
+Consistent with the project's principle: **nothing is exposed at startup**. The
+key arrives mute and the first MODE press arms it. `none` is no longer reached
+afterwards without unplugging — an accepted decision: two steps are better than
+three in use, and unplugging a key is a natural gesture.
 
-Anti-rebond logiciel de 20 ms, sur front descendant (boutons actifs bas). Les
-boutons de l'utilisateur n'ont pas de RC : le filtrage est entièrement logiciel,
-contrairement à SW2 qui en a un.
+Software debounce of 20 ms, on the falling edge (buttons active low). The
+user's buttons have no RC: filtering is entirely in software, unlike SW2 which
+has one.
 
-Luminosité basse au repos — 20/255 sur les trois canaux — et 120/255 sur les
-flashes de verdict et sur l'alternance d'attente, qui doivent se voir. C'est
-une clé, pas une lampe.
+Low brightness at rest — 20/255 on all three channels — and 120/255 on the
+verdict flashes and on the waiting alternation, which must be visible. It is a
+key, not a lamp.
 
-## Gestion des absences
+## Handling absences
 
-| situation | comportement |
+| situation | behaviour |
 |---|---|
-| `usb_mode_cycle_next()` échoue | mode conservé, `known = false` (mécanique existante), flash rouge |
-| appui CONFIRM hors opération armée | `sec_confirm_authorize()` est déjà un no-op ; aucun flash, pour ne pas suggérer qu'il s'est passé quelque chose |
-| LED absente ou muette | `hmi.c` journalise et continue ; l'absence d'affichage ne bloque jamais une opération |
-| rebond sur MODE pendant une signature | le mode bascule, le CCID est désinstallé — c'est le comportement demandé, et l'anti-rebond en est la seule protection |
+| `usb_mode_cycle_next()` fails | mode kept, `known = false` (existing mechanism), red flash |
+| CONFIRM press with no operation armed | `sec_confirm_authorize()` is already a no-op; no flash, so as not to suggest that something happened |
+| LED absent or mute | `hmi.c` logs and carries on; the absence of a display never blocks an operation |
+| bounce on MODE during a signature | the mode switches, the CCID is uninstalled — that is the requested behaviour, and debouncing is its only protection |
 
-## Vérification
+## Verification
 
-**Sur l'hôte, sans matériel**, tests écrits avant l'implémentation :
+**On the host, with no hardware**, tests written before the implementation:
 
-- `test_button_debounce.c` — rebond au front, appuis enchaînés, maintien long
-  (qui ne doit produire **qu'un** front), relâchement pendant le rebond.
-- `test_led_state.c` — totalité du mapping : aucun état sans couleur, aucune
-  couleur partagée par deux modes, l'alternance n'est produite que sur attente,
-  ses deux couleurs diffèrent et sont visibles, `rgb_alt` vaut `rgb` hors
-  attente.
-- `test_usb_mode_cycle.c` — `none → pgp`, `pgp → otp`, `otp → pgp`, et `none`
-  jamais rendu après le premier appel.
-- `test_sec_confirm.c` (existant, étendu) — `peek()` ne consomme pas : un `peek`
-  suivi d'un `poll` rend toujours `AUTHORIZED`.
+- `test_button_debounce.c` — bounce on the edge, chained presses, long hold
+  (which must produce **only one** edge), release during the bounce.
+- `test_led_state.c` — the whole mapping: no state without a colour, no colour
+  shared by two modes, the alternation is only produced while waiting, its two
+  colours differ and are visible, `rgb_alt` equals `rgb` outside waiting.
+- `test_usb_mode_cycle.c` — `none → pgp`, `pgp → otp`, `otp → pgp`, and `none`
+  never returned after the first call.
+- `test_sec_confirm.c` (existing, extended) — `peek()` does not consume: a
+  `peek` followed by a `poll` still returns `AUTHORIZED`.
 
-Chaque test doit mordre : bug transitoire introduit, rouge constaté, retour.
+Every test must bite: transient bug introduced, red observed, revert.
 
-**Sur la carte** :
+**On the board**:
 
-- démarrage muet, aucun périphérique USB, LED éteinte ;
-- appui MODE → CCID énumère, `gpg --card-status` répond, LED bleue ;
-- `gpg --card-status` puis une signature → alternance bleu/rouge, appui
-  CONFIRM, flash blanc, signature produite ;
-- ne pas appuyer → flash rouge à 15 s (`SEC_CONFIRM_TIMEOUT_MS`), `gpg` échoue ;
-- appui MODE → HID énumère, LED verte ;
-- temps du démarrage à la LED : **inférieur à une seconde** (contrôle du
-  `BOARD_HAS_SD`).
+- mute startup, no USB device, LED off;
+- MODE press → CCID enumerates, `gpg --card-status` answers, LED blue;
+- `gpg --card-status` then a signature → blue/red alternation, CONFIRM press,
+  white flash, signature produced;
+- do not press → red flash at 15 s (`SEC_CONFIRM_TIMEOUT_MS`), `gpg` fails;
+- MODE press → HID enumerates, LED green;
+- time from startup to the LED: **under one second** (checks `BOARD_HAS_SD`).
 
-**Sur les cartes sœurs**, non-régression : `jc_devkit` et `niphar_chest`
-construisent et se comportent comme avant. `sec_gate_console_confirm` reste
-absent du binaire `niphar_chest` (contrôle `nm` existant).
+**On the sister boards**, non-regression: `jc_devkit` and `niphar_chest` build
+and behave as before. `sec_gate_console_confirm` stays absent from the
+`niphar_chest` binary (existing `nm` check).
 
-## Ce que cette carte ne prouvera pas
+## What this board will not prove
 
-Il faut l'écrire, sinon on se persuadera d'avoir validé plus que ça.
+It has to be written down, otherwise we will convince ourselves we validated
+more than that.
 
-- **Le lien S3** : absent des trois cartes. La variante intégrée reste non
-  éprouvée.
-- **L'échange CR-HMAC** : pas d'outillage HID sur la machine de développement.
-  Le mode OTP n'est vérifié que jusqu'à la liaison par le noyau.
-- **La résistance au dump de flash** : la carte a un bouton BOOT en façade et un
-  bouton RESET. N'importe qui, avec la carte en main, entre en mode download et
-  lit la flash — qui contient les clés privées OpenPGP. La parade prévue pour la
-  carte de production (jumpers JTAG retirés en fabrication, cf.
-  `docs/HARDWARE.md`) ne s'applique pas ici.
-- **Les contraintes d'irrécupérabilité du coffre** : cette carte pardonne, comme
-  le kit. Elle éprouve un *comportement* de sécurité, pas une posture matérielle.
+- **The S3 link**: absent from all three boards. The integrated variant remains
+  unproven.
+- **The CR-HMAC exchange**: no HID tooling on the development machine. OTP mode
+  is only verified as far as the kernel binding.
+- **Resistance to a flash dump**: the board has a BOOT button on the front and
+  a RESET button. Anyone with the board in hand enters download mode and reads
+  the flash — which contains the OpenPGP private keys. The countermeasure
+  planned for the production board (JTAG jumpers removed in manufacturing, cf.
+  `docs/HARDWARE.md`) does not apply here.
+- **The chest's unrecoverability constraints**: this board forgives, like the
+  kit. It exercises a security *behaviour*, not a hardware posture.
 
-## Risques
+## Risks
 
-| risque | portée | traitement |
+| risk | scope | handling |
 |---|---|---|
-| LED en 5 V pilotée par une donnée 3,3 V | un WS2812 strict exige VIH ≥ 0,7 × VDD = 3,5 V ; on est dessous | à constater au banc. Couleurs fausses ou scintillement = cause matérielle, pas logicielle. Parade si besoin : alimenter la LED en 3,3 V |
-| Broches lues sur un rendu du schéma | J7 et le brochage des boutons | à recouper avec la sérigraphie avant de souder |
-| `BOARD_HAS_SD` gouverne le sondage au démarrage et la commande console `sd` | touche les trois cartes (le brochage, lui, reste inconditionnel dans `board_common.h`) | les deux cartes existantes gardent `1` ; non-régression couverte par `check.sh` complet |
-| Le remaniement des drapeaux touche `fast.sh` | garde-fou n°4 | garde réécrit sur `BOARD_CONSOLE_ACTIONS`, et son efficacité re-prouvée par mutation |
+| 5 V LED driven by 3.3 V data | a strict WS2812 requires VIH ≥ 0.7 × VDD = 3.5 V; we are below | to be observed on the bench. Wrong colours or flicker = hardware cause, not software. Workaround if needed: power the LED from 3.3 V |
+| Pins read off a rendering of the schematic | J7 and the button pinout | to be cross-checked against the silkscreen before soldering |
+| `BOARD_HAS_SD` governs the startup probe and the `sd` console command | affects all three boards (the pinout itself stays unconditional in `board_common.h`) | the two existing boards keep `1`; non-regression covered by the full `check.sh` |
+| The flag rework touches `fast.sh` | guardrail no. 4 | guard rewritten on `BOARD_CONSOLE_ACTIONS`, and its effectiveness re-proven by mutation |
 
-## Divergences à déclarer
+## Divergences to declare
 
-À inscrire dans `.tripwire-divergences` au moment de l'introduction :
+To be recorded in `.tripwire-divergences` at the moment of introduction:
 
-1. `fast.sh` — garde-fou n°4 sur `BOARD_CONSOLE_ACTIONS` et non plus
-   `BOARD_LINK_AVAILABLE` : le motif surveillé change de nom.
-2. `board_common.h` — le brochage SD reste **inconditionnel** malgré
-   l'arrivée de `BOARD_HAS_SD` : `main/usb/msc_disk.c` appelle
-   `sd_present()`/`sd_read_sectors()` sans condition sur les trois cartes,
-   donc `sd_card.c` doit compiler partout, donc le brochage (six
-   `_Static_assert`) ne peut pas passer sous `#if BOARD_HAS_SD`. Seuls le
-   sondage au démarrage (`main.c`) et la commande console `sd` (`console.c`)
-   en dépendent.
+1. `fast.sh` — guardrail no. 4 on `BOARD_CONSOLE_ACTIONS` and no longer
+   `BOARD_LINK_AVAILABLE`: the watched pattern changes name.
+2. `board_common.h` — the SD pinout stays **unconditional** despite the arrival
+   of `BOARD_HAS_SD`: `main/usb/msc_disk.c` calls
+   `sd_present()`/`sd_read_sectors()` unconditionally on all three boards, so
+   `sd_card.c` must compile everywhere, so the pinout (six `_Static_assert`)
+   cannot go under `#if BOARD_HAS_SD`. Only the startup probe (`main.c`) and
+   the `sd` console command (`console.c`) depend on it.

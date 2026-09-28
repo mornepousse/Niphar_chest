@@ -1,138 +1,141 @@
-# Écran OLED — affinage de l'UX
+# OLED screen — UX refinement
 
-Addendum à [`2026-08-17-ecran-oled-carte-cle-design.md`](2026-08-17-ecran-oled-carte-cle-design.md).
-Écrit après que Mae a vu les écrans de la tâche 4 sur la dalle réelle.
+Addendum to [`2026-08-17-ecran-oled-carte-cle-design.md`](2026-08-17-ecran-oled-carte-cle-design.md).
+Written after Mae saw task 4's screens on the real panel.
 
-## Le constat, dans ses mots
+## The observation, in her words
 
-> « actuellement ux c'est juste du texte en haut a gauche »
-> « par exemple "au repos" il y a rien sur l'ecran juste "au repos" dans le coins en tout petit »
-> « quand je navigue l'ecran est utiliser 10% »
+> “right now the ux is just text in the top left”
+> “for instance 'at rest' there's nothing on the screen just 'at rest' in the corner in tiny letters”
+> “when i navigate the screen is 10% used”
 
-Ce n'est pas une question de goût : **90 % d'une dalle de 128×64 est vide**, et
-les trois informations affichées (titre, ligne, barre) ont toutes la même taille.
-Rien ne dit ce qui compte.
+This is not a matter of taste: **90 % of a 128×64 panel is empty**, and the
+three pieces of information displayed (title, line, bar) are all the same size.
+Nothing says what matters.
 
-Diagnostic précis de ce que fait `render_frame()` (`main/hmi/screen.c:218`) :
+Precise diagnosis of what `render_frame()` does
+(`main/hmi/screen.c:218`):
 
-| symptôme | cause dans le code |
+| symptom | cause in the code |
 |---|---|
-| tout en haut à gauche | `draw_text(title_x, 4)`, `draw_text(2, 24)` — coordonnées fixes, aucun centrage |
-| tout de la même taille | une seule police, 5×7 dans une cellule 6×8 (`s_font`, `screen.c:60`) |
-| écran vide au repos | `SCREEN_IDLE` n'a qu'un titre et pas de `line` |
-| version du splash coupée | `draw_text(SCREEN_LOGO_WIDTH + 4, 32, NIPHAR_VERSION)` à x=68 : 60 px restants = 10 caractères, or `git describe` rend `6da0d70-dirty` (13) faute de tag |
+| everything in the top left | `draw_text(title_x, 4)`, `draw_text(2, 24)` — fixed coordinates, no centring |
+| everything the same size | a single font, 5×7 in a 6×8 cell (`s_font`, `screen.c:60`) |
+| empty screen at rest | `SCREEN_IDLE` has only a title and no `line` |
+| splash version cut off | `draw_text(SCREEN_LOGO_WIDTH + 4, 32, NIPHAR_VERSION)` at x=68: 60 px left = 10 characters, but `git describe` returns `6da0d70-dirty` (13) for lack of a tag |
 
-Le dernier point n'est **pas** un défaut mémoire : `fb_set_pixel()`
-(`screen.c:151`) borne les quatre côtés et le tronquage est explicitement voulu
-pour l'animation de glissement. C'est un défaut de disposition.
+That last point is **not** a memory defect: `fb_set_pixel()`
+(`screen.c:151`) bounds all four sides and the truncation is explicitly wanted
+for the slide animation. It is a layout defect.
 
-## Le principe directeur
+## The guiding principle
 
-**Une seule information domine par écran, et elle occupe la dalle.** Tout le
-reste est du contexte, en petit, sur les bords. C'est ce qui distingue un
-appareil d'une console de debug.
+**One single piece of information dominates each screen, and it fills the
+panel.** Everything else is context, small, at the edges. That is what
+distinguishes a device from a debug console.
 
-## Les cinq changements, par ordre d'effet
+## The five changes, in order of effect
 
-### 1. Police double hauteur pour la ligne qui compte
+### 1. Double-height font for the line that matters
 
-12×16 par **doublement de pixels** depuis la police 5×7 existante — aucune donnée
-nouvelle en flash, une trentaine de lignes. Rend 10 caractères par ligne
-(`SIGNATURE` = 9, `DECHIFFRER` = 10, `AUTH` = 4 : ça passe).
+12×16 by **pixel doubling** from the existing 5×7 font — no new data in flash,
+about thirty lines. Yields 10 characters per line (`SIGNATURE` = 9,
+`DECHIFFRER` = 10, `AUTH` = 4: it fits).
 
-Pourquoi le doublement plutôt qu'une vraie police 12×16 : une table de glyphes
-supplémentaire coûterait ~2 Kio, et à cette taille sur un OLED de 0,96" la
-grossièreté du doublement est à peine perceptible. Si ça se voit à l'œil, on
-achètera la vraie police plus tard — mais on ne paie pas d'avance.
+Why doubling rather than a real 12×16 font: an extra glyph table would cost
+~2 KiB, and at that size on a 0.96" OLED the coarseness of doubling is barely
+perceptible. If it shows to the eye, we will buy the real font later — but we
+do not pay in advance.
 
-### 2. Bandeau inversé pleine largeur
+### 2. Full-width inverted banner
 
-Blanc sur noir, 128 px de large, 10 px de haut. Sur un monochrome c'est
-l'élément qui a le plus de poids visuel, et il occupe la largeur — ce que rien
-ne fait aujourd'hui. Coût : inverser un octet du tampon.
+White on black, 128 px wide, 10 px tall. On a monochrome display it is the
+element with the most visual weight, and it fills the width — which nothing
+does today. Cost: inverting a byte of the buffer.
 
-**Il porte le mode, pas l'état.** `AU REPOS` ne dit rien ; savoir si la carte
-PGP est exposée est justement l'information qui compte. Donc :
+**It carries the mode, not the state.** `AU REPOS` says nothing; whether the
+PGP card is exposed is precisely the information that matters. So:
 `RIEN EXPOSE` / `DISQUE` / `CARTE PGP` / `CLE OTP`.
 
-### 3. Quatre points de cycle
+### 3. Four cycle dots
 
-`○ ● ○ ○` — quel mode sur les quatre. C'est le **seul ajout qui apporte une
-information que Mae n'a pas** : la LED donne une couleur qu'il faut mémoriser
-(sa question « je suis en bleu mais fait quoi ? » vient de là), les points
-disent où on est **et combien d'appuis pour aller où on veut**.
+`○ ● ○ ○` — which mode out of the four. This is the **only addition that brings
+information Mae does not have**: the LED gives a colour that has to be
+memorised (her question “I'm on blue but what does it do?” comes from that),
+the dots say where you are **and how many presses to get where you want**.
 
-### 4. Secondes restantes en chiffre, sous la barre
+### 4. Seconds remaining as a number, under the bar
 
-La barre dit qu'il reste du temps, le chiffre dit combien. Deux générations de
-clés ont été perdues sur des expirations invisibles — ce n'est pas décoratif.
+The bar says there is time left, the number says how much. Two generations of
+keys were lost to invisible expiries — this is not decorative.
 
-### 5. Coche et croix dessinées pour le verdict
+### 5. Check mark and cross drawn for the verdict
 
-Deux bitmaps de ~32 octets à la place de `ACCORDE` / `REFUSE` en petit. Se
-lisent sans lire.
+Two bitmaps of ~32 bytes in place of `ACCORDE` / `REFUSE` in small type. Read
+without reading.
 
-## Les quatre écrans affinés
+## The four refined screens
 
 ```
-AU REPOS                      CONFIRMER ?
+AT REST                       AWAITING CONFIRMATION
 ┌─────────────────────┐      ┌─────────────────────┐
 │    ▄▄▀▀███▀▀▄▄      │      │▓▓▓▓▓ CONFIRMER ▓▓▓▓▓│
 │   ██  ▄▄▄▄▄  ██     │      │                     │
 │   ██  ▀▀▀▀▀  ██     │      │  ███ ██ ███ █  ███  │
-│    ▀▀▄▄███▄▄▀▀      │      │  ██  ██ ██ ███ ██   │  12×16, centré
+│    ▀▀▄▄███▄▄▀▀      │      │  ██  ██ ██ ███ ██   │  12×16, centred
 │                     │      │  ███ ██ ███ █  ███  │
-│▓▓▓▓ RIEN EXPOSE ▓▓▓▓│      │▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░│  pleine largeur
+│▓▓▓▓ RIEN EXPOSE ▓▓▓▓│      │▇▇▇▇▇▇▇▇▇▇▇░░░░░░░░░░│  full width
 └─────────────────────┘      │        11 s         │
                              └─────────────────────┘
 
-VERDICT                       BASCULE DE MODE
+VERDICT                       MODE SWITCH
 ┌─────────────────────┐      ┌─────────────────────┐
 │                     │      │ MODE                │
 │         ▄▄██        │      │                     │
 │       ▄███▀         │      │  ███  ███  ███      │
-│  ▄██▄███▀           │      │  ██   ██   ██       │  glisse
+│  ▄██▄███▀           │      │  ██   ██   ██       │  slides
 │   ▀███▀             │      │  ███  ███  ███      │
 │                     │      │                     │
 │▓▓▓▓▓ ACCORDE ▓▓▓▓▓▓▓│      │   ○  ●  ○  ○        │
 └─────────────────────┘      └─────────────────────┘
 ```
 
-Le repos porte le logo Niphargus (décision de Mae : « au repos met le logo
-niphar plutot »), déjà en flash depuis la tâche 6 (`screen_logo.h`, 512 o).
+The rest screen carries the Niphargus logo (Mae's decision: “for at rest put
+the niphar logo instead”), already in flash since task 6 (`screen_logo.h`,
+512 B).
 
-## La rémanence, tranchée
+## Burn-in, settled
 
-Un OLED qui affiche 1425 pixels allumés en permanence **brûle** : le logo se
-graverait dans la dalle en quelques semaines d'usage.
+An OLED displaying 1425 lit pixels permanently **burns**: the logo would etch
+itself into the panel within a few weeks of use.
 
-Trois mesures, cumulées :
-1. Le logo **dérive** de ±4 px — `screen_shift_px()` existe déjà (tâche 3,
-   `screen_anim.h`), il suffit de l'appliquer au repos et non seulement au texte.
-2. L'écran **s'éteint** au bout d'une minute d'inactivité (commande SSD1306
-   `0xAE`), et se rallume au premier appui ou au premier événement.
-3. Aucun élément inversé n'est permanent : le bandeau n'apparaît qu'avec le logo,
-   qui dérive.
+Three cumulative measures:
+1. The logo **drifts** by ±4 px — `screen_shift_px()` already exists (task 3,
+   `screen_anim.h`), it just has to be applied at rest and not only to the
+   text.
+2. The screen **switches off** after a minute of inactivity (SSD1306 command
+   `0xAE`), and comes back on at the first press or the first event.
+3. No inverted element is permanent: the banner only appears with the logo,
+   which drifts.
 
-Sans le point 2, le point 1 ne fait que répartir la brûlure sur 8 px de plus.
+Without point 2, point 1 merely spreads the burn over 8 more pixels.
 
-## Ce qui est pur et donc testé d'abord
+## What is pure and therefore tested first
 
-Ces fonctions ne connaissent aucune géométrie d'écran et vont dans `test/` :
+These functions know nothing of screen geometry and go into `test/`:
 
-- `screen_text_px(const char *s)` — largeur d'un texte, pour centrer
-- `screen_center_x(uint16_t width_px, uint16_t text_px)` — origine centrée, jamais négative
-- `screen_mode_index(usb_mode_t)` → 0..3, et `screen_mode_count()` — les points
-- `screen_seconds_left(armed_at_ms, now_ms)` — le chiffre, arrondi **vers le haut**
-  (afficher « 0 s » alors qu'il reste 900 ms mentirait dans le sens dangereux)
-- `screen_verdict_glyph(led_event_t)` → coche / croix / rien
-- `screen_blank_after_ms(last_activity_ms, now_ms)` — l'extinction
+- `screen_text_px(const char *s)` — width of a text, for centring
+- `screen_center_x(uint16_t width_px, uint16_t text_px)` — centred origin, never negative
+- `screen_mode_index(usb_mode_t)` → 0..3, and `screen_mode_count()` — the dots
+- `screen_seconds_left(armed_at_ms, now_ms)` — the number, rounded **up**
+  (showing “0 s” while 900 ms remain would lie in the dangerous direction)
+- `screen_verdict_glyph(led_event_t)` → check / cross / nothing
+- `screen_blank_after_ms(last_activity_ms, now_ms)` — the blanking
 
-Le tracé (`draw_*`, `render_*`) reste dans `screen.c` : ce sont des pixels, pas
-des décisions.
+The drawing (`draw_*`, `render_*`) stays in `screen.c`: those are pixels, not
+decisions.
 
-## Ce que ça ne fait pas
+## What this does not do
 
-**Pas de menu navigable.** Mae a explicitement écarté cette lecture (« non
-affiné »). Un menu capable de modifier l'état de la clé serait une nouvelle
-surface d'attaque physique, et ce n'est pas ce qui est demandé.
+**No navigable menu.** Mae explicitly rejected that reading (“not refined”). A
+menu able to modify the key's state would be a new physical attack surface, and
+that is not what is being asked for.

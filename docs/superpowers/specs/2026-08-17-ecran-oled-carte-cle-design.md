@@ -1,119 +1,118 @@
-# Écran OLED de la carte-clé — spécification de conception
+# The key board's OLED screen — design specification
 
 *2026-08-17*
 
-## Problème
+## Problem
 
-La carte-clé sait dire **qu'elle attend un doigt** : sa LED alterne entre la
-couleur du mode et le rouge, et l'utilisateur appuie. Validé sur matériel le
-2026-08-17 — sans appui, la carte renvoie `6985` et l'opération est refusée ;
-avec appui, elle passe.
+The key board can say **that it is waiting for a finger**: its LED alternates
+between the mode's colour and red, and the user presses. Validated on hardware
+on 2026-08-17 — without a press, the card returns `6985` and the operation is
+refused; with a press, it goes through.
 
-Elle ne sait pas dire **pour quoi**.
+It cannot say **what for**.
 
-C'est la limite structurelle de toute clé sans affichage. Un hôte malveillant
-peut demander une signature pendant que l'utilisateur croit en confirmer une
-autre : l'appui est donné de bonne foi, sur une opération que personne n'a
-choisie. Le bouton prouve la présence d'un humain, jamais son consentement à
-*cette* opération.
+That is the structural limit of any key without a display. A malicious host can
+request one signature while the user believes they are confirming another: the
+press is given in good faith, on an operation nobody chose. The button proves
+the presence of a human, never their consent to *this* operation.
 
-L'écran répare exactement ça. Il transforme un accusé de présence en
-consentement éclairé, et c'est ce qui rendra un futur FIDO2 défendable : CTAP
-exige un test de présence, mais une clé qui ne montre pas le site demandeur ne
-protège pas contre un hôte qui substitue la demande.
+The screen fixes exactly that. It turns an acknowledgement of presence into
+informed consent, and that is what will make a future FIDO2 defensible: CTAP
+requires a presence test, but a key that does not show the requesting site does
+not protect against a host that substitutes the request.
 
-Deux gains secondaires, réels mais moindres : l'état de la clé devient lisible
-sans connaître le code couleur, et le décompte de quinze secondes cesse d'être
-invisible — deux générations de clés ont échoué le 2026-08-17 sur des
-expirations que rien n'annonçait.
+Two secondary gains, real but lesser: the key's state becomes readable without
+knowing the colour code, and the fifteen-second countdown stops being invisible
+— two generations of keys were lost on 2026-08-17 to expiries that nothing
+announced.
 
-## Portée
+## Scope
 
-**Dans la portée** : le pilote SSD1306, une tâche d'affichage, la logique pure
-qui décide du contenu et des animations, et l'ajout d'un **code d'opération** à
-`sec_confirm` pour que l'écran sache nommer ce qu'il fait confirmer.
+**In scope**: the SSD1306 driver, a display task, the pure logic that decides
+the content and the animations, and adding an **operation code** to
+`sec_confirm` so the screen can name what it is having confirmed.
 
-**Hors portée**, et délibérément :
+**Out of scope**, and deliberately so:
 
-- **le nom du site demandeur** — il n'y a pas de FIDO2. Le libellé d'attente est
-  une chaîne calculée, donc la place existe ; on ne construit rien de plus pour
-  un consommateur qui n'existe pas ;
-- **les codes TOTP** — ce n'est pas de l'affichage mais une fonction nouvelle,
-  et elle bute sur un obstacle matériel traité plus bas ;
-- **la LED** — elle reste, inchangée. Voir « Répartition des rôles ».
+- **the name of the requesting site** — there is no FIDO2. The waiting label is
+  a computed string, so the room exists; we build nothing more for a consumer
+  that does not exist;
+- **TOTP codes** — that is not display but a new function, and it runs into a
+  hardware obstacle addressed below;
+- **the LED** — it stays, unchanged. See “Division of roles”.
 
-## Matériel
+## Hardware
 
-| élément | fait |
+| item | fact |
 |---|---|
-| Écran | SSD1306, 128×64 monochrome, I²C |
+| Screen | SSD1306, 128×64 monochrome, I²C |
 | SCL | **IO53** |
 | SDA | **IO54** |
 
-Ces deux broches sont sûres : ni pin de strapping, ni restriction. Elles portent
-des fonctions analogiques (`ADC2_CH4`/`CH5`, comparateur analogique canal 1) dont
-ce projet n'a aucun usage — même famille qu'IO51, déjà prise par la LED WS2812
-sans conséquence.
+These two pins are safe: neither strapping pin nor restriction. They carry
+analog functions (`ADC2_CH4`/`CH5`, analog comparator channel 1) that this
+project has no use for — same family as IO51, already taken by the WS2812 LED
+without consequence.
 
 > `GPIO53 | ADC2_CH4, ANA_CMPR_CH1 reference voltage | |`
 > `GPIO54 | ADC2_CH5, ANA_CMPR_CH1 input (non-inverting) | |`
-> — *ESP-IDF Programming Guide*, « GPIO & RTC GPIO — ESP32-P4 », § GPIO Summary
-> (colonne *Comments* vide = aucune restriction)
+> — *ESP-IDF Programming Guide*, “GPIO & RTC GPIO — ESP32-P4”, § GPIO Summary
+> (empty *Comments* column = no restriction)
 
-**À vérifier au banc avant d'alimenter** : les pull-ups I²C. Beaucoup de modules
-SSD1306 les embarquent ; en ajouter en plus met des résistances en parallèle. Et
-le module doit être alimenté en **3,3 V** — un SSD1306 en 5 V avec des pull-ups
-vers 5 V renverrait du 5 V sur des broches qui ne le tolèrent pas.
+**To be checked on the bench before powering up**: the I²C pull-ups. Many
+SSD1306 modules carry them on board; adding more puts resistors in parallel.
+And the module must be powered from **3.3 V** — an SSD1306 at 5 V with pull-ups
+to 5 V would put 5 V back onto pins that do not tolerate it.
 
-## La contrainte qui gouverne l'architecture
+## The constraint that governs the architecture
 
-**Une image pleine bloque 25 à 30 ms.** 128×64 monochrome = 1024 octets ; à
-400 kHz, bits d'acquittement compris, c'est ~23 ms de bus, ~30 ms en pratique.
+**A full frame blocks for 25 to 30 ms.** 128×64 monochrome = 1024 bytes; at
+400 kHz, acknowledge bits included, that is ~23 ms of bus, ~30 ms in practice.
 
-Or la tâche IHM **échantillonne les boutons toutes les 5 ms**, et l'anti-rebond
-(`main/hmi/button_debounce.h`) suppose un échantillonnage régulier. Un
-rafraîchissement bloquant mangerait six périodes d'échantillonnage — donc des
-appuis ratés sur le contact qui porte la présence physique. Ce n'est pas un
-inconfort : c'est le mécanisme de sécurité validé la veille.
+But the HMI task **samples the buttons every 5 ms**, and the debounce
+(`main/hmi/button_debounce.h`) assumes regular sampling. A blocking refresh
+would eat six sampling periods — hence missed presses on the contact that
+carries physical presence. That is not a discomfort: it is the security
+mechanism validated the day before.
 
-**Décision : une tâche d'affichage séparée.** Les boutons gardent leur cadence,
-l'écran vit à la sienne.
+**Decision: a separate display task.** The buttons keep their cadence, the
+screen lives at its own.
 
-La raison décisive n'est pas la performance mais la barre de décompte : elle doit
-continuer à se vider **pendant** que le firmware calcule une signature. Dans une
-boucle unique, l'affichage se figerait exactement à l'instant où l'utilisateur
-regarde l'écran pour savoir combien de temps il lui reste.
+The decisive reason is not performance but the countdown bar: it must keep
+draining **while** the firmware computes a signature. In a single loop, the
+display would freeze exactly at the moment the user looks at the screen to find
+out how much time they have left.
 
-Deux approches ont été écartées :
+Two approaches were rejected:
 
-- **rafraîchissements partiels dans la tâche IHM** (une bande de 8 lignes par
-  tick, ~3 ms) — élégant, sans tâche ni état partagé, mais l'affichage reste
-  couplé à la boucle des boutons et se fige quand elle se fige ;
-- **accepter la gigue d'échantillonnage** — payer la sécurité en confort.
+- **partial refreshes inside the HMI task** (one 8-line band per tick, ~3 ms) —
+  elegant, no task and no shared state, but the display stays coupled to the
+  button loop and freezes when it freezes;
+- **accepting the sampling jitter** — paying for comfort with security.
 
 ## Architecture
 
-### Découpage
+### Split
 
-| fichier | nature | responsabilité |
+| file | nature | responsibility |
 |---|---|---|
-| `main/hmi/screen_view.h` | **pur** | `(mode, attente, échéance, verdict, t) →` quel écran, quels textes |
-| `main/hmi/screen_anim.h` | **pur** | décalage anti-marquage, remplissage de la barre, avancement du glissement |
-| `main/hmi/screen.c` / `.h` | matériel | pilote SSD1306, tâche d'affichage, I²C |
+| `main/hmi/screen_view.h` | **pure** | `(mode, waiting, deadline, verdict, t) →` which screen, which texts |
+| `main/hmi/screen_anim.h` | **pure** | anti-burn-in shift, bar fill, slide progress |
+| `main/hmi/screen.c` / `.h` | hardware | SSD1306 driver, display task, I²C |
 
-Même règle que la LED, et pour la même raison : **aucune décision dans
-`screen.c`**. Il reçoit une description de ce qu'il faut peindre et il peint.
-Quel écran, quelle proportion de barre, quelle phase d'animation — tout est pur
-et testé sur l'hôte.
+Same rule as the LED, and for the same reason: **no decision in `screen.c`**.
+It receives a description of what to paint and it paints. Which screen, what
+proportion of bar, which animation phase — all of it is pure and tested on the
+host.
 
-La leçon vient de la branche précédente : `hmi.c` avait promis « aucune
-décision » et en contenait quatre, dont une — la phase absolue de l'alternance —
-qui produisait un vrai défaut d'affichage. Ce qui n'est pas extrait n'est pas
-testé, et ce qui n'est pas testé dérive.
+The lesson comes from the previous branch: `hmi.c` had promised “no decisions”
+and contained four, one of which — the absolute phase of the alternation —
+produced a real display defect. What is not extracted is not tested, and what
+is not tested drifts.
 
-### État partagé entre les deux tâches
+### State shared between the two tasks
 
-La tâche IHM publie un état minuscule que la tâche écran lit :
+The HMI task publishes a tiny state that the screen task reads:
 
 ```c
 typedef struct {
@@ -126,18 +125,20 @@ typedef struct {
 } hmi_state_t;
 ```
 
-**Un troisième contexte apparaît donc**, et le projet a une règle à ce sujet : le
-raisonnement de concurrence en tête de `main/security/sec_confirm.c` énumère les
-contextes d'appel et en tire une conclusion de sûreté. Il devra être étendu — et
-la tâche écran ne doit **jamais** appeler `sec_confirm_poll()`, qui consomme
-l'autorisation. Elle lit `sec_confirm_peek()`, comme la tâche IHM.
+**A third context therefore appears**, and the project has a rule about that:
+the concurrency reasoning at the top of `main/security/sec_confirm.c`
+enumerates the calling contexts and draws a safety conclusion from it. It will
+have to be extended — and the screen task must **never** call
+`sec_confirm_poll()`, which consumes the authorisation. It reads
+`sec_confirm_peek()`, like the HMI task.
 
-### Le code d'opération
+### The operation code
 
-L'écran d'attente doit nommer ce qu'il fait confirmer. Or `sec_confirm_arm()` ne
-reçoit aujourd'hui qu'un numéro de slot — un entier sans description.
+The waiting screen has to name what it is having confirmed. But
+`sec_confirm_arm()` currently receives only a slot number — an integer with no
+description.
 
-**Décision : un code d'opération, pas une chaîne.**
+**Decision: an operation code, not a string.**
 
 ```c
 typedef enum {
@@ -149,18 +150,18 @@ typedef enum {
 } sec_op_t;
 ```
 
-`sec_confirm` reste numérique — ni texte, ni allocation, ni borne de longueur à
-défendre dans le module qui garde la porte. La traduction code → libellé est une
-fonction **pure** de `screen_view.h`, donc testable, et FIDO2 y ajoutera ses
-propres codes sans toucher au module de sécurité.
+`sec_confirm` stays numeric — no text, no allocation, no length bound to defend
+in the module that guards the gate. Translating code → label is a **pure**
+function in `screen_view.h`, hence testable, and FIDO2 will add its own codes
+there without touching the security module.
 
-C'est une modification d'un module déjà audité et porté depuis `KeSp_firmware` :
-elle doit rester minimale et être déclarée comme divergence.
+This is a modification to a module that has already been audited and ported
+from `KeSp_firmware`: it must stay minimal and be declared as a divergence.
 
-## Les écrans
+## The screens
 
 ```
-AU REPOS                    ATTENTE DE CONFIRMATION
+AT REST                     AWAITING CONFIRMATION
 ┌─────────────────────┐     ┌─────────────────────┐
 │                     │     │  CONFIRMER ?        │
 │      OpenPGP        │     │                     │
@@ -168,97 +169,97 @@ AU REPOS                    ATTENTE DE CONFIRMATION
 │    prête · 3 sign.  │     │                     │
 │                     │     │  ███████████░░░░░░  │
 └─────────────────────┘     └─────────────────────┘
-  décalé toutes les minutes   la barre se vide en 15 s
+  shifted every minute        the bar drains in 15 s
 
-VERDICT (600 ms)            BASCULE DE MODE (400 ms)
+VERDICT (600 ms)            MODE SWITCH (400 ms)
 ┌─────────────────────┐     ┌─────────────────────┐
 │                     │     │  OpenPGP  →         │
 │       ACCORDÉ       │     │        → Clé OTP    │
 │          ✓          │     │                     │
-│                     │     │   (glissement)      │
+│                     │     │   (slide)           │
 └─────────────────────┘     └─────────────────────┘
 ```
 
-**Au repos, l'écran affiche le mode en permanence, décalé de quelques pixels
-toutes les minutes.** Les OLED marquent : un contenu statique laisse une trace
-permanente, et cette clé peut rester branchée des journées. Le décalage coûte une
-fonction pure et supprime le problème.
+**At rest, the screen shows the mode permanently, shifted by a few pixels every
+minute.** OLEDs burn in: static content leaves a permanent mark, and this key
+can stay plugged in for days. The shift costs one pure function and removes the
+problem.
 
-**La barre de décompte est la seule animation qui n'est pas décorative** : elle
-rend visible les quinze secondes de `SEC_CONFIRM_TIMEOUT_MS`, aujourd'hui
-totalement muettes.
+**The countdown bar is the only animation that is not decorative**: it makes
+visible the fifteen seconds of `SEC_CONFIRM_TIMEOUT_MS`, which today are
+entirely mute.
 
-## Répartition des rôles avec la LED
+## Division of roles with the LED
 
-La LED **reste**, et ce n'est pas une redondance : elle se voit du coin de l'œil,
-de loin, sans lire. L'écran se lit, mais suppose qu'on le regarde.
+The LED **stays**, and that is not redundancy: it is seen out of the corner of
+the eye, from a distance, without reading. The screen is read, but assumes you
+are looking at it.
 
-| | LED | écran |
+| | LED | screen |
 |---|---|---|
-| appeler l'attention | ✅ alternance vive | ✗ |
-| dire le mode | couleur | nom en toutes lettres |
-| dire **pour quoi** | ✗ | ✅ |
-| dire le temps restant | ✗ | ✅ barre |
-| verdict | flash | texte |
+| draw attention | ✅ vivid alternation | ✗ |
+| say the mode | colour | name spelled out |
+| say **what for** | ✗ | ✅ |
+| say the time left | ✗ | ✅ bar |
+| verdict | flash | text |
 
-L'ambiguïté assumée du rouge — « j'attends » et « refusé » distingués par la
-durée — est **levée par l'écran** : le texte dit lequel des deux. La LED garde
-son rôle d'alerte périphérique, l'écran porte le sens.
+The accepted ambiguity of red — “I am waiting” and “refused”, distinguished by
+duration — is **lifted by the screen**: the text says which of the two. The LED
+keeps its role of peripheral alert, the screen carries the meaning.
 
-## Gestion des absences
+## Handling absences
 
-| situation | comportement |
+| situation | behaviour |
 |---|---|
-| écran absent ou I²C muet | `screen_init()` journalise et rend une erreur ; la tâche n'est pas créée ; **la clé reste pleinement utilisable**, la LED continue seule. Même contrat que `hmi_init()` aujourd'hui (`main/main.c`) |
-| erreur I²C en cours de route | on journalise, on saute l'image, on retente au tick suivant ; jamais de blocage d'une opération |
-| verdict arrivant pendant une bascule | le verdict prime — c'est fugace et c'est ce que l'utilisateur cherche à lire |
-| armement pendant une animation de bascule | l'attente prime — elle est le seul écran qui réclame une action |
+| screen absent or I²C mute | `screen_init()` logs and returns an error; the task is not created; **the key stays fully usable**, the LED carries on alone. Same contract as `hmi_init()` today (`main/main.c`) |
+| I²C error along the way | log, skip the frame, retry at the next tick; never block an operation |
+| verdict arriving during a switch | the verdict wins — it is fleeting and it is what the user is trying to read |
+| arming during a switch animation | waiting wins — it is the only screen that demands an action |
 
-## Vérification
+## Verification
 
-**Sur l'hôte, tests écrits avant l'implémentation :**
+**On the host, tests written before the implementation:**
 
-- `test_screen_view.c` — totalité du mapping (aucun état sans écran) ; chaque
-  code d'opération a un libellé, et deux codes distincts n'en partagent jamais un ;
-  l'attente prime sur la bascule, le verdict prime sur la bascule.
-- `test_screen_anim.c` — la barre est pleine à l'armement et vide à l'échéance,
-  jamais négative ni au-delà de 100 % ; le calcul survit au repassage à zéro du
-  compteur de millisecondes (`uint32_t`, ~49 jours) ; le décalage anti-marquage
-  reste dans les bornes de l'écran pour tout instant.
+- `test_screen_view.c` — the whole mapping (no state without a screen); every
+  operation code has a label, and two distinct codes never share one; waiting
+  wins over the switch, the verdict wins over the switch.
+- `test_screen_anim.c` — the bar is full at arming and empty at the deadline,
+  never negative nor beyond 100 %; the computation survives the wraparound of
+  the millisecond counter (`uint32_t`, ~49 days); the anti-burn-in shift stays
+  within the screen's bounds at any instant.
 
-Chaque test doit **mordre** : mutation introduite, rouge constaté, retour.
+Every test must **bite**: mutation introduced, red observed, revert.
 
-**Sur la carte** :
+**On the board**:
 
-- démarrage : l'écran s'allume, affiche le mode, la clé reste muette sur l'USB ;
-- `gpg` demande une signature : l'écran affiche « Signature OpenPGP » et la barre
-  se vide ; l'appui l'interrompt et affiche « ACCORDÉ » ;
-- ne pas appuyer : la barre se vide entièrement, l'écran affiche le refus, `gpg`
-  échoue sur `6985` ;
-- **la barre continue de se vider pendant que le firmware calcule** — c'est la
-  raison d'être de la tâche séparée, donc le point à vérifier en priorité ;
-- l'échantillonnage des boutons reste franc : aucun appui raté pendant les
-  animations.
+- startup: the screen lights up, shows the mode, the key stays mute on USB;
+- `gpg` requests a signature: the screen shows “Signature OpenPGP” and the bar
+  drains; the press interrupts it and shows “ACCORDÉ”;
+- do not press: the bar drains completely, the screen shows the refusal, `gpg`
+  fails on `6985`;
+- **the bar keeps draining while the firmware computes** — that is the whole
+  reason for the separate task, hence the point to check first;
+- button sampling stays crisp: no missed press during the animations.
 
-## Ce que cette spec ne résout pas
+## What this spec does not solve
 
-- **Le TOTP.** Sous-système distinct, et il bute sur un obstacle matériel : la
-  carte n'a pas de pile, donc perd l'heure à chaque débranchement, alors que le
-  TOTP exige ±30 s. Il faudrait resynchroniser depuis l'hôte — et un hôte
-  malveillant pourrait alors mentir sur la date et faire produire les codes de
-  n'importe quel instant futur, sur un appareil dont tout l'intérêt est de ne pas
-  faire confiance à l'hôte. À trancher avant d'écrire quoi que ce soit.
-- **FIDO2.** L'écran est conçu pour l'accueillir, rien de plus.
-- **La substitution de demande par un hôte malveillant** n'est réduite que si
-  l'utilisateur *lit* l'écran. Un écran qu'on ignore ne protège pas mieux qu'une
-  LED. C'est une limite inhérente, pas un défaut d'implémentation.
+- **TOTP.** A distinct subsystem, and it runs into a hardware obstacle: the
+  board has no battery, so it loses the time at every unplug, whereas TOTP
+  requires ±30 s. It would have to resynchronise from the host — and a
+  malicious host could then lie about the date and have codes produced for any
+  future instant, on a device whose whole point is not to trust the host. To be
+  settled before writing anything at all.
+- **FIDO2.** The screen is designed to accommodate it, nothing more.
+- **Request substitution by a malicious host** is only reduced if the user
+  *reads* the screen. A screen that is ignored protects no better than a LED.
+  That is an inherent limit, not an implementation defect.
 
-## Risques
+## Risks
 
-| risque | traitement |
+| risk | handling |
 |---|---|
-| Pull-ups I²C en double sur le module | à vérifier au banc avant d'alimenter |
-| Marquage de la dalle | décalage périodique, fonction pure testée |
-| La tâche écran fait dériver l'échantillonnage des boutons | tâches séparées ; à vérifier au banc, pas seulement en théorie |
-| Un troisième contexte lit l'état de `sec_confirm` | raisonnement de concurrence à étendre ; `peek()` seulement, jamais `poll()` |
-| Modification d'un module de sécurité audité | changement minimal (un énum, un paramètre), divergence déclarée |
+| Duplicate I²C pull-ups on the module | to be checked on the bench before powering up |
+| Burn-in of the panel | periodic shift, tested pure function |
+| The screen task makes button sampling drift | separate tasks; to be checked on the bench, not only in theory |
+| A third context reads `sec_confirm`'s state | concurrency reasoning to be extended; `peek()` only, never `poll()` |
+| Modification of an audited security module | minimal change (one enum, one parameter), declared divergence |

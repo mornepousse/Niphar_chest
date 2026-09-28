@@ -1,161 +1,160 @@
-# Applet OATH/TOTP — remplacer Proton Authenticator
+# OATH/TOTP applet — replacing Proton Authenticator
 
-*Spec de conception, 2026-08-18. Cible : `wt9932_key`, applicable au coffre.*
+*Design spec, 2026-08-18. Target: `wt9932_key`, applicable to the chest.*
 
-## Pourquoi
+## Why
 
-Mae détient douze comptes TOTP dans Proton Authenticator. L'objectif est de les
-porter sur la clé Niphar, pour que le second facteur vive dans le même objet que
-les clés OpenPGP et FIDO2 — un objet qu'on débranche.
+Mae holds twelve TOTP accounts in Proton Authenticator. The goal is to move
+them onto the Niphar key, so that the second factor lives in the same object as
+the OpenPGP and FIDO2 keys — an object you unplug.
 
-Proton reste la sauvegarde. La migration est **manuelle**, compte par compte :
-douze secrets recopiés à la main, sans outil d'import à écrire ni fichier
-déchiffré à faire transiter.
+Proton remains the backup. The migration is **manual**, account by account:
+twelve secrets copied by hand, with no import tool to write and no decrypted
+file to move around.
 
-## Décisions prises
+## Decisions taken
 
-Six arbitrages, tranchés avec Mae avant conception. Ils contraignent tout ce
-qui suit.
+Six judgement calls, settled with Mae before design. They constrain everything
+that follows.
 
-| # | Décision | Conséquence directe |
+| # | Decision | Direct consequence |
 |---|---|---|
-| 1 | **Modèle YKOATH strict** — le compteur de temps vient de l'hôte | La clé n'a pas d'horloge et n'en veut pas. Elle ne sait jamais quelle heure il est. `ykman` est requis au quotidien. |
-| 2 | **Appui obligatoire sur chaque code** | `CALCULATE ALL` ne peut rendre aucun code : il répond `TAG_TOUCH` pour chaque compte. `ykman oath accounts code` sans argument n'affiche que `[Requires Touch]`. |
-| 3 | **Pas de mot de passe** | Pas de `SET CODE` / `VALIDATE`. La liste des comptes et leur modification sont lisibles par tout logiciel de la machine hôte ; les secrets, jamais. |
-| 4 | **L'écran nomme le compte demandé** | Le nom vient de l'hôte : il doit être assaini avant d'être dessiné. Sans cela l'appui est un simple interrupteur de présence, pas un accord sur un compte. |
-| 5 | **Sixième mode `usb mode oath`** | Un applet par mode, conforme à « plein de choses, une à la fois ». Pas de second applet greffé sur le mode PGP. |
-| 6 | **Magasin unique élargi** (`sec_store`) plutôt qu'un `oath_store` dédié | Un seul endroit où regarder ce que la clé détient. Coût nul : voir « État des lieux ». |
+| 1 | **Strict YKOATH model** — the time counter comes from the host | The key has no clock and does not want one. It never knows what time it is. `ykman` is required day to day. |
+| 2 | **Mandatory press on every code** | `CALCULATE ALL` cannot return any code: it answers `TAG_TOUCH` for every account. `ykman oath accounts code` with no argument only shows `[Requires Touch]`. |
+| 3 | **No password** | No `SET CODE` / `VALIDATE`. The list of accounts and their modification are readable by any software on the host machine; the secrets, never. |
+| 4 | **The screen names the requested account** | The name comes from the host: it must be sanitised before being drawn. Without that, the press is a plain presence switch, not an agreement on an account. |
+| 5 | **Sixth mode `usb mode oath`** | One applet per mode, consistent with “plenty of things, one at a time”. No second applet grafted onto the PGP mode. |
+| 6 | **A single, widened store** (`sec_store`) rather than a dedicated `oath_store` | A single place to look at what the key holds. Zero cost: see “Current state”. |
 
-## État des lieux — ce sur quoi on s'appuie
+## Current state — what we build on
 
-Trois faits mesurés dans le dépôt avant conception, dont deux changent le plan.
+Three facts measured in the repo before design, two of which change the plan.
 
-**`cr_hmac_sha1()` existe** (`security/cr_hmac.c`) et c'est exactement la
-primitive de TOTP (RFC 6238 par défaut). mbedtls est disponible pour SHA-256.
+**`cr_hmac_sha1()` exists** (`security/cr_hmac.c`) and it is exactly TOTP's
+primitive (RFC 6238 by default). mbedtls is available for SHA-256.
 
-**`dongle_confirm()` existe** (`security/ccid.c:431`) : il arme `sec_confirm`,
-sonde toutes les 20 ms, et **émet une trame d'extension de temps CCID (WTX)
-toutes les 1,5 s** pour que l'hôte patiente au lieu d'abandonner. C'est
-précisément ce dont `ykman` a besoin — voir « Attente de l'appui » — et c'est
-déjà éprouvé sur matériel avec `gpg`. Aucune machine à états à inventer.
+**`dongle_confirm()` exists** (`security/ccid.c:431`): it arms `sec_confirm`,
+polls every 20 ms, and **emits a CCID time-extension frame (WTX) every 1.5 s**
+so that the host waits instead of giving up. That is precisely what `ykman`
+needs — see “Waiting for the press” — and it is already proven on hardware with
+`gpg`. No state machine to invent.
 
-**`sec_store` est inerte.** `sec_store_set_slot()` n'a aucun appelant dans tout
-le dépôt, et `sec_store_init()` n'est jamais appelé non plus. Le magasin n'est
-donc ni chargé ni écrit, jamais. Deux conséquences :
+**`sec_store` is inert.** `sec_store_set_slot()` has no caller anywhere in the
+repo, and `sec_store_init()` is never called either. The store is therefore
+neither loaded nor written, ever. Two consequences:
 
-- élargir la structure ne migre rien et ne peut rien perdre — la décision 6 est
-  gratuite ;
-- **le mode OTP CR-HMAC ne peut pas fonctionner aujourd'hui**, puisqu'il lit des
-  slots qu'aucun chemin ne remplit. Défaut préexistant, indépendant de ce
-  travail ; l'applet OATH lui apporte au passage le chemin de provisionnement
-  qui lui manquait.
+- widening the structure migrates nothing and can lose nothing — decision 6 is
+  free;
+- **the CR-HMAC OTP mode cannot work today**, since it reads slots that no path
+  fills. A pre-existing defect, independent of this work; the OATH applet
+  incidentally brings it the provisioning path it was missing.
 
-## Composants
+## Components
 
-| fichier | rôle | pur ? |
+| file | role | pure? |
 |---|---|---|
-| `security/oath_proto.{c,h}` | analyse des commandes YKOATH, troncature RFC 4226, sérialisation des réponses, découpe `SEND REMAINING` | **oui** |
-| `security/oath_name.{c,h}` | assainissement du nom venu de l'hôte avant l'écran | **oui** |
-| `security/sec_store.{c,h}` | élargi : 16 slots, nom 64 o, secret 64 o ; blob NVS version 2 | oui |
-| `security/ccid.c` | `dongle_confirm()` élargi pour porter une étiquette | non |
-| `usb/mode_oath.{c,h}` | plomberie CCID, sur le modèle de `mode_pgp.c` | non |
-| `usb/usb_mode.{c,h}` | `USB_MODE_OATH` dans l'énumération et le cycle | non |
-| `hmi/screen_view.h` | `SEC_OP_OATH` et son libellé | oui |
+| `security/oath_proto.{c,h}` | parsing YKOATH commands, RFC 4226 truncation, serialising responses, `SEND REMAINING` chunking | **yes** |
+| `security/oath_name.{c,h}` | sanitising the host-supplied name before the screen | **yes** |
+| `security/sec_store.{c,h}` | widened: 16 slots, 64 B name, 64 B secret; NVS blob version 2 | yes |
+| `security/ccid.c` | `dongle_confirm()` widened to carry a label | no |
+| `usb/mode_oath.{c,h}` | CCID plumbing, on the model of `mode_pgp.c` | no |
+| `usb/usb_mode.{c,h}` | `USB_MODE_OATH` in the enumeration and the cycle | no |
+| `hmi/screen_view.h` | `SEC_OP_OATH` and its label | yes |
 
-L'essentiel du travail est en logique pure, donc sous TDD et vérifiable sans
-matériel. Ce n'est pas un hasard : c'est la contrainte du harnais hôte qui force
-ce découpage, et elle tombe bien ici.
+The bulk of the work is in pure logic, hence under TDD and verifiable without
+hardware. That is no accident: it is the host harness's constraint that forces
+this split, and it happens to suit this case well.
 
-## Surface protocolaire
+## Protocol surface
 
-AID : `A0 00 00 05 27 21 01`. Toutes les valeurs ci-dessous sont relevées dans
-`yubikit/oath.py` de **ykman 5.9.1**, pas reconstituées de mémoire.
+AID: `A0 00 00 05 27 21 01`. All the values below are read from
+`yubikit/oath.py` of **ykman 5.9.1**, not reconstructed from memory.
 
-### Commandes implémentées
+### Commands implemented
 
-| INS | commande | comportement |
+| INS | command | behaviour |
 |---|---|---|
-| `A4` P1=04 | SELECT — sélection de l'applet | rend `TAG_VERSION` + `TAG_NAME` (sel) |
-| `01` | PUT | ajoute un compte ; drapeau tactile **forcé** quel que soit ce que demande l'hôte |
-| `02` | DELETE | supprime un compte |
-| `05` | RENAME | renomme un compte |
-| `04` | RESET | efface tous les comptes OATH |
-| `A1` | LIST | liste les noms et leur type |
-| `A2` | CALCULATE | **arme la confirmation**, puis rend le code tronqué |
-| `A4` P2=01 | CALCULATE ALL | rend `TAG_TOUCH` pour chaque compte, jamais de code |
-| `A5` | SEND REMAINING | suite d'une réponse tronquée |
+| `A4` P1=04 | SELECT — selecting the applet | returns `TAG_VERSION` + `TAG_NAME` (salt) |
+| `01` | PUT | adds an account; touch flag **forced** whatever the host asks for |
+| `02` | DELETE | deletes an account |
+| `05` | RENAME | renames an account |
+| `04` | RESET | erases all OATH accounts |
+| `A1` | LIST | lists names and their type |
+| `A2` | CALCULATE | **arms the confirmation**, then returns the truncated code |
+| `A4` P2=01 | CALCULATE ALL | returns `TAG_TOUCH` for every account, never a code |
+| `A5` | SEND REMAINING | continuation of a truncated response |
 
-**Collision d'octet d'instruction, à ne pas manquer.** `SELECT` (ISO 7816) et
-`CALCULATE ALL` valent **tous deux `A4`**. Ils ne se distinguent que par leurs
-paramètres : `ykman` envoie `CLA=00 INS=A4 P1=04 P2=00` pour la sélection et
-`CLA=00 INS=A4 P1=00 P2=01` pour le calcul global (`send_apdu(0,
-INS_CALCULATE_ALL, 0, 1, …)` dans `oath.py`). Un aiguillage sur le seul INS
-répondrait une réponse de SELECT à une demande de codes.
+**Instruction-byte collision, not to be missed.** `SELECT` (ISO 7816) and
+`CALCULATE ALL` are **both `A4`**. They differ only by their parameters:
+`ykman` sends `CLA=00 INS=A4 P1=04 P2=00` for selection and
+`CLA=00 INS=A4 P1=00 P2=01` for the global calculation (`send_apdu(0,
+INS_CALCULATE_ALL, 0, 1, …)` in `oath.py`). A dispatch on INS alone would
+answer a SELECT response to a request for codes.
 
-### Commandes refusées
+### Commands refused
 
-| INS | commande | réponse | pourquoi |
+| INS | command | response | why |
 |---|---|---|---|
-| `03` | SET CODE | `6A81` | décision 3 : pas de mot de passe |
-| `A3` | VALIDATE | `6A81` | sans mot de passe, rien à valider |
-| — | PUT d'un compte HOTP | `6A81` | voir « Portée » |
-| — | PUT d'un compte SHA-256 | `6A81` | voir « Portée » — divergence déclarée |
+| `03` | SET CODE | `6A81` | decision 3: no password |
+| `A3` | VALIDATE | `6A81` | with no password, nothing to validate |
+| — | PUT of an HOTP account | `6A81` | see “Scope” |
+| — | PUT of a SHA-256 account | `6A81` | see “Scope” — declared divergence |
 
-### Réponse au SELECT
+### Response to SELECT
 
-`ykman` fait `data[TAG_VERSION]` sans garde : **l'absence de `TAG_VERSION`
-(`0x79`) lève une exception côté hôte**, ce n'est pas optionnel. Et
-`_get_device_id(salt)` calcule un SHA-256 du champ `TAG_NAME` (`0x71`), donc son
-absence plante aussi. La réponse porte donc les deux :
+`ykman` does `data[TAG_VERSION]` with no guard: **the absence of `TAG_VERSION`
+(`0x79`) raises an exception on the host side**, it is not optional. And
+`_get_device_id(salt)` computes a SHA-256 of the `TAG_NAME` field (`0x71`), so
+its absence crashes too. The response therefore carries both:
 
-- `TAG_VERSION` : trois octets. On annonce **5.7.1**, une version qui sélectionne
-  les chemins modernes de `ykman` (au-dessus de 3.0.0, elle évite un contournement
-  hérité du YubiKey NEO). C'est une annonce de compatibilité protocolaire, pas
-  une prétention d'être un YubiKey ; à documenter comme telle.
-- `TAG_NAME` : un sel de huit octets, **aléatoire, tiré une fois et persisté en
-  NVS**. Stable d'une session à l'autre, sinon `ykman` verrait un appareil
-  différent à chaque branchement. Tiré au sort plutôt que dérivé de l'adresse
-  MAC : l'identifiant d'appareil publié à l'hôte n'a pas à révéler un
-  identifiant matériel.
-- `TAG_CHALLENGE` : **absent**, ce qui signale « pas de mot de passe ».
+- `TAG_VERSION`: three bytes. We announce **5.7.1**, a version that selects
+  `ykman`'s modern paths (above 3.0.0, it avoids a workaround inherited from
+  the YubiKey NEO). It is an announcement of protocol compatibility, not a
+  claim to be a YubiKey; to be documented as such.
+- `TAG_NAME`: an eight-byte salt, **random, drawn once and persisted in NVS**.
+  Stable from one session to the next, otherwise `ykman` would see a different
+  device at every plug-in. Drawn at random rather than derived from the MAC
+  address: the device identifier published to the host has no business
+  revealing a hardware identifier.
+- `TAG_CHALLENGE`: **absent**, which signals “no password”.
 
-### Découpe des réponses longues
+### Chunking long responses
 
-`LIST` sur douze comptes dépasse les 255 octets d'une réponse APDU courte.
-`SEND REMAINING` (`A5`) est donc **obligatoire**, pas optionnel : `ykman`
-l'appelle automatiquement tant que le mot d'état vaut `61xx`. Une implémentation
-qui l'omet marche avec trois comptes et casse avec douze — le genre de défaut
-qui ne se voit qu'après la migration.
+`LIST` on twelve accounts exceeds the 255 bytes of a short APDU response.
+`SEND REMAINING` (`A5`) is therefore **mandatory**, not optional: `ykman` calls
+it automatically as long as the status word is `61xx`. An implementation that
+omits it works with three accounts and breaks with twelve — the kind of defect
+that only shows up after the migration.
 
-## Attente de l'appui
+## Waiting for the press
 
-`ykman.calculate()` envoie l'APDU et déballe la réponse. **Aucune boucle de
-relance, aucune gestion du toucher dans la bibliothèque.** La carte doit donc
-tenir la commande ouverte jusqu'à l'appui — c'est l'inverse d'U2F, où le client
-relance toutes les ~117 ms.
+`ykman.calculate()` sends the APDU and unpacks the response. **No retry loop,
+no touch handling in the library.** The card must therefore hold the command
+open until the press — the opposite of U2F, where the client retries every
+~117 ms.
 
 ```
-ykman                          clé
+ykman                          key
   │  SELECT AID A0000005272101 →
-  │                            ← TAG_VERSION 5.7.1, TAG_NAME <sel>
-  │  CALCULATE (nom, défi 8 o) →
+  │                            ← TAG_VERSION 5.7.1, TAG_NAME <salt>
+  │  CALCULATE (name, 8 B challenge) →
   │                              dongle_confirm(SEC_OP_OATH, "GITHUB")
-  │                              écran : CONFIRMER / CODE OTP / GITHUB + barre
-  │  ← WTX toutes les 1,5 s ─────  (ykman patiente, pas d'erreur)
-  │                              ┌ appui   → HMAC, troncature RFC 4226
+  │                              screen: CONFIRMER / CODE OTP / GITHUB + bar
+  │  ← WTX every 1.5 s ──────────  (ykman waits, no error)
+  │                              ┌ press   → HMAC, RFC 4226 truncation
   │                              └ 15 s    → 0x6985
   │  ← TAG_TRUNCATED / 6985 ─────
 ```
 
-Le défi de huit octets est le compteur de temps calculé par `ykman`.
+The eight-byte challenge is the time counter computed by `ykman`.
 
-**L'échéance de quinze secondes est ici réelle**, puisque `ykman` ne relance
-pas — contrairement à U2F, dont le réarmement à chaque tentative a fait retirer
-la barre de décompte le 2026-08-18. `screen_op_has_deadline()` rend `true` par
-défaut pour toute opération non-FIDO : OATH hérite donc de la barre sans une
-ligne supplémentaire, et pour la bonne raison.
+**The fifteen-second deadline is real here**, since `ykman` does not retry —
+unlike U2F, whose re-arming on every attempt caused the countdown bar to be
+removed on 2026-08-18. `screen_op_has_deadline()` returns `true` by default for
+any non-FIDO operation: OATH therefore inherits the bar without an extra line,
+and for the right reason.
 
-## Stockage
+## Storage
 
 ```c
 #define SEC_N_SLOTS     16
@@ -172,140 +171,140 @@ typedef struct {
 } sec_slot_t;
 ```
 
-2112 octets de blob NVS, version **2**. Le champ `type` porte directement
-l'octet d'algorithme YKOATH — quartet haut `0x20` pour TOTP, quartet bas `0x01`
-SHA-1 / `0x02` SHA-256 — qui ne peut jamais valoir `0x01` seul : aucune collision
-avec les slots CR-HMAC existants. Le blob version 1 est refusé sur sa taille au
-chargement, sans perte puisque rien n'y a jamais été écrit.
+2112 bytes of NVS blob, version **2**. The `type` field directly carries the
+YKOATH algorithm byte — high nibble `0x20` for TOTP, low nibble `0x01` SHA-1 /
+`0x02` SHA-256 — which can never equal `0x01` on its own: no collision with the
+existing CR-HMAC slots. The version 1 blob is refused on its size at load time,
+with no loss since nothing was ever written to it.
 
-Seize slots pour douze comptes : de la marge, sans provisionner pour un besoin
-qui n'existe pas.
+Sixteen slots for twelve accounts: some headroom, without provisioning for a
+need that does not exist.
 
-## Portée
+## Scope
 
-**Dedans** : TOTP **SHA-1**, six ou huit chiffres, période portée par le nom
-(`30/Issuer:compte`, convention YKOATH).
+**In**: TOTP **SHA-1**, six or eight digits, period carried by the name
+(`30/Issuer:account`, YKOATH convention).
 
-**Dehors, et refusé explicitement** :
+**Out, and explicitly refused**:
 
-- **SHA-256** (`6A81`). **Cette ligne disait le contraire jusqu'au 2026-08-19**
-  — la section annonçait « TOTP SHA-1 **et SHA-256** » dedans, alors que
-  `oath_do_put()` refuse tout ce qui n'est pas `OATH_ALGO_TOTP_SHA1` (`0x21`)
-  depuis le premier jour. Le choix est maintenu : implémenter un algorithme
-  qu'**aucun compte réel n'exerce** serait spéculatif, et un HMAC-SHA-256 que
-  rien ne teste rendrait des codes parfaitement formés et faux, pour toujours,
-  sans qu'aucune erreur ne le dise. Un refus franc vaut mieux qu'un mensonge
-  silencieux. **On le fera si l'export Proton en contient** — c'est la
-  migration des douze comptes qui tranchera, pas une supposition.
-  Le défaut n'était pas le refus mais son absence de déclaration : il est
-  désormais inscrit dans `.tripwire-divergences`, qui rendra rouge la
-  disparition silencieuse de la garde.
-- **HOTP** (`6A81`). Il exige un compteur persistant incrémenté à chaque usage :
-  une machine à états et une écriture NVS par code produit, pour un besoin que
-  Mae n'a pas. Si l'export Proton contient du HOTP, on le verra à la migration.
-- **SHA-512** (`6A81`). Rien ne l'utilise dans les douze comptes ; l'ajouter
-  coûte peu mais ne se teste sur rien.
-- **Mot de passe** — décision 3.
+- **SHA-256** (`6A81`). **This line said the opposite until 2026-08-19** — the
+  section announced “TOTP SHA-1 **and SHA-256**” as in scope, whereas
+  `oath_do_put()` has refused anything that is not `OATH_ALGO_TOTP_SHA1`
+  (`0x21`) since day one. The choice is upheld: implementing an algorithm that
+  **no real account exercises** would be speculative, and an HMAC-SHA-256 that
+  nothing tests would return perfectly well-formed and wrong codes, forever,
+  with no error to say so. A blunt refusal is better than a silent lie. **We
+  will do it if the Proton export contains some** — it is the migration of the
+  twelve accounts that will settle it, not a supposition.
+  The defect was not the refusal but its lack of declaration: it is now
+  recorded in `.tripwire-divergences`, which will turn red if the guard
+  silently disappears.
+- **HOTP** (`6A81`). It requires a persistent counter incremented on every use:
+  a state machine and one NVS write per code produced, for a need Mae does not
+  have. If the Proton export contains HOTP, we will see it at migration time.
+- **SHA-512** (`6A81`). Nothing uses it among the twelve accounts; adding it
+  costs little but can be tested against nothing.
+- **Password** — decision 3.
 
-## Assainissement du nom
+## Sanitising the name
 
-Le nom vient de l'hôte : jusqu'à 64 octets arbitraires, dessinés sur un écran
-dont Mae se sert pour décider. Trois règles, toutes en logique pure et testables.
+The name comes from the host: up to 64 arbitrary bytes, drawn on a screen that
+Mae uses to decide. Three rules, all in pure logic and testable.
 
-1. **Garder le nom complet, sans le préfixe de période.**
-   `30/GitHub:mae@ex.org` → `GITHUB:MAE@EX.ORG`. Le `30/` est de la convention
-   YKOATH, pas du sens : il ne dit rien à qui regarde l'écran. Tout le reste
-   est gardé.
+1. **Keep the full name, without the period prefix.**
+   `30/GitHub:mae@ex.org` → `GITHUB:MAE@EX.ORG`. The `30/` is YKOATH
+   convention, not meaning: it says nothing to whoever looks at the screen.
+   Everything else is kept.
 
-   > **Amendée le 2026-08-19 — la version précédente était fausse.** Elle
-   > disait : « Garder l'issuer. `GitHub:mae@exemple.org` → `GITHUB`. C'est la
-   > partie que Mae reconnaît ; **le compte importe peu quand on n'en a qu'un
-   > par service.** » La prémisse en gras est démentie par la propriétaire :
-   > OVH et Ankama auront chacun **un compte perso et un compte pro**.
-   > `OVH:perso` et `OVH:pro` rendaient donc tous deux `OVH` — strictement
-   > indiscernables sur l'écran qui sert à décider. Pour ces comptes-là,
-   > l'appui redevenait un interrupteur de présence, et la décision 4 ne
-   > protégeait plus rien. La paire est au test central
-   > `test_noms_distincts_restent_distincts`, constatée rouge avant la
-   > correction.
-2. **Tout caractère sans glyphe devient `?`, jamais un blanc.** La police de
-   `screen.c` définit `A-Z`, `a-z`, `0-9` et `?` — **aucune ponctuation** — et
-   son repli actuel rend un glyphe vide pour un caractère non dessiné situé dans
-   l'intervalle. Sans cette règle, `GitHub:mae` et `GitHub mae` s'afficheraient
-   **identiquement** : exactement l'attaque que la décision 4 vise à empêcher.
-3. **Tronquer à vingt-et-un caractères avec un marqueur visible.** Sans
-   marqueur, deux comptes dont les noms divergent après la coupe seraient
-   indiscernables, et l'appui redeviendrait aveugle. L'avant-dernier caractère
-   dessiné porte une empreinte du nom entier, pour la même raison.
+   > **Amended on 2026-08-19 — the previous version was wrong.** It said:
+   > “Keep the issuer. `GitHub:mae@exemple.org` → `GITHUB`. That is the part
+   > Mae recognises; **the account matters little when there is only one per
+   > service.**” The premise in bold is contradicted by the owner: OVH and
+   > Ankama will each have **a personal account and a work account**.
+   > `OVH:perso` and `OVH:pro` therefore both returned `OVH` — strictly
+   > indistinguishable on the screen that is used to decide. For those
+   > accounts, the press went back to being a presence switch, and decision 4
+   > no longer protected anything. The pair is in the central test
+   > `test_noms_distincts_restent_distincts`, observed red before the fix.
+2. **Any character without a glyph becomes `?`, never a blank.** `screen.c`'s
+   font defines `A-Z`, `a-z`, `0-9` and `?` — **no punctuation** — and its
+   current fallback returns an empty glyph for an undrawn character within the
+   range. Without this rule, `GitHub:mae` and `GitHub mae` would display
+   **identically**: exactly the attack decision 4 aims to prevent.
+3. **Truncate at twenty-one characters with a visible marker.** Without a
+   marker, two accounts whose names diverge after the cut would be
+   indistinguishable, and the press would go back to being blind. The
+   second-to-last drawn character carries a fingerprint of the whole name, for
+   the same reason.
 
-   > **Corrigée le 2026-08-19 — c'était une erreur de police.** La version
-   > précédente disait « tronquer à **dix** caractères. Dix est la largeur
-   > réelle en police **double hauteur** sur 128 px ». La mesure était juste,
-   > mais elle ne s'applique pas à cette ligne : dans `main/hmi/screen.c`,
-   > l'étiquette de compte est dessinée par `draw_text_centered()` — police
-   > **simple** hauteur, `SCREEN_CHAR_PX` = 6 px, donc 128 / 6 = **21**
-   > caractères. Seul le libellé d'opération (`CODE OTP`, `RESET OATH`) passe
-   > par `draw_text_2x_centered()` et subit la contrainte des dix. Le budget
-   > d'affichage du nom était donc divisé par deux sans raison, ce qui rendait
-   > la troncature bien plus agressive qu'il ne fallait — et pesait
-   > directement sur la règle 1. `OATH_NAME_DISPLAY_MAX` vaut désormais 22
-   > (21 dessinés + terminateur) ; un vingt-deuxième caractère ferait 132 px,
-   > `screen_center_x()` collerait à gauche et `fb_set_pixel()` amputerait le
-   > dernier glyphe — celui qui porte le marqueur. Vérifié par
+   > **Corrected on 2026-08-19 — it was a font error.** The previous version
+   > said “truncate at **ten** characters. Ten is the real width in
+   > **double-height** font over 128 px”. The measurement was right, but it
+   > does not apply to this line: in `main/hmi/screen.c`, the account label is
+   > drawn by `draw_text_centered()` — **single**-height font,
+   > `SCREEN_CHAR_PX` = 6 px, hence 128 / 6 = **21** characters. Only the
+   > operation label (`CODE OTP`, `RESET OATH`) goes through
+   > `draw_text_2x_centered()` and is subject to the ten-character constraint.
+   > The display budget for the name was therefore halved for no reason, which
+   > made truncation far more aggressive than it needed to be — and bore
+   > directly on rule 1. `OATH_NAME_DISPLAY_MAX` is now 22 (21 drawn +
+   > terminator); a twenty-second character would make 132 px,
+   > `screen_center_x()` would clamp to the left and `fb_set_pixel()` would
+   > amputate the last glyph — the one that carries the marker. Verified by
    > `test_le_nom_de_compte_tient_en_police_simple`.
 
-La règle 2 corrige un défaut de la police qui touchera aussi l'affichage du site
-pour les passkeys FIDO2 (tâche #42) : le corriger ici le corrige pour les deux.
+Rule 2 fixes a font defect that will also affect the site display for FIDO2
+passkeys (task #42): fixing it here fixes it for both.
 
-## Erreurs
+## Errors
 
-| situation | réponse |
+| situation | response |
 |---|---|
-| applet non sélectionné | `6A82` |
-| commande inconnue | `6D00` |
-| PUT au-delà de seize comptes | `6A84` (mémoire pleine) |
-| nom inconnu sur CALCULATE / DELETE / RENAME | `6A82` |
-| défi de longueur ≠ 8 | `6A80` |
-| appui non donné en quinze secondes | `6985` |
-| secret plus long que 64 octets | `6A80` |
+| applet not selected | `6A82` |
+| unknown command | `6D00` |
+| PUT beyond sixteen accounts | `6A84` (memory full) |
+| unknown name on CALCULATE / DELETE / RENAME | `6A82` |
+| challenge of length ≠ 8 | `6A80` |
+| press not given within fifteen seconds | `6985` |
+| secret longer than 64 bytes | `6A80` |
 
-Toute donnée venue de l'hôte est bornée avant usage : longueur de nom, longueur
-de secret, longueur de défi, nombre de TLV. C'est la surface d'attaque de ce
-mode, et elle passera par `niphar-security-auditor` avant fusion.
+Every piece of host-supplied data is bounded before use: name length, secret
+length, challenge length, number of TLVs. This is the attack surface of this
+mode, and it will go through `niphar-security-auditor` before merging.
 
 ## Tests
 
-Norme TDD du projet : test écrit d'abord, rouge constaté, vert après, et
-**mutation obligatoire** pour prouver qu'il mord.
+The project's TDD norm: test written first, red observed, green after, and
+**mandatory mutation** to prove that it bites.
 
-- `oath_proto` — troncature RFC 4226 sur les vecteurs de la RFC ; découpe
-  `SEND REMAINING` avec douze comptes ; refus des commandes hors portée ; bornes
-  sur chaque longueur venue de l'hôte.
-- `oath_name` — issuer extrait, caractères sans glyphe rendus visibles,
-  troncature marquée. **Piège à éviter** : comparer un nom à une constante ne
-  prouve rien sur le fait que deux noms *différents* restent *distinguables*.
-  Les assertions comparent des paires de noms entre elles, comme
-  `screen_op_has_deadline()` compare les deux familles d'opérations.
-- `sec_store` v2 — bornes de slot, refus des longueurs excessives, invariant
-  « aucun secret ne sort par une fonction publique autre que
-  `sec_store_get_secret()` ».
+- `oath_proto` — RFC 4226 truncation on the RFC's vectors; `SEND REMAINING`
+  chunking with twelve accounts; refusal of out-of-scope commands; bounds on
+  every host-supplied length.
+- `oath_name` — issuer extracted, glyph-less characters made visible,
+  truncation marked. **Trap to avoid**: comparing a name against a constant
+  proves nothing about whether two *different* names stay *distinguishable*.
+  The assertions compare pairs of names against each other, the way
+  `screen_op_has_deadline()` compares the two families of operations.
+- `sec_store` v2 — slot bounds, refusal of excessive lengths, invariant “no
+  secret leaves through any public function other than
+  `sec_store_get_secret()`”.
 
-Validation matérielle, en fin de parcours : `ykman oath accounts add` pour un
-compte de test, puis `ykman oath accounts code <nom>` avec appui réel, code
-vérifié contre `oathtool` sur le même secret et le même instant.
+Hardware validation, at the end of the run: `ykman oath accounts add` for a
+test account, then `ykman oath accounts code <name>` with a real press, code
+checked against `oathtool` on the same secret and the same instant.
 
-## Risques
+## Risks
 
-**Le seul risque protocolaire sérieux est levé** : on a lu la source de `ykman`
-plutôt que de supposer, et le mécanisme d'attente (WTX) existe déjà et tourne.
+**The only serious protocol risk is cleared**: we read `ykman`'s source rather
+than assuming, and the waiting mechanism (WTX) already exists and runs.
 
-Reste à surveiller :
+Left to watch:
 
-- **La durée de vie de l'attente.** `dongle_confirm()` bloque la tâche CCID
-  jusqu'à quinze secondes. Le chemin de démontage USB pendant l'attente est déjà
-  traité dans `ccid.c` (`s_shutdown`) ; il faut vérifier qu'OATH emprunte bien ce
-  même chemin et ne le contourne pas.
-- **La migration des douze comptes.** Elle passe par `ykman oath accounts add`,
-  donc par `PUT` : un défaut de bornage sur `PUT` se manifesterait pendant la
-  migration, avec les vrais secrets en main. Les tests de bornes doivent être
-  verts *avant* le premier compte réel.
+- **The lifetime of the wait.** `dongle_confirm()` blocks the CCID task for up
+  to fifteen seconds. The USB teardown path during the wait is already handled
+  in `ccid.c` (`s_shutdown`); it must be checked that OATH really takes that
+  same path and does not bypass it.
+- **The migration of the twelve accounts.** It goes through
+  `ykman oath accounts add`, hence through `PUT`: a bounding defect on `PUT`
+  would show up during the migration, with the real secrets in hand. The bounds
+  tests must be green *before* the first real account.

@@ -1,76 +1,76 @@
-# Coffre Niphar — socle firmware et MSC brut
+# Niphar chest — firmware foundation and raw MSC
 
-Design validé le 2026-08-06. Premier incrément du firmware du coffre.
+Design validated on 2026-08-06. First increment of the chest firmware.
 
-## 1. Problème
+## 1. Problem
 
-Le matériel du coffre est conçu, revu et parti en fabrication ; le dépôt ne
-contient que `README.md` et `docs/HARDWARE.md`. Il n'existe aucune ligne de
-firmware, aucun build, aucun outillage.
+The chest hardware is designed, reviewed and has gone to manufacturing; the
+repo contains only `README.md` and `docs/HARDWARE.md`. There is not a single
+line of firmware, no build, no tooling.
 
-Le coffre vise trois usages successifs — clé USB multi-ISO, token PGP/FIDO,
-stockage amovible — mais aucun n'est atteignable tant que les deux chemins
-matériels qui les portent tous ne sont pas prouvés : l'accès à la microSD, et
-l'énumération en périphérique USB haute vitesse.
+The chest targets three successive uses — multi-ISO USB stick, PGP/FIDO token,
+removable storage — but none is reachable until the two hardware paths that
+carry them all are proven: access to the microSD, and enumeration as a
+high-speed USB device.
 
-Le seul matériel disponible est le kit **JC-ESP32P4-M3-DEV**.
+The only hardware available is the **JC-ESP32P4-M3-DEV** kit.
 
-## 2. Ce que le kit prouve, et ce qu'il ne prouve pas
+## 2. What the kit proves, and what it does not
 
-Le kit est un substitut valide pour cet incrément. La microSD y est câblée à
-l'identique du coffre :
+The kit is a valid stand-in for this increment. Its microSD is wired
+identically to the chest's:
 
-| Signal | Coffre (`docs/HARDWARE.md`) | Kit (BSP JCZN) |
+| Signal | Chest (`docs/HARDWARE.md`) | Kit (JCZN BSP) |
 |---|---|---|
 | CLK | 43 | `BSP_SD_CLK` = 43 |
 | CMD | 44 | `BSP_SD_CMD` = 44 |
 | D0–D3 | 39, 40, 41, 42 | `BSP_SD_D0..D3` = 39, 40, 41, 42 |
 
-Source : `1-Demo/IDF-DEMO/NoDisplay/common_components/espressif__esp32_p4_function_ev_board/include/bsp/esp32_p4_function_ev_board.h:71-76`,
-et le `.c` associé qui monte en `SDMMC_HOST_SLOT_0`, `SDMMC_FREQ_HIGHSPEED`,
-`SDMMC_SLOT_NO_CD` / `SDMMC_SLOT_NO_WP`. Conforme au silicium : « card one
-(SDMMC_HOST_SLOT_0) signals are multiplexed with GPIO39–GPIO48 … via IO MUX »,
-*ESP32-P4 Series Datasheet v0.7*, p. 81.
+Source: `1-Demo/IDF-DEMO/NoDisplay/common_components/espressif__esp32_p4_function_ev_board/include/bsp/esp32_p4_function_ev_board.h:71-76`,
+and the associated `.c` which brings it up in `SDMMC_HOST_SLOT_0`,
+`SDMMC_FREQ_HIGHSPEED`, `SDMMC_SLOT_NO_CD` / `SDMMC_SLOT_NO_WP`. Consistent
+with the silicon: “card one (SDMMC_HOST_SLOT_0) signals are multiplexed with
+GPIO39–GPIO48 … via IO MUX”, *ESP32-P4 Series Datasheet v0.7*, p. 81.
 
-Le chemin USB device HS existe sur les deux : `SOC_USB_OTG_PERIPH_NUM 2`,
+The HS USB device path exists on both: `SOC_USB_OTG_PERIPH_NUM 2`,
 `SOC_USB_UTMI_PHY_NUM 1` (`components/soc/esp32p4/include/soc/soc_caps.h:485-489`,
 ESP-IDF v5.5.2).
 
-**Ce que le kit ne prouve pas.** Il a un CH340C et un bouton BOOTMODE ; le
-coffre n'a ni bouton reset ni accès matériel au mode download. Sur le kit, un
-firmware qui casse l'USB-Serial-JTAG se répare en trois secondes ; sur le
-coffre, il se répare au fer à souder. Cette asymétrie ne se teste pas — elle se
-tient par construction (§6).
+**What the kit does not prove.** It has a CH340C and a BOOTMODE button; the
+chest has neither a reset button nor hardware access to download mode. On the
+kit, firmware that breaks the USB-Serial-JTAG is repaired in three seconds; on
+the chest, it is repaired with a soldering iron. That asymmetry cannot be
+tested — it holds by construction (§6).
 
-## 3. Portée
+## 3. Scope
 
-Dans la portée : projet ESP-IDF, accès secteur à la microSD, énumération MSC
-exposant la carte en brut, console de debug, outillage anti-régression.
+In scope: ESP-IDF project, sector access to the microSD, MSC enumeration
+exposing the card raw, debug console, anti-regression tooling.
 
-Hors portée : multi-ISO, PGP/FIDO, liaison P4↔C6, OTA. Chacun aura sa propre
+Out of scope: multi-ISO, PGP/FIDO, P4↔C6 link, OTA. Each will get its own
 spec.
 
 ## 4. Architecture
 
-Principe structurant : **le MSC possède la carte SD, exclusivement.** Tant que
-le firmware expose des blocs bruts à l'hôte, il ne monte pas FATFS de son côté.
-Deux systèmes de fichiers qui écrivent le même média sans se concerter
-corrompent le média — ce n'est pas un risque, c'est une certitude. `sd_card`
-sert des secteurs, rien de plus.
+Structuring principle: **MSC owns the SD card, exclusively.** As long as the
+firmware exposes raw blocks to the host, it does not mount FATFS on its own
+side. Two filesystems writing the same medium without coordinating corrupt the
+medium — that is not a risk, it is a certainty. `sd_card` serves sectors,
+nothing more.
 
 ```
 main/
-├── board.h              pinout + garde-fous compile-time
-├── main.c               app_main : sd → usb → console
-├── storage/sd_card.*    SDMMC slot 0, 4-bit, accès secteur
-├── usb/usb_device.*     esp_tinyusb, port HS, descripteurs
-├── usb/msc_disk.*       callbacks tud_msc_* → secteurs SD
-└── console/console.*    esp_console sur USB-Serial-JTAG
+├── board.h              pinout + compile-time guardrails
+├── main.c               app_main: sd → usb → console
+├── storage/sd_card.*    SDMMC slot 0, 4-bit, sector access
+├── usb/usb_device.*     esp_tinyusb, HS port, descriptors
+├── usb/msc_disk.*       tud_msc_* callbacks → SD sectors
+└── console/console.*    esp_console over USB-Serial-JTAG
 ```
 
-### Frontières
+### Boundaries
 
-**`sd_card`** — détient le `sdmmc_card_t*`. Ne connaît ni l'USB ni FATFS.
+**`sd_card`** — holds the `sdmmc_card_t*`. Knows nothing of USB or FATFS.
 
 ```c
 esp_err_t sd_probe(void);                 /* (re)détecte la carte */
@@ -81,150 +81,151 @@ esp_err_t sd_read_sectors (void *dst, uint32_t start, uint32_t count);
 esp_err_t sd_write_sectors(const void *src, uint32_t start, uint32_t count);
 ```
 
-Pas de card-detect matériel sur le coffre : `sd_probe()` est appelé au boot et
-re-déclenchable depuis la console. La règle d'usage actée — carte insérée et
-retirée hors tension — rend inutile toute tâche de polling à ce stade.
+No hardware card-detect on the chest: `sd_probe()` is called at boot and can be
+re-triggered from the console. The usage rule that was settled — card inserted
+and removed with the power off — makes any polling task pointless at this
+stage.
 
-**`msc_disk`** — implémente les callbacks TinyUSB (`inquiry`,
-`test_unit_ready`, `capacity`, `read10`, `write10`, `start_stop`). Ne connaît
-que l'interface ci-dessus. Signale *no medium* quand `sd_present()` est faux,
-plutôt que d'échouer bruyamment.
+**`msc_disk`** — implements the TinyUSB callbacks (`inquiry`,
+`test_unit_ready`, `capacity`, `read10`, `write10`, `start_stop`). Knows only
+the interface above. Reports *no medium* when `sd_present()` is false, rather
+than failing loudly.
 
-**`usb_device`** — init esp_tinyusb sur le port HS, descripteurs, VID/PID.
-Ignore tout de la carte SD.
+**`usb_device`** — esp_tinyusb init on the HS port, descriptors, VID/PID. Knows
+nothing about the SD card.
 
-**`console`** — REPL `esp_console` sur l'USB-Serial-JTAG uniquement. Commandes
+**`console`** — `esp_console` REPL over the USB-Serial-JTAG only. Commands
 `sd info`, `sd probe`, `usb status`.
 
-### Flux de données
+### Data flow
 
 ```
-hôte USB ──HS──> TinyUSB ──> msc_disk ──> sd_card ──SDMMC 4-bit──> microSD
-hôte USB ──FS──> USB-Serial-JTAG ──> console ──> sd_card (lecture seule)
+USB host ──HS──> TinyUSB ──> msc_disk ──> sd_card ──SDMMC 4-bit──> microSD
+USB host ──FS──> USB-Serial-JTAG ──> console ──> sd_card (read-only)
 ```
 
-Les deux chemins USB sont physiquement distincts (contrôleurs séparés, ports de
-hub séparés sur le coffre). Leur indépendance est une propriété à vérifier, pas
-à supposer : voir §7.
+The two USB paths are physically distinct (separate controllers, separate hub
+ports on the chest). Their independence is a property to be verified, not
+assumed: see §7.
 
-### Deux pièges connus
+### Two known traps
 
-1. **Buffers DMA.** `sdmmc_read_sectors()` exige de la mémoire DMA-capable ;
-   les buffers que TinyUSB présente aux callbacks ne le sont pas
-   nécessairement, et `read10_cb` peut arriver à un offset non aligné sur un
-   secteur. `msc_disk` passe par un bounce buffer `MALLOC_CAP_DMA` et gère les
-   offsets et longueurs partiels.
-2. **VID/PID.** Le PID doit être distinct de celui de `KeSp_firmware` pour ne
-   pas troubler les règles udev et les clients côté hôte.
+1. **DMA buffers.** `sdmmc_read_sectors()` requires DMA-capable memory; the
+   buffers TinyUSB hands to the callbacks are not necessarily so, and
+   `read10_cb` can arrive at an offset that is not sector-aligned. `msc_disk`
+   goes through a `MALLOC_CAP_DMA` bounce buffer and handles partial offsets
+   and lengths.
+2. **VID/PID.** The PID must differ from `KeSp_firmware`'s so as not to confuse
+   udev rules and host-side clients.
 
-## 5. Gestion des erreurs
+## 5. Error handling
 
-- Absence de carte au boot : log en warning, `sd_present()` faux, le device USB
-  énumère quand même et répond *medium not present*. Le coffre reste flashable
-  et interrogeable — jamais de panique au démarrage pour une carte absente.
-- Erreur de lecture ou d'écriture secteur : remontée en erreur SCSI à l'hôte,
-  log au niveau erreur. Pas de retry silencieux qui masquerait une carte
-  mourante.
-- Échec d'init USB : log en erreur, la console reste vivante. La console est le
-  dernier recours de diagnostic ; rien ne doit pouvoir l'emporter.
+- No card at boot: warning log, `sd_present()` false, the USB device enumerates
+  anyway and answers *medium not present*. The chest stays flashable and
+  queryable — never a panic at startup over a missing card.
+- Sector read or write error: reported as a SCSI error to the host, logged at
+  error level. No silent retry that would mask a dying card.
+- USB init failure: error log, the console stays alive. The console is the last
+  diagnostic resort; nothing must be able to take it down.
 
-## 6. Garde-fous du coffre
+## 6. Chest guardrails
 
-Le coffre n'a pas de bouton reset ni de mode download matériel. Deux règles en
-découlent, et aucune ne se vérifie à l'exécution sur le kit :
+The chest has neither a reset button nor a hardware download mode. Two rules
+follow, and neither can be verified at runtime on the kit:
 
-- **Ne jamais réaffecter GPIO24/25** (USB-Serial-JTAG). `board.h` porte un
-  `_Static_assert` par pin déclaré ; `scripts/check.sh` échoue si le code
-  réaffecte ces GPIO.
-- **Ne jamais entrer en deep-sleep permanent.** `scripts/check.sh` échoue sur
-  l'apparition de `esp_deep_sleep_start`.
+- **Never reassign GPIO24/25** (USB-Serial-JTAG). `board.h` carries one
+  `_Static_assert` per declared pin; `scripts/check.sh` fails if the code
+  reassigns those GPIOs.
+- **Never enter permanent deep-sleep.** `scripts/check.sh` fails on the
+  appearance of `esp_deep_sleep_start`.
 
-La console est figée sur l'USB-Serial-JTAG dans `sdkconfig.defaults` : le
-coffre n'a pas d'UART accessible.
+The console is pinned to the USB-Serial-JTAG in `sdkconfig.defaults`: the chest
+has no accessible UART.
 
-## 7. Vérification
+## 7. Verification
 
-Sur le kit, console via USB-Serial-JTAG :
+On the kit, console over USB-Serial-JTAG:
 
-- `sd info` → capacité cohérente avec la carte, bus 4-bit, fréquence négociée.
-- `sd probe` sans carte → absence signalée proprement, pas de panique.
+- `sd info` → capacity consistent with the card, 4-bit bus, negotiated
+  frequency.
+- `sd probe` with no card → absence reported cleanly, no panic.
 
-Sur l'hôte, câble branché sur le port HS :
+On the host, cable plugged into the HS port:
 
-- `lsblk` montre un disque de la bonne taille.
-- Secteur 0 lisible (`dd` + `xxd`), signature MBR si la carte est partitionnée.
-- Montage lecture seule, lecture d'un fichier connu, démontage.
-- Écriture : copie d'un fichier, `sync`, démontage, remontage, relecture —
-  contenu identique.
-- **Coexistence** : pendant que le disque est monté sur l'hôte, la console
-  répond toujours. C'est ce test, et lui seul, qui prouve que les deux chemins
-  USB sont indépendants.
+- `lsblk` shows a disk of the right size.
+- Sector 0 readable (`dd` + `xxd`), MBR signature if the card is partitioned.
+- Read-only mount, reading a known file, unmount.
+- Write: copy a file, `sync`, unmount, remount, re-read — identical content.
+- **Coexistence**: while the disk is mounted on the host, the console still
+  answers. That test, and only that test, proves the two USB paths are
+  independent.
 
-Dette de vérification assumée, à lever quand le coffre arrivera : comportement
-de récupération sans bouton, et liaison P4↔C6.
+Verification debt accepted, to be cleared when the chest arrives: recovery
+behaviour without a button, and the P4↔C6 link.
 
-### Résultats du bring-up (2026-08-06, kit JC-ESP32P4-M3-DEV, carte SE04G 4 Go)
+### Bring-up results (2026-08-06, JC-ESP32P4-M3-DEV kit, SE04G 4 GB card)
 
-Tout est vert côté fonctionnel : `INQUIRY` et `READ CAPACITY` corrects vus du
-noyau (`Direct-Access Niphar Coffre microSD`, 3,64 Gio), partitionnement et
-formatage depuis l'hôte, 64 Mio écrits puis relus **après démontage** avec des
-empreintes SHA-256 identiques. Le chemin USB → MSC → SDMMC est prouvé dans les
-deux sens.
+Everything is green on the functional side: `INQUIRY` and `READ CAPACITY`
+correct as seen from the kernel (`Direct-Access Niphar Coffre microSD`,
+3.64 GiB), partitioning and formatting from the host, 64 MiB written then
+re-read **after unmounting** with identical SHA-256 digests. The USB → MSC →
+SDMMC path is proven in both directions.
 
-La question **VDDPST_5** est tranchée sur le kit : la carte est détectée par le
-chemin *alimentation externe*, sans le LDO interne — conforme à l'hypothèse du
-coffre. Reste à confirmer sur la netlist que le coffre relie bien ce pin au
-3,3 V ; le kit ne prouve que le kit.
+The **VDDPST_5** question is settled on the kit: the card is detected through
+the *external supply* path, without the internal LDO — consistent with the
+chest's hypothesis. It remains to be confirmed on the netlist that the chest
+does tie that pin to 3.3 V; the kit only proves the kit.
 
-Débits :
+Throughput:
 
-| | avant | après | SDMMC brut |
+| | before | after | raw SDMMC |
 |---|---|---|---|
-| lecture | 5,8 Mio/s | **9,4 Mio/s** | 18,3 Mio/s |
-| écriture | 2,4 Mio/s | **5,3 Mio/s** | non mesuré |
+| read | 5.8 MiB/s | **9.4 MiB/s** | 18.3 MiB/s |
+| write | 2.4 MiB/s | **5.3 MiB/s** | not measured |
 
-Le facteur était `CFG_TUD_MSC_EP_BUFSIZE` : TinyUSB réclamait la carte par blocs
-de 4 Kio, porté à 32 Kio. L'hypothèse initiale — un tampon de rebond qui
-dominerait — était fausse, et les compteurs de `msc_disk` l'ont montré :
-0 secteur rebondi sur 4650, chemin DMA direct à 100 %.
+The factor was `CFG_TUD_MSC_EP_BUFSIZE`: TinyUSB was asking the card for 4 KiB
+blocks, raised to 32 KiB. The initial hypothesis — a bounce buffer that would
+dominate — was wrong, and `msc_disk`'s counters showed it: 0 bounced sectors
+out of 4650, direct DMA path 100 % of the time.
 
-Il reste un facteur deux en lecture (9,4 contre 18,3 Mio/s). La cause est
-structurelle : chaque bloc est traité **synchroniquement**, l'USB attend le
-SDMMC sans recouvrement. Le combler demande un double tampon — une vraie
-refonte de `msc_disk`, à décider comme un incrément à part.
+A factor of two remains on reads (9.4 against 18.3 MiB/s). The cause is
+structural: each block is handled **synchronously**, USB waits for SDMMC with
+no overlap. Closing that gap requires double buffering — a real rework of
+`msc_disk`, to be decided as a separate increment.
 
-Pour l'écriture, 5,3 Mio/s est plausible pour une SE04G d'entrée de gamme ; ce
-n'est pas démontré, faute d'une mesure d'écriture SDMMC brute (elle détruirait
-le contenu de la carte). À reprendre sur une carte sacrifiable.
+For writes, 5.3 MiB/s is plausible for an entry-level SE04G; it is not
+demonstrated, for lack of a raw SDMMC write measurement (it would destroy the
+card's content). To be revisited on an expendable card.
 
-## 8. Décisions et alternatives écartées
+## 8. Decisions and rejected alternatives
 
-| Décision | Alternative écartée | Raison |
+| Decision | Rejected alternative | Reason |
 |---|---|---|
-| Cible de build unique | deux boards `boards/<name>/` | zéro delta de pinout entre kit et coffre ; deux `board.h` jumeaux à garder synchro ne protègent de rien |
-| Callbacks `tud_msc_*` maison | composant `tinyusb_msc_storage` | le composant est pensé « une SD = un volume » ; le multi-ISO à média commutable et le composite CCID+HID exigent le contrôle des callbacks. Écrire la bonne couche tout de suite évite de la jeter |
-| Dépendance sur `espressif/tinyusb` brut | wrapper `espressif/esp_tinyusb` | découvert à l'implémentation, voir §9 |
+| Single build target | two boards `boards/<name>/` | zero pinout delta between kit and chest; two twin `board.h` to keep in sync protect against nothing |
+| Hand-written `tud_msc_*` callbacks | `tinyusb_msc_storage` component | the component is built around “one SD = one volume”; switchable-media multi-ISO and the composite CCID+HID require control over the callbacks. Writing the right layer straight away avoids throwing it away |
+| Dependency on raw `espressif/tinyusb` | `espressif/esp_tinyusb` wrapper | discovered during implementation, see §9 |
 
-## 9. Correction — pourquoi TinyUSB brut
+## 9. Correction — why raw TinyUSB
 
-La décision « callbacks maison » avait été chiffrée en supposant qu'on garderait
-`espressif/esp_tinyusb` pour le PHY, la tâche et les descripteurs. C'est faux :
-le wrapper ne sépare pas la classe MSC de sa propre couche de stockage.
+The “hand-written callbacks” decision had been costed assuming we would keep
+`espressif/esp_tinyusb` for the PHY, the task and the descriptors. That is
+false: the wrapper does not separate the MSC class from its own storage layer.
 
-- `CFG_TUD_MSC` dérive de `CONFIG_TINYUSB_MSC_ENABLED`, et ce même Kconfig
-  décide de compiler `tinyusb_msc.c`, qui définit `tud_msc_read10_cb` et
-  consorts en **symboles forts** — collision directe avec les nôtres.
-- Contourner par injection de macros à la compilation fonctionne jusqu'à
-  l'édition de liens : `tinyusb.c` appelle `msc_storage_mount_to_usb()` en dur
-  depuis `tud_mount_cb()`. Aller plus loin voudrait dire forger les symboles
-  internes du composant — un prix que le projet ne doit pas payer.
+- `CFG_TUD_MSC` derives from `CONFIG_TINYUSB_MSC_ENABLED`, and that same
+  Kconfig decides whether to compile `tinyusb_msc.c`, which defines
+  `tud_msc_read10_cb` and friends as **strong symbols** — a direct collision
+  with ours.
+- Working around it by injecting macros at compile time works right up to link
+  time: `tinyusb.c` calls `msc_storage_mount_to_usb()` hard-coded from
+  `tud_mount_cb()`. Going further would mean forging the component's internal
+  symbols — a price this project must not pay.
 
-Le projet dépend donc directement de `espressif/tinyusb`, avec son propre
-`main/tusb_config.h` et, dans `main/usb/usb_device.c`, l'initialisation du PHY
-UTMI (`usb_new_phy`), une tâche `tud_task()` et les callbacks de descripteurs.
-Le coffre étant alimenté par le bus, tout le monitoring VBUS du wrapper est sans
-objet — ce qui réduit nettement ce qu'il fallait reprendre.
+The project therefore depends directly on `espressif/tinyusb`, with its own
+`main/tusb_config.h` and, in `main/usb/usb_device.c`, the UTMI PHY
+initialisation (`usb_new_phy`), a `tud_task()` task and the descriptor
+callbacks. Since the chest is bus-powered, all of the wrapper's VBUS monitoring
+is moot — which markedly reduces what had to be reimplemented.
 
-Coût réel : environ 120 lignes de plomberie, en échange du contrôle total des
-callbacks et d'une dépendance de moins.
-| MSC propriétaire exclusif de la SD | montage FATFS simultané côté firmware | double accès concurrent au même média = corruption |
+Real cost: about 120 lines of plumbing, in exchange for total control of the
+callbacks and one dependency fewer.
+| MSC exclusive owner of the SD | simultaneous FATFS mount on the firmware side | two concurrent accesses to the same medium = corruption |
