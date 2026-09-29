@@ -193,6 +193,82 @@ if [ "$witness_seen" -eq 0 ]; then
     echo "       phase complète)."
 fi
 
+# --- Garde-fou 5 : le cloisonnement du magasin, sens OTP -> OATH -----------
+# main/security/otp_hid.c n'entre PAS dans le harnais hôte (test/) : il appelle
+# esp_timer et esp_log, donc il ne compile pas sur la machine. Choix assumé —
+# mais il laisse la ligne la plus sensible de ce fichier sans aucun oracle.
+#
+# Cette ligne est le refus de `hook_compute_hmac()` quand le slot visé n'est
+# PAS un slot CR-HMAC. Ce qu'elle empêche : le mapping OTP est figé à
+# 0x30 -> slot 0 et 0x38 -> slot 1, tandis qu'`oath_do_put()` attribue le
+# premier slot vide en partant de 0. Sur une clé neuve, les deux premiers
+# comptes TOTP de Mae atterrissent donc exactement là. Sans ce refus, un hôte
+# ferait signer par la clé un défi de 64 octets QU'IL CHOISIT avec un secret
+# TOTP — c'est-à-dire un oracle HMAC sur la graine d'un compte —, sous un écran
+# annonçant « CLE OTP ». Le sens inverse, lui, est gardé par
+# oath_slot_is_oath() ; ici, rien d'autre que cette ligne.
+#
+# Deux étages, comme le garde-fou 4 : la forme du source, puis le binaire.
+
+# 5a. Dans hook_compute_hmac(), le refus doit précéder la lecture du secret.
+# Vérifier la seule PRÉSENCE du symbole laisserait passer un appel déplacé
+# APRÈS sec_store_get_secret() — le secret serait déjà sorti du magasin.
+if ! awk '
+/^static bool hook_compute_hmac\(/ { dans = 1; next }
+dans && /^}/                       { dans = 0 }
+dans && /if \(!sec_store_is_hmac_slot\(/ { garde = FNR }
+dans && /sec_store_get_secret\(/         { if (!lecture) lecture = FNR }
+END {
+    if (!garde)   { print "  le refus « if (!sec_store_is_hmac_slot(...) »  est absent"; exit 1 }
+    if (!lecture) { print "  sec_store_get_secret() ne figure plus dans la fonction"; exit 1 }
+    if (garde > lecture) {
+        printf "  le refus est ligne %d, la lecture du secret ligne %d : trop tard\n", garde, lecture
+        exit 1
+    }
+}
+' main/security/otp_hid.c; then
+    echo "ERREUR : main/security/otp_hid.c — hook_compute_hmac() ne refuse plus"
+    echo "         un slot qui n'est pas CR-HMAC avant d'en lire le secret."
+    echo "         Le mode OTP calculerait alors un HMAC sur un secret TOTP :"
+    echo "         un hôte choisit le défi, donc obtient un oracle sur la graine"
+    echo "         d'un compte de Mae, sous un écran annonçant « CLE OTP »."
+    echo "         Ce fichier n'est dans aucun test hôte — d'où ce garde-fou."
+    fail=1
+fi
+
+# 5b. Le binaire. Une référence non résolue dans otp_hid.c.obj prouve que
+# l'appel a VRAIMENT été compilé — un « #if 0 » ou une macro vidée passeraient
+# le contrôle de forme ci-dessus. Le témoin positif est sec_store_get_secret :
+# s'il manque aussi, c'est nm qui est muet (LTO, chemin déplacé), et l'absence
+# du premier symbole ne prouverait alors plus rien.
+otp_obj_vu=0
+for d in build build_jc_devkit build_niphar_chest build_wt9932_key; do
+    obj="$d/esp-idf/main/CMakeFiles/__idf_main.dir/security/otp_hid.c.obj"
+    [ -f "$obj" ] || continue
+    # `|| true` : grep sort en 1 quand il ne trouve rien, et `set -e` couperait
+    # le script avant les garde-fous suivants.
+    syms="$(nm -u "$obj" 2>/dev/null | grep -oE '(sec_store_is_hmac_slot|sec_store_get_secret)$' | sort -u || true)"
+    printf '%s\n' "$syms" | grep -qx sec_store_get_secret || {
+        echo "ERREUR : $d — nm ne voit pas sec_store_get_secret dans otp_hid.c.obj."
+        echo "         Le contrôle binaire du garde-fou 5 ne prouve donc rien."
+        echo "         Si hook_compute_hmac() a changé exprès, corriger ce témoin."
+        fail=1
+        continue
+    }
+    if ! printf '%s\n' "$syms" | grep -qx sec_store_is_hmac_slot; then
+        echo "ERREUR : $d — otp_hid.c.obj lit un secret sans appeler"
+        echo "         sec_store_is_hmac_slot : le cloisonnement OTP -> OATH est"
+        echo "         compilé hors du firmware. Voir sec_store.h et le"
+        echo "         commentaire de hook_compute_hmac()."
+        fail=1
+    fi
+    otp_obj_vu=1
+done
+if [ "$otp_obj_vu" -eq 0 ]; then
+    echo "note : aucun otp_hid.c.obj présent — contrôle binaire du garde-fou 5"
+    echo "       non exécuté (il le sera à la phase complète)."
+fi
+
 # Un seul point de sortie pour TOUS les garde-fous : en ajouter un après ce
 # test le rendrait bavard mais inoffensif — c'est exactement l'erreur commise
 # ici le 2026-08-07, et elle ne s'est vue qu'en vérifiant le code de sortie.
