@@ -78,8 +78,30 @@ Précision attendue : ±1 s au réglage, plus < 2 s/jour.
 
 **Côté hôte : `niphar-oath set-time`** (décision de Mae). Pas de service
 système, pas de règle udev : la commande vit dans le client TUI qui existe déjà
-et qui est compatible lecteur d'écran. Rien de nouveau à installer, et rien à
-réinstaller sur une machine inconnue.
+et qui est compatible lecteur d'écran.
+
+**L'HEURE VIT DANS LE COFFRE, PAS DANS LE CLAVIER.** C'était incohérent dans la
+première version de ce document, et KeSp l'a relevé : `niphar-oath` parle au
+COFFRE en CCID. Faire détenir l'heure au clavier aurait exigé une commande CDC
+de plus chez eux **et** un client hôte bilingue. L'heure part donc là où le
+client sait déjà parler :
+
+- `niphar-oath set-time` envoie l'heure au coffre par le canal CCID existant
+  (commande d'extension de l'applet OATH — hors du jeu YKOATH, que `ykman`
+  ignorera simplement) ;
+- le coffre l'entretient en monotone sur `esp_timer`. **Il n'existe que branché
+  et redémarre au débranchement : son heure s'efface donc toute seule.** C'est
+  une invalidation par construction, pas un drapeau à tenir — aucune heure
+  périmée n'est possible ;
+- l'heure survit à une bascule de mode USB (le coffre ne redémarre pas), donc
+  elle vit hors de l'applet, à côté de `sec_confirm` et non dedans ;
+- le coffre publie **« heure valide », bit 3 de `0x05`**. Le clavier affiche
+  « NO TIME » quand il vaut 0 et ne demande aucun code ;
+- le champ heure de la requête DMA disparaît.
+
+`set-time` n'exige **aucun appui** : il ne révèle rien. Conséquence de flot à
+connaître : le coffre doit être en mode OATH pour recevoir l'heure, puisque
+c'est le CCID qui la porte.
 
 **Limite à écrire au contrat** : un hôte qui ment sur l'heure fait calculer les
 codes d'une autre fenêtre. Il n'en apprend rien — ils ne s'affichent que sur
@@ -133,14 +155,26 @@ d'en créer une seconde qui en divergerait.
 0x38       confirmation 0x5A         maitre
 0x39       echo du numero d'instance maitre
 0x3A       mode USB demande          maitre
-0x3B       numero de requete         maitre   (sonnette : incremente = requete prete)
-0x3C-0x3F  reserve                   maitre
+0x3B       reserve                   maitre
+0x3C       numero de requete         maitre   (sonnette : incremente = requete prete)
+0x3D-0x3F  reserve                   maitre
 ```
 
 Invariants de la v2, tous tenus : coffre `0x00`–`0x37` (56 o, **14 mots**
 pleins alignés), maître `0x38`–`0x3F` (8 o, **2 mots**), **aucun mot partagé**,
 CRC dernier champ du coffre, étendue **contiguë** depuis zéro. Total 64 =
 `SOC_SPI_MAXIMUM_BUFFER_SIZE` du P4.
+
+**LA SONNETTE EST DANS LE SECOND MOT DU MAÎTRE, ET CE N'EST PAS ESTHÉTIQUE.**
+Relevé par KeSp, et confirmé par le code : `link_spi.c:365` appelle
+`spi_slave_hd_write_buffer(LINK_HOST, LINK_REG_USER_CONFIRM, &cleared, 1)` pour
+effacer l'octet de confirmation consommé — et le pilote écrit **par mots de 32
+bits**. Cette écriture d'un octet est donc une lecture-modification-écriture sur
+tout le premier mot du maître. Une sonnette logée dedans serait écrasée quand
+elle tombe dans ces quelques cycles, et **la requête ne serait jamais servie, en
+silence**. C'est la fenêtre que le §5 du contrat décrit déjà pour l'octet de
+mode — sauf que le mode se relit et se réécrit, alors qu'une sonnette ne se
+relit pas. Elle vit donc en `0x3C`, dans le mot que le coffre n'écrit jamais.
 
 **Le libellé passe de 42 à 34 octets** par rapport à ce que j'avais annoncé :
 les deux mots du maître et les trois octets de signalisation DMA les prennent.
@@ -151,16 +185,19 @@ les deux mots du maître et les trois octets de signalisation DMA les prennent.
 
 ```
 0x00      commande        (0x01 LIST, 0x02 CODE)
-0x01      argument        (index de compte pour CODE)
-0x02-0x09 heure unix      (64 bits, petit-boutiste)
-0x0A-0x0D reserve
+0x01      argument        (LIST : premier index ; CODE : index du compte)
+0x02-0x0D reserve
 0x0E-0x0F CRC16 sur 0x00..0x0D
 ```
 
 Seize octets, multiple de quatre — le pilote tronque une réception qui ne l'est
-pas. L'heure voyage avec CHAQUE requête plutôt que dans un registre d'état : le
-coffre n'a pas d'horloge à entretenir, il ne fait que calculer avec ce qu'on lui
-donne, et il n'y a donc aucune heure périmée à invalider quelque part.
+pas.
+
+**`LIST` est paginé depuis le premier jour**, sur la suggestion de KeSp : son
+argument est un premier index (`0` = depuis le début), la réponse est bornée à
+512 octets et porte un drapeau « suite ». Douze comptes tiennent aujourd'hui en
+une seule réponse ; la pagination ne coûte rien maintenant et évite une v4 le
+jour où quelqu'un en a quarante.
 
 ### Réponse (RDDMA, longueur annoncée en `0x12-0x13`)
 
@@ -181,10 +218,62 @@ puis CRC16 sur tout ce qui precede
 0x0C-0x0D CRC16 sur 0x00..0x0B
 ```
 
+### Ce que le mode segment exige des deux côtés
+
+Deux obligations, à écrire au contrat parce qu'elles ne se devinent pas au banc.
+
+**Le coffre garde EN PERMANENCE une réception en file** (`spi_slave_hd_queue_trans`
+sur `SPI_SLAVE_CHAN_RX`). Sans réception armée, un WRDMA du maître est **perdu
+sans erreur** — ni de son côté, ni du nôtre. La tâche du lien réarme donc
+immédiatement après chaque segment consommé.
+
+**Les commandes de fin de segment**, relevées dans l'en-tête et non de mémoire
+(`components/hal/esp32p4/include/hal/spi_ll.h:81-90`). En mode une ligne, l'octet
+de fil vaut la commande de base :
+
+| commande | octet | quand |
+|---|---|---|
+| `RDBUF`  | `0x02` | lire les registres partagés |
+| `WRBUF`  | `0x01` | écrire les registres partagés |
+| `WRDMA`  | `0x03` | envoyer le segment de requête |
+| `WR_END` | `0x07` | **après** le WRDMA — clôt le segment en écriture |
+| `RDDMA`  | `0x04` | lire le segment de réponse |
+| `INT0`   | `0x08` | **après** le RDDMA — clôt le segment en lecture |
+
+Références maître : `essl_spi_wrdma_done()` émet `SPI_CMD_HD_WR_END`,
+`essl_spi_rddma_done()` émet `SPI_CMD_HD_INT0`
+(`components/driver/test_apps/components/esp_serial_slave_link/essl_spi.c`).
+
+### L'index peut changer entre LIST et CODE, et c'est sans danger
+
+Un compte peut être ajouté ou effacé par l'hôte entre le moment où le clavier
+lit la liste et celui où il demande un code : l'index qu'il envoie ne désigne
+alors plus le même compte.
+
+**Ce qui rend ça inoffensif, c'est le libellé, pas l'index.** Ce que la
+propriétaire voit avant d'appuyer est le nom que le COFFRE a publié en `0x14` au
+moment de l'armement, jamais la copie que le clavier garde de sa liste. Si
+l'index a glissé, elle voit le nom du compte réellement visé et n'appuie pas.
+C'est exactement la décision 4, et c'est pour ça qu'elle vaut la peine.
+
+**Engagement du clavier** (KeSp) : afficher TOUJOURS le libellé du registre
+pendant l'invite, jamais le nom tiré de son propre `LIST`.
+
+### Les engagements d'IHM du clavier
+
+Ils appartiennent au contrat autant que les octets — le coffre ne peut pas les
+tenir à leur place :
+
+- un code ne s'affiche **jamais** sans appui préalable ;
+- il disparaît à la fin de sa fenêtre, ou dès qu'on navigue ;
+- il n'est **jamais** rafraîchi automatiquement : un nouveau code demande un
+  nouvel appui ;
+- la liste des noms défile librement.
+
 ### Le flot d'un code, bout à bout
 
-1. Le maître écrit sa requête `CODE(index, heure)` en WRDMA, puis incrémente
-   `0x3B`.
+1. Le maître écrit sa requête `CODE(index)` en WRDMA, clôt par `WR_END`, puis
+   incrémente la sonnette `0x3C`.
 2. Le coffre voit la sonnette, **arme `sec_confirm`** avec le libellé du compte :
    `pending_op` = `SEC_OP_OATH_CODE`, instance publiée, libellé publié en
    `0x14`. Rien n'est calculé, rien n'est mis en file.
@@ -193,7 +282,8 @@ puis CRC16 sur tout ce qui precede
    lue** en `0x39` — exactement le protocole de confirmation de la v2, inchangé.
 5. Le coffre vérifie les deux, calcule le HMAC, met le segment en file, publie
    `type`, `numero` et `longueur`.
-6. Le maître voit le numéro changer, lit le segment en RDDMA, affiche.
+6. Le maître voit le numéro changer, lit le segment en RDDMA, clôt par `INT0`,
+   et affiche.
 
 **Sans l'étape 4, l'étape 5 n'arrive jamais** : aucun code n'est mis en file
 sans appui accordé. Le segment se consomme une fois et le coffre l'efface —
