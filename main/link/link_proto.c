@@ -56,6 +56,23 @@ void link_proto_pack_status(uint8_t *regs, const link_status_t *st)
      * pour valide. */
     regs[LINK_REG_USB_MODE_ACTIVE] = st->usb_mode_active;
 
+    /* Le libellé et sa longueur. La QUEUE EST MISE À ZÉRO, et ce n'est pas de
+     * la coquetterie : un libellé plus court que le précédent laisserait sinon
+     * la fin de l'ancien dans le bloc, et un maître qui ignorerait `label_len`
+     * afficherait un nom composé de DEUX comptes. Le même défaut avait été
+     * corrigé sur l'étiquette de remplacement OATH. */
+    {
+        const uint8_t n = st->label_len > LINK_LABEL_MAX ? LINK_LABEL_MAX
+                                                         : st->label_len;
+        regs[LINK_REG_LABEL_LEN] = n;
+        memcpy(&regs[LINK_REG_LABEL], st->label, n);
+        memset(&regs[LINK_REG_LABEL + n], 0x00, (size_t)(LINK_LABEL_MAX - n));
+    }
+    regs[LINK_REG_OP_COUNT] = st->op_count;
+    regs[LINK_REG_DMA_KIND] = st->dma_kind;
+    regs[LINK_REG_DMA_SEQ]  = st->dma_seq;
+    put_u16(&regs[LINK_REG_DMA_LEN], st->dma_len);
+
     /*
      * La plage du maître (LINK_REG_MASTER_BASE, dont LINK_REG_USER_CONFIRM) lui
      * appartient : ni écrite ici, ni couverte par le CRC. L'inclure ferait
@@ -98,6 +115,21 @@ bool link_proto_parse_status(const uint8_t *regs, size_t len, link_status_t *out
     out->confirm_count = get_u32(&regs[LINK_REG_CONFIRM_COUNT]);
     out->instance = regs[LINK_REG_INSTANCE];
     out->usb_mode_active = regs[LINK_REG_USB_MODE_ACTIVE];
+
+    /* Une longueur qui déborde le champ est un bloc CORROMPU, pas un bloc à
+     * tronquer : le maître lirait des octets qui ne sont pas le libellé et
+     * afficherait un nom que le coffre n'a jamais composé — exactement ce que
+     * ce champ existe pour empêcher. Refusé même avec un CRC juste, parce que
+     * l'incohérence porte sur le SENS du bloc, pas sur sa transmission. */
+    if (regs[LINK_REG_LABEL_LEN] > LINK_LABEL_MAX) {
+        return false;
+    }
+    out->label_len = regs[LINK_REG_LABEL_LEN];
+    memcpy(out->label, &regs[LINK_REG_LABEL], LINK_LABEL_MAX);
+    out->op_count = regs[LINK_REG_OP_COUNT];
+    out->dma_kind = regs[LINK_REG_DMA_KIND];
+    out->dma_seq  = regs[LINK_REG_DMA_SEQ];
+    out->dma_len  = get_u16(&regs[LINK_REG_DMA_LEN]);
     return true;
 }
 
@@ -110,6 +142,7 @@ bool link_proto_parse_master(const uint8_t *regs, size_t len, link_master_t *out
     out->confirm  = regs[LINK_REG_USER_CONFIRM];
     out->echo     = regs[LINK_REG_CONFIRM_ECHO];
     out->usb_mode = regs[LINK_REG_USB_MODE_REQ];
+    out->req_seq  = regs[LINK_REG_REQ_SEQ];
     return true;
 }
 
@@ -193,4 +226,112 @@ link_mode_req_t link_proto_mode_request(uint8_t requested, uint8_t applied)
      * propriétaire pense à changer de mode deux fois.
      */
     return requested == applied ? LINK_MODE_REQ_UNCHANGED : LINK_MODE_REQ_APPLY;
+}
+
+
+/* ------------------------------------------------------------------------- */
+/* v3 — requête et réponses du canal DMA                                      */
+/* ------------------------------------------------------------------------- */
+
+void link_proto_pack_request(uint8_t *buf, uint8_t cmd, uint8_t arg)
+{
+    if (buf == NULL) {
+        return;
+    }
+    memset(buf, 0x00, LINK_REQ_SIZE);
+    buf[0] = cmd;
+    buf[1] = arg;
+    put_u16(&buf[LINK_REQ_SIZE - 2], cr_crc16(buf, LINK_REQ_SIZE - 2));
+}
+
+bool link_proto_parse_request(const uint8_t *buf, size_t len, link_request_t *out)
+{
+    if (buf == NULL || out == NULL || len < LINK_REQ_SIZE) {
+        return false;
+    }
+    if (get_u16(&buf[LINK_REQ_SIZE - 2]) != cr_crc16(buf, LINK_REQ_SIZE - 2)) {
+        return false;
+    }
+    /* Commande inconnue : refusée, jamais « la plus proche ». Une requête qu'on
+     * n'a pas comprise est aussi fausse qu'une requête qu'on n'a pas reçue. */
+    if (buf[0] != LINK_REQ_CMD_LIST && buf[0] != LINK_REQ_CMD_CODE) {
+        return false;
+    }
+    out->cmd = buf[0];
+    out->arg = buf[1];
+    return true;
+}
+
+uint16_t link_proto_pack_list(uint8_t *buf, uint16_t cap,
+                              uint8_t total, uint8_t first,
+                              const uint8_t *idx, const char *const *noms,
+                              uint8_t n, bool more)
+{
+    if (buf == NULL || idx == NULL || noms == NULL) {
+        return 0;
+    }
+
+    /* La taille se CALCULE avant d'écrire quoi que ce soit : une écriture
+     * partielle laisserait un segment que le maître lirait comme valide
+     * jusqu'au CRC, et le CRC ne dirait rien puisqu'il serait juste sur ce qui
+     * a été écrit. On rend zéro, et l'appelant pagine. */
+    uint16_t need = LINK_LIST_HDR_SIZE + 2u;
+    for (uint8_t i = 0; i < n; i++) {
+        if (noms[i] == NULL) {
+            return 0;
+        }
+        const size_t l = strlen(noms[i]);
+        if (l > LINK_LABEL_MAX) {
+            return 0;
+        }
+        need = (uint16_t)(need + 2u + l);
+    }
+    if (need > cap || need > LINK_DMA_MAX) {
+        return 0;
+    }
+
+    buf[LINK_LIST_OFF_TOTAL] = total;
+    buf[LINK_LIST_OFF_COUNT] = n;
+    buf[LINK_LIST_OFF_FIRST] = first;
+    buf[LINK_LIST_OFF_FLAGS] = more ? LINK_LIST_FLAG_MORE : 0x00u;
+
+    uint16_t o = LINK_LIST_HDR_SIZE;
+    for (uint8_t i = 0; i < n; i++) {
+        const size_t l = strlen(noms[i]);
+        buf[o++] = idx[i];
+        buf[o++] = (uint8_t)l;
+        memcpy(&buf[o], noms[i], l);
+        o = (uint16_t)(o + l);
+    }
+    put_u16(&buf[o], cr_crc16(buf, o));
+    return (uint16_t)(o + 2u);
+}
+
+uint16_t link_proto_pack_code(uint8_t *buf, uint16_t cap, uint8_t idx,
+                              uint8_t digits, const char *code, uint8_t seconds)
+{
+    if (buf == NULL || code == NULL || cap < LINK_CODE_SIZE) {
+        return 0;
+    }
+    /* Six ou huit, jamais autre chose : l'hôte comme le clavier s'en servent
+     * TEL QUEL, donc une valeur inventée rendrait un code de la mauvaise
+     * longueur — plausible et faux. */
+    if (digits != 6u && digits != 8u) {
+        return 0;
+    }
+    const size_t l = strlen(code);
+    if (l > 8u) {
+        return 0;
+    }
+
+    memset(buf, 0x00, LINK_CODE_SIZE);
+    buf[0] = idx;
+    buf[1] = digits;
+    /* Complété À GAUCHE par des zéros : un code TOTP est une chaîne de chiffres
+     * de longueur fixe, et « 0418 » n'est pas « 418 ». */
+    memset(&buf[2], '0', 8);
+    memcpy(&buf[2 + (8u - l)], code, l);
+    buf[10] = seconds;
+    put_u16(&buf[LINK_CODE_SIZE - 2], cr_crc16(buf, LINK_CODE_SIZE - 2));
+    return LINK_CODE_SIZE;
 }

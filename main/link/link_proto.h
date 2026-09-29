@@ -21,6 +21,21 @@
  *
  * 2 depuis le 2026-09-29. Deux défauts de la v1, dont un bloquant :
  *
+ * 3 depuis le 2026-09-29, meme journee : la v2 ne publiait AUCUNE identite.
+ * `pending_op` porte un CODE d'operation, pas un compte. Sur la cle autonome
+ * l'ecran est celui du coffre et affiche « CODE OTP GITHUB » ; sur le coffre,
+ * l'ecran est celui du CLAVIER, qui ne recevait que « une operation de type
+ * CODE OTP est en attente ». La proprietaire approuvait un TYPE, jamais un
+ * COMPTE — et la decision 4 de la spec OATH existe precisement pour empecher
+ * ca (« sans quoi l'appui est un interrupteur de presence et pas un accord »).
+ * Elle etait tenue sur la cle et perdue sur le coffre. Le scenario qui a
+ * tranche : elle demande le code de GITHUB, un hote malveillant en demande un
+ * pour BANQUE dans la meme seconde, et les deux blocs sont indiscernables a
+ * l'ecran. L'instance empeche l'appui de GLISSER de l'un a l'autre ; elle ne
+ * dit pas lequel est affiche.
+ *
+ * Defauts de la v1, pour memoire :
+ *
  *   - le coffre était INERTE. Le protocole portait l'état, l'opération armée,
  *     le compteur et la confirmation — aucun champ pour DEMANDER un mode USB.
  *     Or boards/niphar_chest/board.h pose BOARD_CONSOLE_ACTIONS 0 : sa console
@@ -38,7 +53,7 @@
  *     et l'écran, qui existe précisément pour que son appui veuille dire
  *     quelque chose, lui montrait l'autre.
  */
-#define LINK_PROTO_VERSION  2
+#define LINK_PROTO_VERSION  3
 
 /* Carte des registres partagés, lus et écrits par le maître sans coopération du
  * firmware du coffre (c'est le matériel qui répond).
@@ -50,13 +65,32 @@
  *   0x08-0x0B  confirmations consommées  coffre→S3   (petit-boutiste)
  *   0x0C       numéro d'instance         coffre→S3
  *   0x0D       mode USB ACTIF            coffre→S3
- *   0x0E-0x0F  CRC16 sur 0x00..0x0D      coffre→S3   (petit-boutiste)
- *   0x10       confirmation utilisateur  S3→coffre
- *   0x11       écho du numéro d'instance S3→coffre
- *   0x12       mode USB demandé          S3→coffre
- *   0x13       réservé                   S3→coffre
+ *   0x0E       longueur du libellé       coffre→S3   (0..LINK_LABEL_MAX)
+ *   0x0F       nombre de comptes visés   coffre→S3
+ *   0x10       type du segment en file   coffre→S3   (0 = rien en file)
+ *   0x11       numéro du segment         coffre→S3
+ *   0x12-0x13  longueur du segment       coffre→S3   (petit-boutiste)
+ *   0x14-0x35  libellé, 34 o ASCII       coffre→S3   (non terminé par zéro)
+ *   0x36-0x37  CRC16 sur 0x00..0x35      coffre→S3   (petit-boutiste)
+ *   0x38       confirmation utilisateur  S3→coffre
+ *   0x39       écho du numéro d'instance S3→coffre
+ *   0x3A       mode USB demandé          S3→coffre
+ *   0x3B       réservé                   S3→coffre
+ *   0x3C       numéro de requête         S3→coffre   (sonnette DMA)
+ *   0x3D-0x3F  réservé                   S3→coffre
  *
- * VINGT octets, cinq mots, et AUCUN mot partagé entre les deux extrémités.
+ * LA SONNETTE VIT DANS LE SECOND MOT DU MAÎTRE, ET CE N'EST PAS ESTHÉTIQUE.
+ * Relevé par l'équipe KeSp, et vérifiable dans link_spi.c : le coffre efface
+ * l'octet de confirmation consommé par un spi_slave_hd_write_buffer() d'UN
+ * octet — mais le pilote écrit PAR MOTS DE 32 BITS, donc c'est une
+ * lecture-modification-écriture sur tout le premier mot du maître. Une sonnette
+ * logée dedans serait écrasée quand elle tombe dans ces quelques cycles, et la
+ * requête ne serait JAMAIS servie, sans erreur nulle part. C'est la fenêtre que
+ * la section 5 du contrat décrit déjà pour l'octet de mode — sauf que le mode
+ * se relit et se réécrit, alors qu'une sonnette ne se relit pas.
+ *
+ * SOIXANTE-QUATRE octets — tout le fichier de registres partagés du P4
+ * (SOC_SPI_MAXIMUM_BUFFER_SIZE) — et AUCUN mot partagé entre les extrémités.
  * C'est la seule chose qui compte dans cette disposition, et elle a coûté une
  * révision : le tampon partagé du `spi_slave_hd` s'écrit par mots de 32 bits
  * côté application. Un champ du coffre logé dans le mot du maître impose donc
@@ -92,14 +126,28 @@
 #define LINK_REG_CONFIRM_COUNT  0x08
 #define LINK_REG_INSTANCE       0x0C
 #define LINK_REG_USB_MODE_ACTIVE 0x0D
-#define LINK_REG_CRC            0x0E
-#define LINK_REG_USER_CONFIRM   0x10
-#define LINK_REG_CONFIRM_ECHO   0x11
-#define LINK_REG_USB_MODE_REQ   0x12
-#define LINK_REG_SIZE           0x14
+#define LINK_REG_LABEL_LEN      0x0E
+#define LINK_REG_OP_COUNT       0x0F
+#define LINK_REG_DMA_KIND       0x10
+#define LINK_REG_DMA_SEQ        0x11
+#define LINK_REG_DMA_LEN        0x12
+#define LINK_REG_LABEL          0x14
+#define LINK_REG_CRC            0x36
+#define LINK_REG_USER_CONFIRM   0x38
+#define LINK_REG_CONFIRM_ECHO   0x39
+#define LINK_REG_USB_MODE_REQ   0x3A
+#define LINK_REG_REQ_SEQ        0x3C
+#define LINK_REG_SIZE           0x40
+
+/* Capacité du libellé sur le fil. Dimensionnée sur l'écran du CLAVIER (~48
+ * caractères ASCII en UNSCII 8 sur 68×68 px) et non sur l'OLED du coffre, qui
+ * n'en dessine que 21 : c'est le clavier qui affiche ce champ. Le coffre ne
+ * produit que 21 caractères aujourd'hui (OATH_NAME_DISPLAY_MAX) ; l'élargir
+ * sera un changement interne, sans nouvelle version de protocole. */
+#define LINK_LABEL_MAX          34
 
 /* Étendue couverte par le CRC : du début jusqu'à l'octet qui le précède. */
-#define LINK_REG_CRC_SPAN       0x0E
+#define LINK_REG_CRC_SPAN       0x36
 
 /*
  * Les deux plages de propriété, déclarées comme plages et pas comme liste
@@ -110,9 +158,9 @@
  * mot : c'est ce qui permet à chaque côté de publier le sien d'un seul bloc.
  */
 #define LINK_REG_CHEST_BASE     0x00
-#define LINK_REG_CHEST_LEN      0x10
-#define LINK_REG_MASTER_BASE    0x10
-#define LINK_REG_MASTER_LEN     0x04
+#define LINK_REG_CHEST_LEN      0x38
+#define LINK_REG_MASTER_BASE    0x38
+#define LINK_REG_MASTER_LEN     0x08
 
 /* Bits d'état. */
 #define LINK_STATE_SD_PRESENT   (1u << 0)
@@ -133,6 +181,28 @@
  * modules à moitié installés.
  */
 #define LINK_STATE_READY        (1u << 2)
+
+/*
+ * LINK_STATE_TIME_VALID — le coffre détient une heure murale POSÉE, jamais
+ * devinée.
+ *
+ * Un TOTP vaut HMAC(secret, floor(unix / 30)) : sans heure, pas de code. Le
+ * coffre n'a aucune horloge — ni RTC, ni pile — et la moitié gauche n'en a pas
+ * davantage (RC interne, dérive en minutes par jour). L'heure vient donc de
+ * l'hôte, par `niphar-oath set-time` sur le canal CCID que le client parle
+ * déjà, et le coffre l'entretient en monotone.
+ *
+ * CE QUI REND L'INVALIDATION GRATUITE : le coffre n'existe que branché et
+ * redémarre au débranchement. Son heure s'efface donc toute seule — il n'y a
+ * aucun drapeau à tenir, aucune heure périmée possible.
+ *
+ * LE BIT NE SE LÈVE JAMAIS SUR UNE HEURE PAR DÉFAUT — ni zéro, ni l'époque de
+ * compilation, ni « probablement après 2020 ». Seul un set-time reçu le lève.
+ * Une heure devinée produirait des codes faux présentés comme justes, ce qui
+ * est pire que pas de code du tout : le clavier affiche « NO TIME » et la
+ * propriétaire sait quoi faire.
+ */
+#define LINK_STATE_TIME_VALID   (1u << 3)
 
 /* Valeur que le S3 écrit pour signaler un appui réel. Une valeur choisie plutôt
  * que 1 : du bruit sur le bus a peu de chances de la produire. */
@@ -229,6 +299,47 @@ typedef struct {
      * Vaut LINK_USB_MODE_UNKNOWN tant que le mode est incertain.
      */
     uint8_t  usb_mode_active;
+
+    /*
+     * Le NOM du compte visé par l'opération en attente, en ASCII imprimable,
+     * NON terminé par zéro — `label_len` fait foi.
+     *
+     * C'est la raison d'être de la v3. Ce que la propriétaire voit avant
+     * d'appuyer est CE champ, publié par le coffre au moment de l'armement, et
+     * jamais la copie que le clavier garde de sa propre liste. Si un compte a
+     * été ajouté ou effacé entre-temps et que l'index a glissé, elle voit le nom
+     * du compte RÉELLEMENT visé, et n'appuie pas.
+     *
+     * ASCII imprimable PAR CONSTRUCTION : oath_name_display() n'accepte que
+     * 0x20..0x7E et remplace tout le reste — contrôle, octet haut, UTF-8
+     * multi-octets — par « ? » avant que ça n'atteigne ce champ. Le clavier
+     * dessine en UNSCII, qui ne connaît pas l'UTF-8 : cette propriété lui évite
+     * une substitution, et elle appartient donc au contrat.
+     *
+     * Vide (`label_len` à zéro) est légitime : le chemin OpenPGP ne nomme rien.
+     */
+    uint8_t  label_len;
+    char     label[LINK_LABEL_MAX];
+
+    /*
+     * Combien de comptes l'opération en attente détruit ou touche : 0 si rien
+     * n'est armé, 1 pour une opération ordinaire, N pour un RESET.
+     *
+     * Double une information que le libellé porte déjà en toutes lettres
+     * (« 12 COMPTES »), et c'est voulu : le clavier affiche « N CPT » sans avoir
+     * à analyser du français. Les deux viennent du MÊME compteur au MÊME
+     * instant, donc ils ne peuvent pas diverger.
+     */
+    uint8_t  op_count;
+
+    /*
+     * Signalisation du canal DMA. Le maître ne doit JAMAIS lire un segment qui
+     * n'est pas en file : il attend un changement de `dma_seq`, jamais un
+     * `dma_kind` non nul seul. Le numéro change APRÈS la mise en file.
+     */
+    uint8_t  dma_kind;
+    uint8_t  dma_seq;
+    uint16_t dma_len;
 } link_status_t;
 
 /*
@@ -240,9 +351,10 @@ typedef struct {
  * plage — voir la section 5 du contrat pour ce qui en tient lieu.
  */
 typedef struct {
-    uint8_t confirm;   /* 0x10 — LINK_USER_CONFIRM_MAGIC pour un appui réel */
-    uint8_t echo;      /* 0x11 — instance que le maître a lue et renvoie */
-    uint8_t usb_mode;  /* 0x12 — valeur de fil du mode demandé */
+    uint8_t confirm;   /* 0x38 — LINK_USER_CONFIRM_MAGIC pour un appui réel */
+    uint8_t echo;      /* 0x39 — instance que le maître a lue et renvoie */
+    uint8_t usb_mode;  /* 0x3A — valeur de fil du mode demandé */
+    uint8_t req_seq;   /* 0x3C — sonnette : incrémentée = requête DMA prête */
 } link_master_t;
 
 /*
@@ -314,3 +426,106 @@ link_mode_req_t link_proto_mode_request(uint8_t requested, uint8_t applied);
  * le clavier vit sur batterie, le coffre ne s'éveille qu'en filaire.
  */
 bool link_proto_is_absent(const uint8_t *regs, size_t len);
+
+
+/* ------------------------------------------------------------------------- */
+/* v3 — le canal DMA : navigation et codes                                    */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * POURQUOI UN SECOND CANAL. Les registres partagés font 64 octets
+ * (SOC_SPI_MAXIMUM_BUFFER_SIZE sur le P4) et la carte ci-dessus les occupe
+ * TOUS. La navigation et les codes vivent donc sur les canaux DMA du pilote
+ * esclave-HD (spi_slave_hd_queue_trans, mode segment), de taille libre.
+ *
+ * Commandes de fil, relevées dans components/hal/esp32p4/include/hal/spi_ll.h
+ * (en mode une ligne, l'octet vaut la commande de base) : WRDMA 0x03 puis
+ * WR_END 0x07 pour la requête, RDDMA 0x04 puis INT0 0x08 pour la réponse.
+ *
+ * Le coffre garde EN PERMANENCE une réception en file : sans réception armée,
+ * un WRDMA du maître est perdu SANS ERREUR des deux côtés.
+ */
+
+/* Types de segment publiés en 0x10. Zéro veut dire « rien en file ». */
+#define LINK_DMA_KIND_NONE      0x00
+#define LINK_DMA_KIND_LIST      0x01
+#define LINK_DMA_KIND_CODE      0x02
+
+/* Borne d'une réponse. Le maître dimensionne son tampon dessus. */
+#define LINK_DMA_MAX            512
+
+/*
+ * La requête du maître : TAILLE FIXE, multiple de quatre.
+ *
+ * Le pilote tronque une réception qui n'est pas un multiple de quatre — donc la
+ * taille est figée par le contrat, et non déduite du contenu.
+ *
+ *   0x00      commande
+ *   0x01      argument  (LIST : premier index ; CODE : index du compte)
+ *   0x02-0x05 réservé, à zéro
+ *   0x06-0x07 CRC16 sur 0x00..0x05
+ *
+ * Le CRC n'est pas décoratif : le canal DMA n'a aucune détection d'erreur, et
+ * une commande corrompue ferait armer une confirmation pour un compte que
+ * personne n'a demandé — la propriétaire verrait alors un nom qu'elle n'attend
+ * pas, ce qui est le bon comportement, mais autant ne pas en arriver là.
+ */
+#define LINK_REQ_SIZE           8
+#define LINK_REQ_CMD_LIST       0x01
+#define LINK_REQ_CMD_CODE       0x02
+
+typedef struct {
+    uint8_t cmd;
+    uint8_t arg;
+} link_request_t;
+
+void link_proto_pack_request(uint8_t *buf, uint8_t cmd, uint8_t arg);
+
+/*
+ * Décode une requête. Rend false — sans toucher `out` — si le tampon est trop
+ * court, si le CRC ne convient pas, ou si la commande n'est pas attribuée.
+ */
+bool link_proto_parse_request(const uint8_t *buf, size_t len, link_request_t *out);
+
+/*
+ * En-tête d'une réponse LIST. Le TOTAL et le nombre de CETTE page sont deux
+ * champs distincts pour que le clavier puisse afficher « 3/12 ».
+ */
+#define LINK_LIST_OFF_TOTAL     0
+#define LINK_LIST_OFF_COUNT     1
+#define LINK_LIST_OFF_FIRST     2
+#define LINK_LIST_OFF_FLAGS     3
+#define LINK_LIST_HDR_SIZE      4
+#define LINK_LIST_FLAG_MORE     (1u << 0)
+
+/*
+ * Écrit une page de liste : en-tête, puis par compte index (1 o), longueur
+ * (1 o), nom (n o), puis CRC16 sur tout ce qui précède.
+ *
+ * Rend le nombre d'octets écrits, ou ZÉRO si la capacité ne suffit pas — jamais
+ * une écriture partielle, jamais un débordement. La pagination existe dès le
+ * premier jour sur la suggestion de KeSp : douze comptes tiennent en une page,
+ * mais quarante n'y tiendraient pas, et ça éviterait une v4.
+ */
+uint16_t link_proto_pack_list(uint8_t *buf, uint16_t cap,
+                              uint8_t total, uint8_t first,
+                              const uint8_t *idx, const char *const *noms,
+                              uint8_t n, bool more);
+
+/*
+ * Réponse CODE, taille fixe :
+ *   0x00      index du compte
+ *   0x01      nombre de chiffres (6 ou 8)
+ *   0x02-0x09 code en ASCII, complété À GAUCHE par des zéros
+ *   0x0A      secondes restantes dans la fenêtre
+ *   0x0B      réservé
+ *   0x0C-0x0D CRC16 sur 0x00..0x0B
+ *
+ * Huit caractères pour le code, et pas six : un compte à huit chiffres tronqué
+ * à six rendrait un code plausible et faux. C'est la même panne muette que
+ * l'import par lot, qui applique un seul --digits à tout un lot.
+ */
+#define LINK_CODE_SIZE          14
+
+uint16_t link_proto_pack_code(uint8_t *buf, uint16_t cap, uint8_t idx,
+                              uint8_t digits, const char *code, uint8_t seconds);

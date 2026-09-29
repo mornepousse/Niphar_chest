@@ -10,6 +10,8 @@
 #include "cr_crc16.h"
 #include "link/link_proto.h"
 
+#include <string.h>
+
 /* ------------------------------------------------------------------------ */
 /* Aller-retour de la carte de registres                                     */
 /* ------------------------------------------------------------------------ */
@@ -351,104 +353,245 @@ static void test_almost_uniform_is_present(void)
  * la version du protocole qu'on incrémente, et KeSp qu'on prévient.
  */
 
-/* V1 — nominal : SD + USB monté + prêt, PSO:CDS en attente, 42
- * confirmations, instance 3, et le mode ACTIF qui accompagne USB_MOUNTED :
- * storage. Un bloc annonçant « monté » avec un mode actif `none` serait
- * contradictoire — c'est ce que 0x0D rend impossible à publier sans le dire. */
-static const uint8_t k_vec_v1[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x00, 0x00,
+/* V1 — nominal v3 : un code OATH en attente pour GITHUB. SD + USB monté +
+ * prêt + heure valide, 42 confirmations, instance 3, mode actif `oath`.
+ * C'est le libellé en 0x14 qui fait la v3 : sans lui, le clavier ne pourrait
+ * afficher que « une opération de type CODE OTP est en attente ». */
+static const uint8_t k_vec_v1[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFD, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
 /* V4 — mot magique faux d'un octet, tout le reste identique à V1. */
-static const uint8_t k_vec_v4[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x58, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x00, 0x00,
+static const uint8_t k_vec_v4[64] = {
+    0x4E, 0x49, 0x50, 0x58, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFD, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V5 — version 3 annoncée, CRC RECALCULÉ et juste : refusé sur la version
+/* V5 — version 4 annoncée, CRC RECALCULÉ et juste : refusé sur la version
  * seule, pas sur une corruption. */
-static const uint8_t k_vec_v5[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x03, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0xCC, 0x07, 0x00, 0x00, 0x00, 0x00,
+static const uint8_t k_vec_v5[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x04, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x94, 0x08, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
 /* V6 — un bit de la charge utile retourné (42 → 43), CRC laissé tel quel. */
-static const uint8_t k_vec_v6[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2B, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x00, 0x00,
+static const uint8_t k_vec_v6[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2B, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFD, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V6b — l'inverse : charge utile intacte, un bit retourné dans l'octet BAS du
- * champ CRC. */
-static const uint8_t k_vec_v6b[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0xEA, 0x2B, 0x00, 0x00, 0x00, 0x00,
+/* V6b — charge utile intacte, un bit retourné dans l'octet BAS du CRC. */
+static const uint8_t k_vec_v6b[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0D, 0xFD, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V6c — proposé par KeSp, et il manquait : le même bit retourné dans l'octet
- * HAUT du champ CRC. Une implémentation qui ne comparerait que l'octet bas
- * (ou qui rangerait le CRC en gros-boutiste) passerait V6b et tomberait ici. */
-static const uint8_t k_vec_v6c[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2A, 0x00, 0x00, 0x00, 0x00,
+/* V6c — le même bit retourné dans l'octet HAUT du CRC. Une implémentation
+ * qui ne comparerait que l'octet bas passerait V6b et tomberait ici. */
+static const uint8_t k_vec_v6c[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFC, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V6d — l'instance changée (3 → 2) sans recalcul du CRC. C'est la PREUVE, en
- * octets, que l'instance entre dans l'étendue couverte : la v1 aurait accepté
- * ce bloc. */
-static const uint8_t k_vec_v6d[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x02, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x00, 0x00,
+/* V6d — l'instance changée (3 → 2) sans recalcul : la preuve, en octets, que
+ * l'instance entre dans l'étendue couverte. */
+static const uint8_t k_vec_v6d[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x02, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFD, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V6e — le même argument pour le mode actif : storage → oath sans recalcul du
- * CRC. Sans ce vecteur, 0x0D serait couvert sur le papier et personne ne
- * l'aurait vérifié en octets. */
-static const uint8_t k_vec_v6e[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x05, 0xEB, 0x2B, 0x00, 0x00, 0x00, 0x00,
+/* V6e — le mode actif changé (oath → storage) sans recalcul. */
+static const uint8_t k_vec_v6e[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFD, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V8 — V1 plus une confirmation posée et pas encore lue, avec l'écho de
- * l'instance ARMÉE (3). Le CRC est le MÊME qu'en V1, et c'est tout
- * l'argument sur l'étendue. */
-static const uint8_t k_vec_v8[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x5A, 0x03, 0x00, 0x00,
+/* V6f — demandé par KeSp, et c'est le vecteur de la v3 : UN OCTET DU LIBELLÉ
+ * changé (« G » → « g ») sans recalcul du CRC. Sans lui, la couverture du
+ * libellé serait affirmée et jamais vérifiée en octets — et un bit retourné
+ * dessus ferait nommer un compte que le coffre n'a jamais visé. */
+static const uint8_t k_vec_v6f[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x67, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFD, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V9 — coffre présent et PAS prêt : aucun bit d'état, rien en attente, aucune
- * opération jamais armée (instance 0), aucun mode actif. Son CRC non nul est ce
- * qui le distingue d'un bloc absent — et il n'a PAS bougé en passant à 0x0D,
- * puisque l'octet y valait déjà zéro. */
-static const uint8_t k_vec_v9[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x39, 0xD4, 0x00, 0x00, 0x00, 0x00,
+/* V6g — longueur de libellé impossible (35 pour un champ de 34), CRC
+ * RECALCULÉ et juste. Le refus porte sur la COHÉRENCE du bloc, pas sur sa
+ * transmission : un maître qui tronquerait au lieu de refuser lirait des
+ * octets qui ne sont pas le libellé. */
+static const uint8_t k_vec_v6g[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x23, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x8F, 0x04, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V10 — proposé par KeSp : un bloc uniforme SAUF le dernier octet. Un test
- * d'absence qui s'arrêterait au premier octet, ou qui ne balaierait que les
- * dix-neuf premiers, dirait « absent » sur un coffre qui parle. */
-static const uint8_t k_vec_v10[LINK_REG_SIZE] = {
+/* V8 — V1 plus une confirmation posée, écho sur l'instance ARMÉE (3). Le CRC
+ * est le MÊME qu'en V1 : c'est tout l'argument sur l'étendue. */
+static const uint8_t k_vec_v8[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFD, 0x5A, 0x03, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
+/* V9 — coffre présent et PAS prêt : aucun bit d'état, rien en attente, aucun
+ * libellé, aucune heure. Son CRC non nul le distingue d'un bloc absent. */
+static const uint8_t k_vec_v9[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x95, 0x15, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
+/* V10 — bloc uniforme SAUF le dernier octet : présent, pas absent. */
+static const uint8_t k_vec_v10[64] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0x00,
 };
-/* V11 — le défaut de la v1, en octets : bloc du coffre parfaitement valide,
- * confirmation parfaitement formée, écho sur l'instance PRÉCÉDENTE (2 pour une
- * instance armée de 3). La v1 l'aurait accordée. */
-static const uint8_t k_vec_v11[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x5A, 0x02, 0x00, 0x00,
+/* V11 — le défaut de la v1 en octets : confirmation bien formée, écho sur
+ * l'instance PRÉCÉDENTE (2 pour une instance armée de 3). */
+static const uint8_t k_vec_v11[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFD, 0x5A, 0x02, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V12 — mode demandé inconnu (0x09). Le bloc du coffre reste valide : c'est la
- * DEMANDE qui se refuse, pas le bloc. */
-static const uint8_t k_vec_v12[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x09, 0x00,
+/* V12 — mode demandé inconnu (0x09) : le bloc reste valide, c'est la DEMANDE
+ * qui se refuse. */
+static const uint8_t k_vec_v12[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFD, 0x00, 0x00, 0x09, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V13 — le même, avec une valeur de fil attribuée (0x02, pgp) : appliqué. */
-static const uint8_t k_vec_v13[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x02, 0x00,
+/* V13 — le même avec une valeur attribuée (0x02, pgp) : appliqué. */
+static const uint8_t k_vec_v13[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x0C, 0xFD, 0x00, 0x00, 0x02, 0x00,
+    0x00, 0x00, 0x00, 0x00,
 };
-/* V14 — bascule EN COURS : le mode actif vaut l'indéterminé (0xFF) et
- * USB_MOUNTED est retombé. C'est le seul état où demandé et actif diffèrent
- * légitimement, et c'est celui que le clavier doit savoir distinguer d'un
- * refus — il affiche alors sa demande en attente plutôt qu'une arrivée. */
-static const uint8_t k_vec_v14[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x05, 0x00, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0xFF, 0x5F, 0x2F, 0x00, 0x00, 0x00, 0x00,
+/* V14 — bascule EN COURS : mode actif indéterminé (0xFF), USB_MOUNTED retombé.
+ * Le seul état où demandé et actif diffèrent légitimement. */
+static const uint8_t k_vec_v14[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0D, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0xFF, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xCF, 0xC9, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
+/* V15 — prêt et monté, mais AUCUNE heure posée (bit 3 à zéro). Le clavier doit
+ * afficher « NO TIME » et refuser de demander un code : un code calculé sans
+ * heure serait faux tout en paraissant juste. */
+static const uint8_t k_vec_v15[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x07, 0x09, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xEA, 0x29, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
+/* V16 — un RESET en attente : DOUZE comptes partent sur un seul appui. Le
+ * libellé le dit en toutes lettres et 0x0F le dit en un octet, pour que le
+ * clavier affiche « 12 CPT » sans analyser du français. */
+static const uint8_t k_vec_v16[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x0C, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x0A, 0x0C, 0x00, 0x00, 0x00, 0x00,
+    0x31, 0x32, 0x20, 0x43, 0x4F, 0x4D, 0x50, 0x54, 0x45, 0x53,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x77, 0x08, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
+/* R1 — requête LIST depuis le début. */
+static const uint8_t k_vec_r1[8] = {
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5B, 0x0C,
+};
+/* R2 — requête CODE pour le compte d'index 5. */
+static const uint8_t k_vec_r2[8] = {
+    0x02, 0x05, 0x00, 0x00, 0x00, 0x00, 0x72, 0x26,
+};
+/* R3 — la même, argument corrompu d'un bit, CRC laissé : refusée. Le canal DMA
+ * n'a aucune détection d'erreur, et une requête corrompue ferait armer une
+ * confirmation pour un compte que personne n'a demandé. */
+static const uint8_t k_vec_r3[8] = {
+    0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x72, 0x26,
+};
+/* L1 — une page de LIST : douze comptes au total, trois dans cette page depuis
+ * l'index 0, drapeau « suite » posé. Le total ET le nombre de la page sont
+ * distincts pour que le clavier affiche « 3/12 ». */
+static const uint8_t k_vec_l1[34] = {
+    0x0C, 0x03, 0x00, 0x01, 0x00, 0x06, 0x47, 0x49, 0x54, 0x48,
+    0x55, 0x42, 0x01, 0x09, 0x4F, 0x56, 0x48, 0x3A, 0x50, 0x45,
+    0x52, 0x53, 0x4F, 0x02, 0x07, 0x4F, 0x56, 0x48, 0x3A, 0x50,
+    0x52, 0x4F, 0xE5, 0xD7,
+};
+/* C1 — une réponse CODE : compte 5, six chiffres, 418902, douze secondes
+ * restantes. Le code est complété À GAUCHE par des zéros. */
+static const uint8_t k_vec_c1[14] = {
+    0x05, 0x06, 0x30, 0x30, 0x34, 0x31, 0x38, 0x39, 0x30, 0x32,
+    0x0C, 0x00, 0x8F, 0x9B,
 };
 
 static void test_shared_vectors_accepted(void)
@@ -457,19 +600,25 @@ static void test_shared_vectors_accepted(void)
 
     memset(&out, 0, sizeof(out));
     TEST_ASSERT(link_proto_parse_status(k_vec_v1, LINK_REG_SIZE, &out), "V1 accepté");
-    TEST_ASSERT_EQ(out.version, 2, "V1 version");
-    TEST_ASSERT_EQ(out.state, 0x07, "V1 état");
-    TEST_ASSERT_EQ(out.pending_op, 1, "V1 opération en attente");
+    TEST_ASSERT_EQ(out.version, 3, "V1 version");
+    TEST_ASSERT_EQ(out.state, 0x0F, "V1 état : SD + monté + prêt + heure valide");
+    TEST_ASSERT_EQ(out.pending_op, 9, "V1 opération en attente");
     TEST_ASSERT_EQ(out.confirm_count, 42, "V1 compteur");
     TEST_ASSERT_EQ(out.instance, 3, "V1 instance");
+    TEST_ASSERT_EQ(out.usb_mode_active, LINK_USB_MODE_OATH, "V1 mode actif");
+    TEST_ASSERT_EQ(out.op_count, 1, "V1 un seul compte visé");
+    TEST_ASSERT_EQ(out.label_len, 6, "V1 longueur du libellé");
+    TEST_ASSERT_EQ(memcmp(out.label, "GITHUB", 6), 0, "V1 le compte est NOMMÉ");
+    TEST_ASSERT(out.state & LINK_STATE_TIME_VALID, "V1 heure posée");
     TEST_ASSERT(!link_proto_is_absent(k_vec_v1, LINK_REG_SIZE), "V1 pas absent");
 
     /* V8 ne diffère de V1 que par la plage du maître — donc même verdict ET
      * mêmes champs décodés. C'est l'étendue du CRC rendue visible. */
     memset(&out, 0, sizeof(out));
     TEST_ASSERT(link_proto_parse_status(k_vec_v8, LINK_REG_SIZE, &out), "V8 accepté");
-    TEST_ASSERT_EQ(out.state, 0x07, "V8 état identique à V1");
-    TEST_ASSERT_EQ(out.pending_op, 1, "V8 opération identique à V1");
+    TEST_ASSERT_EQ(out.state, 0x0F, "V8 état identique à V1");
+    TEST_ASSERT_EQ(out.pending_op, 9, "V8 opération identique à V1");
+    TEST_ASSERT_EQ(memcmp(out.label, "GITHUB", 6), 0, "V8 même libellé que V1");
     TEST_ASSERT_EQ(out.confirm_count, 42, "V8 compteur identique à V1");
     TEST_ASSERT_EQ(out.instance, 3, "V8 instance identique à V1");
     TEST_ASSERT_EQ(memcmp(k_vec_v1, k_vec_v8, LINK_REG_CRC + 2), 0,
@@ -481,6 +630,9 @@ static void test_shared_vectors_accepted(void)
     TEST_ASSERT_EQ(out.pending_op, 0, "V9 rien en attente");
     TEST_ASSERT_EQ(out.confirm_count, 0, "V9 compteur nul");
     TEST_ASSERT_EQ(out.instance, 0, "V9 aucune opération jamais armée");
+    TEST_ASSERT_EQ(out.label_len, 0, "V9 aucun libellé");
+    TEST_ASSERT_EQ(out.op_count, 0, "V9 aucun compte visé");
+    TEST_ASSERT_EQ(out.state & LINK_STATE_TIME_VALID, 0, "V9 aucune heure posée");
     TEST_ASSERT(!link_proto_is_absent(k_vec_v9, LINK_REG_SIZE),
                 "V9 présent et non prêt, pas absent");
 
@@ -553,6 +705,10 @@ static void test_shared_vectors_rejected(void)
     TEST_ASSERT(!link_proto_parse_status(k_vec_v6d, LINK_REG_SIZE, &out), "V6d instance corrompue rejetée");
     TEST_ASSERT(!link_proto_parse_status(k_vec_v6e, LINK_REG_SIZE, &out),
                 "V6e mode actif corrompu rejeté");
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v6f, LINK_REG_SIZE, &out),
+                "V6f un octet du LIBELLÉ corrompu rejeté");
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v6g, LINK_REG_SIZE, &out),
+                "V6g longueur de libellé impossible rejetée malgré un CRC juste");
 
     /* V7 — les 19 premiers octets de V1, annoncés pour ce qu'ils sont. */
     TEST_ASSERT(!link_proto_parse_status(k_vec_v1, LINK_REG_SIZE - 1, &out), "V7 tronqué rejeté");
@@ -580,13 +736,17 @@ static void test_shared_vectors_are_what_the_chest_publishes(void)
 {
     uint8_t regs[LINK_REG_SIZE];
 
-    const link_status_t nominal = {
-        .state = LINK_STATE_SD_PRESENT | LINK_STATE_USB_MOUNTED | LINK_STATE_READY,
-        .pending_op = 1,
+    link_status_t nominal = {
+        .state = LINK_STATE_SD_PRESENT | LINK_STATE_USB_MOUNTED | LINK_STATE_READY
+               | LINK_STATE_TIME_VALID,
+        .pending_op = 9,
         .confirm_count = 42,
         .instance = 3,
-        .usb_mode_active = LINK_USB_MODE_STORAGE,
+        .usb_mode_active = LINK_USB_MODE_OATH,
+        .op_count = 1,
+        .label_len = 6,
     };
+    memcpy(nominal.label, "GITHUB", 6);
     memset(regs, 0, sizeof(regs));
     link_proto_pack_status(regs, &nominal);
     TEST_ASSERT_EQ(memcmp(regs, k_vec_v1, LINK_REG_SIZE), 0,
@@ -607,6 +767,53 @@ static void test_shared_vectors_are_what_the_chest_publishes(void)
  * annonce « CRC-16/X-25 », qui vaudrait 0x906E — c'est le nom qui est faux, pas
  * la fonction, et c'est précisément pourquoi le contrat publie le nombre.
  */
+/* V15 et V16 — les deux etats que la v3 rend visibles et que la v2 taisait. */
+static void test_shared_vectors_v3_states(void)
+{
+    link_status_t out;
+
+    memset(&out, 0, sizeof(out));
+    TEST_ASSERT(link_proto_parse_status(k_vec_v15, LINK_REG_SIZE, &out), "V15 accepté");
+    TEST_ASSERT_EQ(out.state & LINK_STATE_TIME_VALID, 0, "V15 aucune heure posée");
+    TEST_ASSERT(out.state & LINK_STATE_USB_MOUNTED, "V15 monté quand même");
+    TEST_ASSERT(out.state & LINK_STATE_READY, "V15 prêt quand même");
+
+    memset(&out, 0, sizeof(out));
+    TEST_ASSERT(link_proto_parse_status(k_vec_v16, LINK_REG_SIZE, &out), "V16 accepté");
+    TEST_ASSERT_EQ(out.op_count, 12, "V16 douze comptes partent sur UN appui");
+    TEST_ASSERT_EQ(out.label_len, 10, "V16 longueur du libellé");
+    TEST_ASSERT_EQ(memcmp(out.label, "12 COMPTES", 10), 0,
+                   "V16 le libellé dit le nombre en toutes lettres");
+    TEST_ASSERT(out.op_count > 1, "V16 le clavier affiche « N CPT »");
+}
+
+/* Les vecteurs de requete et de reponse du canal DMA. */
+static void test_shared_vectors_dma(void)
+{
+    link_request_t r;
+
+    TEST_ASSERT(link_proto_parse_request(k_vec_r1, LINK_REQ_SIZE, &r), "R1 acceptée");
+    TEST_ASSERT_EQ(r.cmd, LINK_REQ_CMD_LIST, "R1 LIST");
+    TEST_ASSERT_EQ(r.arg, 0, "R1 depuis le début");
+
+    TEST_ASSERT(link_proto_parse_request(k_vec_r2, LINK_REQ_SIZE, &r), "R2 acceptée");
+    TEST_ASSERT_EQ(r.cmd, LINK_REQ_CMD_CODE, "R2 CODE");
+    TEST_ASSERT_EQ(r.arg, 5, "R2 compte 5");
+
+    TEST_ASSERT(!link_proto_parse_request(k_vec_r3, LINK_REQ_SIZE, &r),
+                "R3 argument corrompu : refusée");
+
+    TEST_ASSERT_EQ(k_vec_l1[LINK_LIST_OFF_TOTAL], 12, "L1 douze comptes au total");
+    TEST_ASSERT_EQ(k_vec_l1[LINK_LIST_OFF_COUNT], 3, "L1 trois dans cette page");
+    TEST_ASSERT_EQ(k_vec_l1[LINK_LIST_OFF_FIRST], 0, "L1 depuis l'index 0");
+    TEST_ASSERT(k_vec_l1[LINK_LIST_OFF_FLAGS] & LINK_LIST_FLAG_MORE, "L1 drapeau suite");
+
+    TEST_ASSERT_EQ(k_vec_c1[0], 5, "C1 compte 5");
+    TEST_ASSERT_EQ(k_vec_c1[1], 6, "C1 six chiffres");
+    TEST_ASSERT_EQ(memcmp(&k_vec_c1[2], "00418902", 8), 0, "C1 code complété à gauche");
+    TEST_ASSERT_EQ(k_vec_c1[10], 12, "C1 douze secondes restantes");
+}
+
 static void test_crc_variant_check_value(void)
 {
     static const uint8_t digits[9] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
@@ -1029,7 +1236,12 @@ static void test_two_active_modes_never_share_a_crc(void)
 static void test_active_mode_sits_where_the_contract_says(void)
 {
     TEST_ASSERT_EQ(LINK_REG_USB_MODE_ACTIVE, 0x0D, "0x0D, comme publié");
-    TEST_ASSERT_EQ(LINK_REG_USB_MODE_ACTIVE + 1, LINK_REG_CRC, "juste avant le CRC");
+    /* Il n'est plus l'octet qui PRÉCÈDE le CRC — la v3 a glissé la longueur du
+     * libellé derrière lui. Ce qui compte n'a pas changé : il reste côté
+     * coffre, et il reste COUVERT. Figer l'adjacence au CRC aurait été figer un
+     * accident de disposition ; figer la couverture, c'est figer la propriété. */
+    TEST_ASSERT(LINK_REG_USB_MODE_ACTIVE < LINK_REG_CRC_SPAN,
+                "dans l'étendue couverte par le CRC");
     TEST_ASSERT(LINK_REG_USB_MODE_ACTIVE < LINK_REG_MASTER_BASE,
                 "côté coffre de la frontière");
 }
@@ -1087,6 +1299,341 @@ static void test_mounted_bit_and_active_mode_agree(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* v3 — le libelle, la signalisation DMA, la requete et ses reponses          */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * POURQUOI LE LIBELLE. Jusqu'a la v3, seul `pending_op` sortait du coffre : un
+ * CODE d'operation, pas une identite. Sur la cle autonome l'ecran est celui du
+ * coffre et affiche « CODE OTP GITHUB » ; sur le coffre l'ecran est celui du
+ * CLAVIER, qui ne recevait que « une operation de type CODE OTP est en
+ * attente ». La proprietaire approuvait un TYPE, jamais un COMPTE.
+ *
+ * L'instance ne le remplace pas : elle empeche l'appui de glisser d'une
+ * operation a la suivante (defaut v1), elle ne dit pas ce qu'on approuve.
+ */
+
+static void test_v3_disposition(void)
+{
+    TEST_ASSERT_EQ(LINK_PROTO_VERSION, 3, "version 3");
+    TEST_ASSERT_EQ(LINK_REG_SIZE, 64, "le bloc occupe tout le fichier partage du P4");
+    TEST_ASSERT_EQ(LINK_LABEL_MAX, 34, "libelle de 34 octets, publie a KeSp");
+    TEST_ASSERT_EQ(LINK_REG_CHEST_BASE + LINK_REG_CHEST_LEN, LINK_REG_MASTER_BASE,
+                   "plages jointives");
+    TEST_ASSERT_EQ(LINK_REG_CHEST_LEN % 4, 0, "le coffre fait des mots entiers");
+    TEST_ASSERT_EQ(LINK_REG_MASTER_BASE % 4, 0, "le maitre commence sur un mot");
+    TEST_ASSERT_EQ(LINK_REG_MASTER_LEN, 8, "le maitre a DEUX mots en v3");
+    TEST_ASSERT_EQ(LINK_REG_CRC + 2, LINK_REG_MASTER_BASE, "le CRC clot la plage du coffre");
+    TEST_ASSERT_EQ(LINK_REG_CRC_SPAN, LINK_REG_CRC, "etendue contigue jusqu'au CRC");
+    TEST_ASSERT_EQ(LINK_REG_LABEL + LINK_LABEL_MAX, LINK_REG_CRC,
+                   "le libelle ENTIER precede le CRC");
+    TEST_ASSERT_EQ(LINK_REG_MASTER_BASE, 0x38, "plage du maitre en 0x38");
+}
+
+/*
+ * LA SONNETTE N'EST PAS DANS LE MOT DE LA CONFIRMATION, ET C'EST STRUCTUREL.
+ *
+ * Releve par KeSp : le coffre efface l'octet de confirmation consomme
+ * (link_spi.c, spi_slave_hd_write_buffer sur UN octet), mais le pilote ecrit
+ * PAR MOTS DE 32 BITS. Une sonnette logee dans ce mot serait ecrasee quand elle
+ * tombe dans ces quelques cycles, et la requete ne serait jamais servie, sans
+ * erreur nulle part. Ce test fige la separation plutot que de la confier au
+ * souvenir : les deux octets doivent vivre dans des mots DIFFERENTS.
+ */
+static void test_sonnette_hors_du_mot_de_confirmation(void)
+{
+    TEST_ASSERT(LINK_REG_USER_CONFIRM / 4 != LINK_REG_REQ_SEQ / 4,
+                "la sonnette et la confirmation ne partagent pas un mot de 32 bits");
+    TEST_ASSERT_EQ(LINK_REG_REQ_SEQ, 0x3C, "sonnette en 0x3C");
+    TEST_ASSERT(LINK_REG_REQ_SEQ >= LINK_REG_MASTER_BASE, "la sonnette appartient au maitre");
+}
+
+static void test_v3_label_roundtrip(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    link_status_t out;
+    static const char *const noms[] = { "", "GITHUB", "OVH:PERSO",
+                                        "GITHUB:MAE@EXAMPLE.ORG ABCDEFGHIJ" };
+
+    for (unsigned i = 0; i < sizeof(noms) / sizeof(noms[0]); i++) {
+        link_status_t in = { .version = LINK_PROTO_VERSION, .state = LINK_STATE_READY,
+                             .pending_op = 7, .instance = 1,
+                             .usb_mode_active = LINK_USB_MODE_OATH, .op_count = 1 };
+        const size_t n = strlen(noms[i]);
+        TEST_ASSERT(n <= LINK_LABEL_MAX, "vecteur de test dans les bornes");
+        in.label_len = (uint8_t)n;
+        memcpy(in.label, noms[i], n);
+
+        memset(regs, 0, sizeof(regs));
+        link_proto_pack_status(regs, &in);
+        TEST_ASSERT_EQ(regs[LINK_REG_LABEL_LEN], n, "longueur publiee");
+        TEST_ASSERT_EQ(memcmp(&regs[LINK_REG_LABEL], noms[i], n), 0, "octets publies");
+
+        memset(&out, 0, sizeof(out));
+        TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "bloc valide");
+        TEST_ASSERT_EQ(out.label_len, n, "longueur relue");
+        TEST_ASSERT_EQ(memcmp(out.label, noms[i], n), 0, "libelle relu");
+    }
+}
+
+/* Une longueur qui deborde le champ est un bloc CORROMPU, pas un bloc a
+ * tronquer : le maitre lirait sinon des octets qui ne sont pas le libelle et
+ * afficherait un nom que le coffre n'a jamais compose. */
+static void test_v3_label_len_hors_bornes(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    const link_status_t in = { .version = LINK_PROTO_VERSION, .state = LINK_STATE_READY,
+                               .pending_op = 7, .instance = 1, .op_count = 1,
+                               .label_len = 6, .label = "GITHUB" };
+    memset(regs, 0, sizeof(regs));
+    link_proto_pack_status(regs, &in);
+    link_status_t out;
+    TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "bloc intact accepte");
+
+    regs[LINK_REG_LABEL_LEN] = LINK_LABEL_MAX + 1;
+    const uint16_t c = cr_crc16(regs, LINK_REG_CRC_SPAN);
+    regs[LINK_REG_CRC]     = (uint8_t)(c & 0xFFu);
+    regs[LINK_REG_CRC + 1] = (uint8_t)(c >> 8);
+    TEST_ASSERT(!link_proto_parse_status(regs, sizeof(regs), &out),
+                "longueur hors bornes refusee MEME avec un CRC juste");
+}
+
+/* Le libelle est dans l'etendue du CRC : un bit retourne dessus nommerait un
+ * compte que le coffre n'a jamais vise. */
+static void test_v3_label_couvert_par_le_crc(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    const link_status_t in = { .version = LINK_PROTO_VERSION, .state = LINK_STATE_READY,
+                               .pending_op = 7, .instance = 1, .op_count = 1,
+                               .label_len = 6, .label = "GITHUB" };
+    memset(regs, 0, sizeof(regs));
+    link_proto_pack_status(regs, &in);
+    link_status_t out;
+    regs[LINK_REG_LABEL] ^= 0x20u;
+    TEST_ASSERT(!link_proto_parse_status(regs, sizeof(regs), &out),
+                "un octet du libelle modifie sans recalcul : rejete");
+    regs[LINK_REG_LABEL] ^= 0x20u;
+    regs[LINK_REG_LABEL + LINK_LABEL_MAX - 1] ^= 0x01u;   /* le DERNIER octet */
+    TEST_ASSERT(!link_proto_parse_status(regs, sizeof(regs), &out),
+                "le dernier octet du libelle est couvert lui aussi");
+}
+
+/* Les octets au-dela de label_len sont mis a ZERO : sans ca, un libelle plus
+ * court laisserait la queue du precedent, et un maitre qui ignorerait
+ * label_len afficherait un nom compose de deux comptes. */
+static void test_v3_label_sans_queue(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    link_status_t longue = { .version = LINK_PROTO_VERSION, .state = LINK_STATE_READY,
+                             .pending_op = 7, .instance = 1, .op_count = 1 };
+    longue.label_len = LINK_LABEL_MAX;
+    memset(longue.label, 'X', LINK_LABEL_MAX);
+    memset(regs, 0, sizeof(regs));
+    link_proto_pack_status(regs, &longue);
+
+    link_status_t courte = longue;
+    courte.label_len = 3;
+    memcpy(courte.label, "OVH", 3);
+    link_proto_pack_status(regs, &courte);
+
+    for (unsigned i = 3; i < LINK_LABEL_MAX; i++)
+        TEST_ASSERT_EQ(regs[LINK_REG_LABEL + i], 0x00, "aucune queue ne survit");
+}
+
+/* 0x0F : 0 quand rien n'est arme, 1 pour une operation ordinaire, N pour un
+ * RESET. Double ce que le libelle dit en toutes lettres, et c'est voulu : le
+ * clavier affiche « N CPT » sans analyser du francais. */
+static void test_v3_op_count(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    link_status_t out;
+    for (unsigned n = 0; n <= 16u; n++) {
+        const link_status_t in = { .version = LINK_PROTO_VERSION, .state = LINK_STATE_READY,
+                                   .pending_op = 9, .instance = 1, .op_count = (uint8_t)n };
+        memset(regs, 0, sizeof(regs));
+        link_proto_pack_status(regs, &in);
+        TEST_ASSERT_EQ(regs[LINK_REG_OP_COUNT], n, "nombre publie");
+        memset(&out, 0, sizeof(out));
+        TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "bloc valide");
+        TEST_ASSERT_EQ(out.op_count, n, "nombre relu");
+    }
+}
+
+/* Signalisation DMA : le maitre ne doit JAMAIS lire un segment qui n'est pas en
+ * file. Il attend un changement de NUMERO, jamais un type non nul seul. */
+static void test_v3_signalisation_dma(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    link_status_t out;
+    const link_status_t in = { .version = LINK_PROTO_VERSION, .state = LINK_STATE_READY,
+                               .dma_kind = LINK_DMA_KIND_CODE, .dma_seq = 0x2A,
+                               .dma_len = 0x0140 };
+    memset(regs, 0, sizeof(regs));
+    link_proto_pack_status(regs, &in);
+    TEST_ASSERT_EQ(regs[LINK_REG_DMA_KIND], LINK_DMA_KIND_CODE, "type publie");
+    TEST_ASSERT_EQ(regs[LINK_REG_DMA_SEQ], 0x2A, "numero publie");
+    TEST_ASSERT_EQ(regs[LINK_REG_DMA_LEN], 0x40, "longueur, octet bas");
+    TEST_ASSERT_EQ(regs[LINK_REG_DMA_LEN + 1], 0x01, "longueur, octet haut");
+    TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "bloc valide");
+    TEST_ASSERT_EQ(out.dma_kind, LINK_DMA_KIND_CODE, "type relu");
+    TEST_ASSERT_EQ(out.dma_seq, 0x2A, "numero relu");
+    TEST_ASSERT_EQ(out.dma_len, 0x0140, "longueur relue, petit-boutiste");
+    TEST_ASSERT_EQ(LINK_DMA_KIND_NONE, 0, "zero veut dire : rien en file");
+}
+
+/* Le bit « heure valide » existe et ne collisionne avec aucun autre. */
+static void test_v3_bit_heure_valide(void)
+{
+    TEST_ASSERT_EQ(LINK_STATE_TIME_VALID, 1u << 3, "bit 3 de 0x05");
+    TEST_ASSERT_EQ(LINK_STATE_TIME_VALID & LINK_STATE_SD_PRESENT, 0u, "distinct de SD");
+    TEST_ASSERT_EQ(LINK_STATE_TIME_VALID & LINK_STATE_USB_MOUNTED, 0u, "distinct de MOUNTED");
+    TEST_ASSERT_EQ(LINK_STATE_TIME_VALID & LINK_STATE_READY, 0u, "distinct de READY");
+
+    uint8_t regs[LINK_REG_SIZE];
+    link_status_t out;
+    const link_status_t in = { .version = LINK_PROTO_VERSION,
+                               .state = LINK_STATE_READY | LINK_STATE_TIME_VALID };
+    memset(regs, 0, sizeof(regs));
+    link_proto_pack_status(regs, &in);
+    TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "bloc valide");
+    TEST_ASSERT(out.state & LINK_STATE_TIME_VALID, "bit relu");
+}
+
+/* ---- La requete du maitre : 8 octets fixes, multiple de 4 ---- */
+
+static void test_v3_requete_taille_et_multiple(void)
+{
+    TEST_ASSERT_EQ(LINK_REQ_SIZE, 8, "requete de 8 octets, publiee a KeSp");
+    TEST_ASSERT_EQ(LINK_REQ_SIZE % 4, 0,
+                   "multiple de 4 : le pilote tronque une reception qui ne l'est pas");
+}
+
+static void test_v3_requete_aller_retour(void)
+{
+    uint8_t buf[LINK_REQ_SIZE];
+    link_request_t out;
+
+    link_proto_pack_request(buf, LINK_REQ_CMD_CODE, 5);
+    TEST_ASSERT(link_proto_parse_request(buf, sizeof(buf), &out), "requete valide");
+    TEST_ASSERT_EQ(out.cmd, LINK_REQ_CMD_CODE, "commande relue");
+    TEST_ASSERT_EQ(out.arg, 5, "argument relu");
+
+    link_proto_pack_request(buf, LINK_REQ_CMD_LIST, 0);
+    TEST_ASSERT(link_proto_parse_request(buf, sizeof(buf), &out), "LIST valide");
+    TEST_ASSERT_EQ(out.cmd, LINK_REQ_CMD_LIST, "LIST relu");
+    TEST_ASSERT_EQ(out.arg, 0, "premier index relu");
+}
+
+/* La requete porte son propre CRC : le canal DMA n'a aucune detection d'erreur,
+ * et une commande corrompue ferait armer une confirmation pour un compte que
+ * personne n'a demande. */
+static void test_v3_requete_crc(void)
+{
+    uint8_t buf[LINK_REQ_SIZE];
+    link_request_t out;
+    link_proto_pack_request(buf, LINK_REQ_CMD_CODE, 3);
+    TEST_ASSERT(link_proto_parse_request(buf, sizeof(buf), &out), "intacte acceptee");
+
+    for (unsigned i = 0; i < LINK_REQ_SIZE; i++) {
+        uint8_t abime[LINK_REQ_SIZE];
+        memcpy(abime, buf, sizeof(abime));
+        abime[i] ^= 0x01u;
+        TEST_ASSERT(!link_proto_parse_request(abime, sizeof(abime), &out),
+                    "un bit retourne, n'importe ou : refusee");
+    }
+}
+
+static void test_v3_requete_refuse_court_et_inconnu(void)
+{
+    uint8_t buf[LINK_REQ_SIZE];
+    link_request_t out;
+    link_proto_pack_request(buf, LINK_REQ_CMD_CODE, 3);
+    TEST_ASSERT(!link_proto_parse_request(buf, LINK_REQ_SIZE - 1, &out),
+                "tampon trop court refuse");
+    TEST_ASSERT(!link_proto_parse_request(NULL, LINK_REQ_SIZE, &out), "NULL refuse");
+
+    /* Commande inconnue, CRC RECALCULE : le refus porte sur la commande. */
+    buf[0] = 0x7Fu;
+    const uint16_t c = cr_crc16(buf, LINK_REQ_SIZE - 2);
+    buf[LINK_REQ_SIZE - 2] = (uint8_t)(c & 0xFFu);
+    buf[LINK_REQ_SIZE - 1] = (uint8_t)(c >> 8);
+    TEST_ASSERT(!link_proto_parse_request(buf, LINK_REQ_SIZE, &out),
+                "commande inconnue refusee malgre un CRC juste");
+}
+
+/* ---- La reponse LIST : totale, page, suite ---- */
+
+static void test_v3_liste_entete(void)
+{
+    uint8_t buf[LINK_DMA_MAX];
+    static const char *const noms[] = { "GITHUB", "OVH:PERSO", "OVH:PRO" };
+    uint8_t idx[3] = { 0, 1, 2 };
+
+    const uint16_t n = link_proto_pack_list(buf, sizeof(buf), 12, 0, idx, noms, 3, true);
+    TEST_ASSERT(n > 0, "liste ecrite");
+    TEST_ASSERT_EQ(buf[LINK_LIST_OFF_TOTAL], 12, "TOTAL de comptes, pour « 3/12 »");
+    TEST_ASSERT_EQ(buf[LINK_LIST_OFF_COUNT], 3, "nombre dans CETTE page");
+    TEST_ASSERT_EQ(buf[LINK_LIST_OFF_FIRST], 0, "premier index de la page");
+    TEST_ASSERT(buf[LINK_LIST_OFF_FLAGS] & LINK_LIST_FLAG_MORE, "drapeau suite pose");
+
+    const uint16_t m = link_proto_pack_list(buf, sizeof(buf), 3, 0, idx, noms, 3, false);
+    TEST_ASSERT(m > 0, "derniere page ecrite");
+    TEST_ASSERT_EQ(buf[LINK_LIST_OFF_FLAGS] & LINK_LIST_FLAG_MORE, 0,
+                   "pas de suite sur la derniere page");
+}
+
+/* La reponse ne depasse jamais LINK_DMA_MAX, et une page qui ne tient pas se
+ * TRONQUE proprement plutot que de deborder : le maitre a annonce un tampon. */
+static void test_v3_liste_bornee(void)
+{
+    uint8_t buf[LINK_DMA_MAX];
+    static const char *const noms[] = { "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" };
+    uint8_t idx[1] = { 0 };
+    TEST_ASSERT_EQ(LINK_DMA_MAX, 512, "borne publiee a KeSp");
+
+    const uint16_t n = link_proto_pack_list(buf, sizeof(buf), 1, 0, idx, noms, 1, false);
+    TEST_ASSERT(n <= LINK_DMA_MAX, "dans la borne");
+
+    /* Capacite trop petite : rien d'ecrit, zero rendu — jamais un debordement. */
+    uint8_t petit[4];
+    TEST_ASSERT_EQ(link_proto_pack_list(petit, sizeof(petit), 1, 0, idx, noms, 1, false), 0,
+                   "capacite insuffisante : zero, pas un debordement");
+}
+
+/* ---- La reponse CODE ---- */
+
+static void test_v3_reponse_code(void)
+{
+    uint8_t buf[LINK_CODE_SIZE];
+    const uint16_t n = link_proto_pack_code(buf, sizeof(buf), 5, 6, "418902", 12);
+    TEST_ASSERT_EQ(n, LINK_CODE_SIZE, "taille fixe");
+    TEST_ASSERT_EQ(buf[0], 5, "index");
+    TEST_ASSERT_EQ(buf[1], 6, "nombre de chiffres");
+    TEST_ASSERT_EQ(memcmp(&buf[2], "00418902", 8), 0,
+                   "code en ASCII, complete A GAUCHE par des zeros");
+    TEST_ASSERT_EQ(buf[10], 12, "secondes restantes");
+
+    const uint16_t c = cr_crc16(buf, LINK_CODE_SIZE - 2);
+    TEST_ASSERT_EQ(buf[LINK_CODE_SIZE - 2], (uint8_t)(c & 0xFFu), "CRC bas");
+    TEST_ASSERT_EQ(buf[LINK_CODE_SIZE - 1], (uint8_t)(c >> 8), "CRC haut");
+}
+
+/*
+ * HUIT CHIFFRES, LE CAS QUI SE PERD EN SILENCE. Un compte a huit chiffres est
+ * la seule panne muette de l'import par lot (un seul --digits pour tout le lot)
+ * et ce serait la meme ici : un code de huit chiffres tronque a six resterait
+ * plausible et faux. Le champ fait huit caracteres pour cette raison.
+ */
+static void test_v3_reponse_code_huit_chiffres(void)
+{
+    uint8_t buf[LINK_CODE_SIZE];
+    TEST_ASSERT_EQ(link_proto_pack_code(buf, sizeof(buf), 0, 8, "12345678", 30),
+                   LINK_CODE_SIZE, "huit chiffres tiennent");
+    TEST_ASSERT_EQ(buf[1], 8, "nombre de chiffres annonce");
+    TEST_ASSERT_EQ(memcmp(&buf[2], "12345678", 8), 0, "aucun chiffre perdu");
+}
+
+/* ------------------------------------------------------------------------ */
 
 void test_link_proto(void)
 {
@@ -1111,6 +1658,8 @@ void test_link_proto(void)
     TEST_RUN(test_shared_vectors_master_side);
     TEST_RUN(test_shared_vectors_rejected);
     TEST_RUN(test_shared_vectors_are_what_the_chest_publishes);
+    TEST_RUN(test_shared_vectors_v3_states);
+    TEST_RUN(test_shared_vectors_dma);
     TEST_RUN(test_crc_variant_check_value);
     TEST_RUN(test_confirm_needs_the_magic_AND_the_instance);
     TEST_RUN(test_stale_echo_from_a_same_coded_operation_is_refused);
@@ -1129,4 +1678,21 @@ void test_link_proto(void)
     TEST_RUN(test_active_mode_sits_where_the_contract_says);
     TEST_RUN(test_shared_vector_switch_in_progress);
     TEST_RUN(test_mounted_bit_and_active_mode_agree);
+    TEST_RUN(test_v3_disposition);
+    TEST_RUN(test_sonnette_hors_du_mot_de_confirmation);
+    TEST_RUN(test_v3_label_roundtrip);
+    TEST_RUN(test_v3_label_len_hors_bornes);
+    TEST_RUN(test_v3_label_couvert_par_le_crc);
+    TEST_RUN(test_v3_label_sans_queue);
+    TEST_RUN(test_v3_op_count);
+    TEST_RUN(test_v3_signalisation_dma);
+    TEST_RUN(test_v3_bit_heure_valide);
+    TEST_RUN(test_v3_requete_taille_et_multiple);
+    TEST_RUN(test_v3_requete_aller_retour);
+    TEST_RUN(test_v3_requete_crc);
+    TEST_RUN(test_v3_requete_refuse_court_et_inconnu);
+    TEST_RUN(test_v3_liste_entete);
+    TEST_RUN(test_v3_liste_bornee);
+    TEST_RUN(test_v3_reponse_code);
+    TEST_RUN(test_v3_reponse_code_huit_chiffres);
 }
