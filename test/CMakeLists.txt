@@ -12,6 +12,7 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror -g -DTEST_HOST")
 add_executable(test_runner
     test_main.c
     test_link_proto.c
+    test_sec_time.c
     test_msc_lba.c
     test_cr_crc16.c
     test_sec_confirm.c
@@ -41,6 +42,7 @@ add_executable(test_runner
     ../main/link/link_proto.c
     ../main/sys/cr_crc16.c
     ../main/security/sec_confirm.c
+    ../main/security/sec_time.c
     ../main/security/sec_store.c
     ../main/security/apdu.c
     ../main/security/ctaphid.c
