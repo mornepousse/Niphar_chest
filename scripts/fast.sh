@@ -269,6 +269,89 @@ if [ "$otp_obj_vu" -eq 0 ]; then
     echo "       non exécuté (il le sera à la phase complète)."
 fi
 
+# --- Garde-fou 6 : l'appui armé ne vaut que pour SON slot -------------------
+# Même fichier, même angle mort (otp_hid.c n'entre pas dans test/, cf. garde-fou
+# 5) : `hook_confirm_state()` porte une deuxième défense en profondeur, sans
+# oracle non plus.
+#
+# `s_armed_idx` retient QUEL slot sec_store un appui a armé ; sur
+# SEC_CONFIRM_AUTHORIZED, le hook refuse un octroi accordé pour un AUTRE slot
+# que celui-là (miroir du `slot == CCID_CONFIRM_SLOT` de ccid.c). Sans ce
+# refus : un appui physique armé pour le slot 0 confirmerait aussi un HMAC
+# calculé entre-temps sur le slot 1 — la garde physique cesserait de garantir
+# QUEL secret l'appui autorise, seulement QU'un appui a eu lieu.
+#
+# Deux étages, comme le garde-fou 5, et pour la même raison précise : un
+# `#if 0` autour de la comparaison, avec un `return 1;` nu juste après,
+# laisse le texte de la comparaison en place — l'étage source (bête, il ne
+# comprend pas le préprocesseur) le verrait et se tairait à tort. Vérifié à la
+# main le 2026-09-29 : cette mutation précise compile, passe l'étage source,
+# et c'est l'étage binaire qui la voit (`hook_confirm_state` passe de 0x66 à
+# 0x46 octets, et `s_armed_idx` de section `d` — sa valeur initiale -1 compte
+# encore — à `b`, gaufre pré-zérotée : dès que plus rien ne lit la variable,
+# le compilateur cesse de préserver son -1 initial).
+
+# 6a. Le retour de SEC_CONFIRM_AUTHORIZED doit encore comparer out_slot à
+# s_armed_idx — pas juste contenir les deux noms (un `||` au lieu du `&&`
+# affaiblirait la garde en gardant tous les mots).
+if ! awk '
+/^static int hook_confirm_state\(void\)/ { dans = 1; next }
+dans && /^}/                              { dans = 0 }
+dans && /case SEC_CONFIRM_AUTHORIZED:/    { cas = FNR }
+dans && cas && !ligne && /return/         { ligne = $0 }
+END {
+    if (!cas)   { print "  le cas SEC_CONFIRM_AUTHORIZED a disparu de hook_confirm_state()"; exit 1 }
+    if (!ligne) { print "  aucun « return » ne suit SEC_CONFIRM_AUTHORIZED"; exit 1 }
+    if (ligne !~ /s_armed_idx/ || ligne !~ /out_slot/ || ligne !~ /==/ \
+        || ligne !~ /&&/ || ligne !~ />= *0/) {
+        print "  le retour de SEC_CONFIRM_AUTHORIZED ne compare plus out_slot a s_armed_idx"
+        exit 1
+    }
+}
+' main/security/otp_hid.c; then
+    echo "ERREUR : main/security/otp_hid.c — hook_confirm_state() n'exige plus"
+    echo "         que l'octroi porte sur le slot armé par CETTE transaction."
+    echo "         Un appui destiné à un slot autoriserait alors le HMAC d'un"
+    echo "         AUTRE slot calculé entre-temps. Voir s_armed_idx et le"
+    echo "         commentaire au-dessus de sa déclaration."
+    fail=1
+fi
+
+# 6b. Le binaire. Le symbole s_armed_idx doit rester en section « d » (donnée
+# initialisée) : son -1 de départ n'a de sens que si quelque chose le LIT.
+# Un `#if 0` qui retire la lecture laisse l'écriture seule dans le fichier ;
+# sans lecture nulle part, le compilateur cesse de distinguer -1 de 0 et
+# range la variable en « b » (bss, pré-zérotée) — signal vérifié à la main
+# (voir le commentaire au-dessus du garde-fou).
+otp2_obj_vu=0
+for d in build build_jc_devkit build_niphar_chest build_wt9932_key; do
+    obj="$d/esp-idf/main/CMakeFiles/__idf_main.dir/security/otp_hid.c.obj"
+    [ -f "$obj" ] || continue
+    ligne="$(nm "$obj" 2>/dev/null | grep -E ' [bBdD] s_armed_idx$' || true)"
+    if [ -z "$ligne" ]; then
+        echo "ERREUR : $d — nm ne voit pas s_armed_idx (type b/d) dans"
+        echo "         otp_hid.c.obj. Le contrôle binaire du garde-fou 6 ne"
+        echo "         prouve donc rien — si le fichier a changé exprès,"
+        echo "         corriger ce témoin."
+        fail=1
+        otp2_obj_vu=1
+        continue
+    fi
+    type="$(printf '%s\n' "$ligne" | awk '{print $2}')"
+    if [ "$type" != "d" ] && [ "$type" != "D" ]; then
+        echo "ERREUR : $d — s_armed_idx est en section '$type', pas 'd' :"
+        echo "         plus rien dans otp_hid.c.obj ne lit ce slot armé, donc"
+        echo "         plus rien ne le compare — la garde du garde-fou 6a a"
+        echo "         été compilée hors du firmware (#if 0 ou équivalent)."
+        fail=1
+    fi
+    otp2_obj_vu=1
+done
+if [ "$otp2_obj_vu" -eq 0 ]; then
+    echo "note : aucun otp_hid.c.obj présent — contrôle binaire du garde-fou 6"
+    echo "       non exécuté (il le sera à la phase complète)."
+fi
+
 # Un seul point de sortie pour TOUS les garde-fous : en ajouter un après ce
 # test le rendrait bavard mais inoffensif — c'est exactement l'erreur commise
 # ici le 2026-08-07, et elle ne s'est vue qu'en vérifiant le code de sortie.

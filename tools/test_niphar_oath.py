@@ -653,16 +653,25 @@ class FauxTransport(oath.Cle):
     """Transport CCID factice : enregistre les APDU, répond de façon réglable.
 
     `comptes` : le magasin initial, en octets bruts (ce que rend un LIST).
-    `echecs`  : {nom -> mot d'état} pour faire échouer un PUT proprement.
+    `echecs`  : {nom -> mot d'état} pour faire échouer un PUT, un DELETE ou un
+                RENAME (indexé sur le nom PUT, ou sur l'ANCIEN nom pour RENAME)
+                proprement.
     `explosions` : les noms dont l'envoi lève, comme un câble arraché.
+    `code_digits`/`code_raw` : la réponse à un CALCULATE — [chiffres][4 octets
+                bruts], exactement la forme d'un 0x76. `None` par défaut :
+                CALCULATE répond alors un 9000 nu (pas de TLV), comme les
+                autres INS non simulés.
     """
 
-    def __init__(self, comptes=(), echecs=None, explosions=()):
+    def __init__(self, comptes=(), echecs=None, explosions=(),
+                 code_digits=None, code_raw=None):
         super().__init__(verbose=False)
         self.comptes = [oath.check_name(c) for c in comptes]
         self.envoyees = []
         self.echecs = dict(echecs or {})
         self.explosions = {oath.check_name(n) for n in explosions}
+        self.code_digits = code_digits
+        self.code_raw = code_raw
 
     def _xfr(self, apdu_bytes, timeout_s):
         apdu_bytes = bytes(apdu_bytes)
@@ -682,6 +691,30 @@ class FauxTransport(oath.Cle):
             if sw == 0x9000 and nom not in self.comptes:
                 self.comptes.append(nom)
             return bytes([sw >> 8, sw & 0xFF])
+        if ins == oath.INS_DELETE:
+            nom = oath.tlv_first(oath.tlv_parse(apdu_bytes[5:]), oath.TAG_NAME)
+            sw = self.echecs.get(nom, 0x9000)
+            if sw == 0x9000 and nom in self.comptes:
+                self.comptes.remove(nom)
+            return bytes([sw >> 8, sw & 0xFF])
+        if ins == oath.INS_RENAME:
+            tlvs = oath.tlv_parse(apdu_bytes[5:])
+            noms = [v for t, v in tlvs if t == oath.TAG_NAME]
+            ancien = noms[0] if noms else None
+            sw = self.echecs.get(ancien, 0x9000)
+            if sw == 0x9000 and len(noms) == 2 and ancien in self.comptes:
+                self.comptes[self.comptes.index(ancien)] = noms[1]
+            return bytes([sw >> 8, sw & 0xFF])
+        if ins == oath.INS_CALCULATE:
+            nom = oath.tlv_first(oath.tlv_parse(apdu_bytes[5:]), oath.TAG_NAME)
+            sw = self.echecs.get(nom, 0x9000)
+            if sw != 0x9000:
+                return bytes([sw >> 8, sw & 0xFF])
+            if self.code_digits is not None:
+                corps = oath.tlv(oath.TAG_TRUNCATED,
+                                  bytes([self.code_digits]) + self.code_raw)
+                return corps + b"\x90\x00"
+            return b"\x90\x00"
         return b"\x90\x00"
 
     # -- lectures pour les assertions --------------------------------------
@@ -893,6 +926,137 @@ class TestCablageAddBatch(unittest.TestCase):
             cle.puts(),
             [(b"A:x", oath.decode_secret("JBSWY3DPEHPK3PXP"), 8),
              (b"B:y", oath.decode_secret("MZXW6YTBOI======"), 8)])
+
+
+# --------------------------------------------------------------------------
+# CODE — l'INS, P2, le nom et le défi ; et le modulo, qui vient du compte
+# --------------------------------------------------------------------------
+class TestCablageCode(unittest.TestCase):
+    def test_calculate_porte_le_bon_ins_p2_nom_et_le_defi_gros_boutien(self):
+        # Une date fixe, choisie loin de tout octet nul accidentel, pour que
+        # le test ne dépende pas de l'horloge au moment où il tourne : le
+        # client lit `time.time()` lui-même, jamais injectée par argv.
+        cle = FauxTransport(
+            comptes=[b"A:premier", b"GitHub:mae", b"Z:dernier"],
+            code_digits=6, code_raw=b"\x00\x00\x05\x39",
+        )
+        ancien = oath.time.time
+        oath.time.time = lambda: 30_000_000.0  # pas RFC 6238 = 1 000 000
+        try:
+            with _muet():
+                rc = oath.cmd_code(cle, _args("code", "GitHub:mae"))
+        finally:
+            oath.time.time = ancien
+        self.assertEqual(rc, 0)
+        trame = cle.envoyees[-1]
+        self.assertEqual(trame[1], oath.INS_CALCULATE)   # A2
+        self.assertEqual(trame[2:4], b"\x00\x01")          # P1=00 P2=01 : troncature
+        tlvs = oath.tlv_parse(trame[5:])
+        self.assertEqual(oath.tlv_first(tlvs, oath.TAG_NAME), b"GitHub:mae")
+        defi = oath.tlv_first(tlvs, oath.TAG_CHALLENGE)
+        self.assertEqual(len(defi), 8)
+        self.assertEqual(defi, oath.totp_challenge(30_000_000, 30))
+        # Gros-boutien noir sur blanc : le pas (1 000 000 = 0x0F4240) tient
+        # sur les QUATRE DERNIERS octets. Un petit-boutien le mettrait en
+        # TÊTE de la trame, pas en queue — un HMAC parfaitement formé et faux.
+        self.assertEqual(defi, b"\x00\x00\x00\x00\x00\x0f\x42\x40")
+
+    def test_le_nombre_de_chiffres_vient_du_compte_pas_d_une_constante(self):
+        """La carte annonce 8 chiffres dans son 0x76 : le client doit les
+        suivre, jamais appliquer un module à six chiffres codé en dur.
+
+        0x000F4240 = 1 000 000 pile : à six chiffres « 000000 », à huit
+        « 01000000 ». Un `cmd_code` qui forcerait 6 chiffres afficherait le
+        premier alors que la clé a demandé le second — un code plausible et
+        faux, la panne la plus coûteuse à diagnostiquer (docstring de
+        `totp_challenge`).
+        """
+        cle = FauxTransport(comptes=[b"A:x"], code_digits=8,
+                             code_raw=b"\x00\x0f\x42\x40")
+        with _muet() as sortie:
+            rc = oath.cmd_code(cle, _args("code", "A:x"))
+        self.assertEqual(rc, 0)
+        self.assertIn("01000000", sortie.getvalue())
+
+    def test_un_mot_d_etat_en_echec_n_affiche_aucun_code(self):
+        # Témoin du sens inverse : un CALCULATE qui échoue ne doit pas
+        # afficher un code — sans quoi le message de succès ci-dessus ne
+        # prouverait rien de la branche « sw == 0x9000 ».
+        cle = FauxTransport(comptes=[b"A:x"], echecs={b"A:x": 0x6985})
+        with _muet() as sortie:
+            rc = oath.cmd_code(cle, _args("code", "A:x"))
+        self.assertEqual(rc, 1)
+        self.assertNotIn("valide encore", sortie.getvalue())
+
+
+# --------------------------------------------------------------------------
+# DELETE — l'INS, le nom, et le BON compte (ni le premier, ni le dernier)
+# --------------------------------------------------------------------------
+class TestCablageDelete(unittest.TestCase):
+    def test_delete_porte_le_bon_ins_et_vise_le_compte_nomme(self):
+        # Le compte visé n'est NI le premier NI le dernier du magasin : un
+        # DELETE qui enverrait toujours le premier (ou le dernier) compte de
+        # la liste passerait un test qui ne viserait qu'une extrémité.
+        cle = FauxTransport(comptes=[b"A:premier", b"B:milieu", b"C:dernier"])
+        with _muet() as sortie:
+            rc = oath.cmd_delete(cle, _args("delete", "B:milieu"))
+        self.assertEqual(rc, 0)
+        trame = cle.envoyees[-1]
+        self.assertEqual(trame[1], oath.INS_DELETE)  # 02
+        self.assertEqual(
+            oath.tlv_parse(trame[5:]), [(oath.TAG_NAME, b"B:milieu")])
+        self.assertIn("B:milieu", sortie.getvalue())
+        # Témoin positif direct : le compte a VRAIMENT disparu du magasin —
+        # sans ce contrôle, un DELETE qui n'enverrait qu'une APDU muette (sans
+        # effet réel derrière) passerait le test ci-dessus quand même.
+        self.assertEqual(cle.comptes, [b"A:premier", b"C:dernier"])
+
+    def test_un_mot_d_etat_en_echec_ne_pretend_pas_avoir_efface(self):
+        cle = FauxTransport(comptes=[b"A:x", b"B:y", b"C:z"],
+                             echecs={b"B:y": 0x6985})
+        with _muet() as sortie:
+            rc = oath.cmd_delete(cle, _args("delete", "B:y"))
+        self.assertEqual(rc, 1)
+        texte = sortie.getvalue()
+        self.assertNotIn("effacé", texte)
+        # Et le magasin factice, qui simule fidèlement un refus de la carte,
+        # n'a PAS bougé — le témoin positif du test précédent le confirme.
+        self.assertIn(b"B:y", cle.comptes)
+
+
+# --------------------------------------------------------------------------
+# RENAME — l'INS, et les DEUX TAG_NAME dans le bon ordre
+# --------------------------------------------------------------------------
+class TestCablageRename(unittest.TestCase):
+    def test_rename_porte_le_bon_ins_et_les_deux_noms_dans_l_ordre(self):
+        # Encore un compte du milieu, pour la même raison que DELETE.
+        cle = FauxTransport(comptes=[b"A:premier", b"B:milieu", b"C:dernier"])
+        with _muet() as sortie:
+            rc = oath.cmd_rename(cle, _args("rename", "B:milieu", "B:nouveau"))
+        self.assertEqual(rc, 0)
+        trame = cle.envoyees[-1]
+        self.assertEqual(trame[1], oath.INS_RENAME)  # 05
+        # L'ORDRE est la propriété qui compte : oath_do_rename() lit le
+        # PREMIER 0x71 comme la cible. Les inverser renommerait un compte
+        # inconnu, ou le compte en lui-même — sans erreur visible.
+        self.assertEqual(
+            oath.tlv_parse(trame[5:]),
+            [(oath.TAG_NAME, b"B:milieu"), (oath.TAG_NAME, b"B:nouveau")])
+        self.assertIn("B:nouveau", sortie.getvalue())
+        # Témoin positif direct : le nom a VRAIMENT changé dans le magasin.
+        self.assertEqual(cle.comptes,
+                          [b"A:premier", b"B:nouveau", b"C:dernier"])
+
+    def test_un_mot_d_etat_en_echec_ne_pretend_pas_avoir_renomme(self):
+        cle = FauxTransport(comptes=[b"A:x", b"B:y"],
+                             echecs={b"A:x": 0x6A80})  # nom déjà pris
+        with _muet() as sortie:
+            rc = oath.cmd_rename(cle, _args("rename", "A:x", "B:y"))
+        self.assertEqual(rc, 1)
+        self.assertNotIn("renommé", sortie.getvalue())
+        # Le magasin factice n'a pas bougé — le témoin positif ci-dessus
+        # prouve qu'il aurait bougé si la carte avait répondu 9000.
+        self.assertEqual(cle.comptes, [b"A:x", b"B:y"])
 
 
 # --------------------------------------------------------------------------
