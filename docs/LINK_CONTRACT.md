@@ -4,11 +4,20 @@
 **Authority**: this document. The chest is the SPI *slave* and publishes the
 register map, so the protocol is defined here and consumed there.
 **Written on**: 2026-09-29, from the implementation, not from the design spec.
-**Protocol version**: **2** (see section 8). Version 1 is superseded; a v1
-master and a v2 chest refuse each other by design.
+**Protocol version**: **3** (see section 9). Versions 1 and 2 are superseded;
+mismatched halves refuse each other by design, on the version byte.
 
-The chest side is implemented and builds; it has **never been exercised against
-a real master**, because on the dev kit GPIO7-11 are taken by the audio codec.
+**What v3 adds, and why**: the chest now publishes the **name of the account**
+an operation targets, so your screen can show *which* account the owner is
+approving rather than only *what kind* of operation is pending. It also opens a
+**second channel** (section 13) so the keyboard can browse accounts and display
+TOTP codes without the host ever seeing them, and carries a **wall-clock time**
+that the host sets once per plug-in (section 14).
+
+The chest side is implemented, builds, and **runs on hardware** — commit
+`440d79d`, verified from its boot log. What has *not* been exercised is the DMA
+channel of section 13: its receive is armed at init and segments are queued,
+but no frame has crossed it yet.
 So: the bytes below are what the chest's code actually produces and accepts —
 that part is verifiable today, and section 11 gives you the vectors to check it
 against. The *electrical* side has not been proven, and section 2 says exactly
@@ -43,8 +52,8 @@ wins; section 12 lists every disagreement we found while writing this.
 
 ## 1. The register map
 
-Twenty bytes, five 32-bit words, in the `spi_slave_hd` **shared register**
-buffer. They are readable and writable by the master *without the chest's
+Sixty-four bytes, sixteen 32-bit words, in the `spi_slave_hd` **shared
+register** buffer. They are readable and writable by the master *without the chest's
 firmware having prepared anything* — the SPI peripheral answers on its own.
 That is deliberate: it means you can still read the chest's state while its
 firmware is hung, and it is why we chose `spi_slave_hd` over the classic slave
@@ -54,17 +63,45 @@ transaction, and hence a "ready" line we do not have).
 | offset | word | size | field | owner | notes |
 |---|---|---|---|---|---|
 | `0x00`–`0x03` | 0 | 4 | magic word `NIPH` | chest→S3 | `4E 49 50 48`, in that byte order |
-| `0x04` | 1 | 1 | protocol version | chest→S3 | **`0x02`** |
+| `0x04` | 1 | 1 | protocol version | chest→S3 | **`0x03`** |
 | `0x05` | 1 | 1 | state bits | chest→S3 | see below |
 | `0x06`–`0x07` | 1 | 2 | pending operation | chest→S3 | little-endian, `0` = none armed |
 | `0x08`–`0x0B` | 2 | 4 | consumed-confirmation counter | chest→S3 | little-endian, free-running |
-| **`0x0C`** | 3 | 1 | **instance number of the armed operation** | chest→S3 | **new in v2**, see section 5 |
-| **`0x0D`** | 3 | 1 | **active USB mode** (wire value) | chest→S3 | **added 2026-09-29**, see “Active USB mode” in section 1 |
-| **`0x0E`–`0x0F`** | 3 | 2 | **CRC16 over `0x00`–`0x0D`** | chest→S3 | little-endian — **moved in v2** |
-| `0x10` | 4 | 1 | user confirmation | S3→chest | see section 5 |
-| **`0x11`** | 4 | 1 | **echo of the instance number** | S3→chest | **new in v2**, see section 5 |
-| **`0x12`** | 4 | 1 | **requested USB mode** | S3→chest | **new in v2**, see section 6 |
-| `0x13` | 4 | 1 | reserved | S3→chest | **yours**, the chest never reads or writes it |
+| `0x0C` | 3 | 1 | instance number of the armed operation | chest→S3 | section 5 |
+| `0x0D` | 3 | 1 | active USB mode (wire value) | chest→S3 | section 1, “Active USB mode” |
+| **`0x0E`** | 3 | 1 | **label length** | chest→S3 | **new in v3**, `0`–`34` |
+| **`0x0F`** | 3 | 1 | **accounts targeted** | chest→S3 | **new in v3**, `0`/`1`/`N` |
+| **`0x10`** | 4 | 1 | **queued segment kind** | chest→S3 | **new in v3**, `0` = nothing queued |
+| **`0x11`** | 4 | 1 | **segment number** | chest→S3 | **new in v3**, bumped after queueing |
+| **`0x12`–`0x13`** | 4 | 2 | **segment length** | chest→S3 | **new in v3**, little-endian |
+| **`0x14`–`0x35`** | 5–13 | 34 | **label**, printable ASCII | chest→S3 | **new in v3**, NOT NUL-terminated |
+| **`0x36`–`0x37`** | 13 | 2 | **CRC16 over `0x00`–`0x35`** | chest→S3 | little-endian — **moved in v3** |
+| **`0x38`** | 14 | 1 | user confirmation | S3→chest | section 5 — **moved from `0x10`** |
+| **`0x39`** | 14 | 1 | echo of the instance number | S3→chest | section 5 — **moved from `0x11`** |
+| **`0x3A`** | 14 | 1 | requested USB mode | S3→chest | section 6 — **moved from `0x12`** |
+| `0x3B` | 14 | 1 | reserved | S3→chest | **yours** |
+| **`0x3C`** | 15 | 1 | **request doorbell** | S3→chest | **new in v3**, section 13 |
+| `0x3D`–`0x3F` | 15 | 3 | reserved | S3→chest | **yours** |
+
+**Sixty-four bytes, sixteen words** — the whole of the P4's shared register file
+(`SOC_SPI_MAXIMUM_BUFFER_SIZE`, `components/soc/esp32p4/include/soc/soc_caps.h:574`).
+Chest `0x00`–`0x37` (fourteen whole words), master `0x38`–`0x3F` (two), **no word
+shared**. There is no room left: the next chest-side field is a v4.
+
+### The doorbell is in the master's SECOND word, and that is not cosmetic
+
+Your team found this, and the code confirms it. When the chest clears a consumed
+confirmation byte it calls `spi_slave_hd_write_buffer()` for **one** byte — but
+the driver writes **by 32-bit words**, so that is a read-modify-write over the
+master's *first* word. A doorbell living in that word would be **overwritten**
+whenever it landed in those few cycles, and the request would never be served,
+with no error anywhere.
+
+This is the same window section 5 already describes for the mode byte. The
+difference is decisive: the mode is re-read and re-written every cycle, so it
+heals. **A doorbell is never re-read.** Hence `0x3C`, in the word the chest
+never writes.
+
 
 ### What changed in v2, and why it could not wait
 
@@ -79,7 +116,7 @@ selector command is not even compiled into its firmware. The chest therefore
 booted into `USB_MODE_NONE` and **nothing could take it out** — microSD
 answering (`sd info` reports a 30 528 MB SDHC), applets present, link working,
 and a host that never saw a thing. V1 had handled *presence*; nobody had carried
-over *selection*. Byte `0x12` is that field; section 6 is its whole semantics.
+over *selection*. Byte `0x3A` is that field; section 6 is its whole semantics.
 
 **2 — Confirmation resumption keyed on the operation code, not on the
 instance.** Your team found this one. If your first write is lost and an
@@ -88,7 +125,7 @@ Concretely: the owner presses for “CODE OTP GITHUB”, the write is lost, the
 operation expires, the host arms one for “CODE OTP BANQUE”, the retry confirms
 it. She never consented to that account — and the screen, which exists precisely
 so that her press means something, was showing her the other one. Bytes `0x0C`
-and `0x11` are that fix, and section 5 is the rule.
+and `0x39` are that fix, and section 5 is the rule.
 
 ### The CRC moved back to `0x0E`, and that is not a reversal
 
@@ -97,7 +134,7 @@ offset alone makes it look that way.
 
 The map that predates the separation *did* put the CRC at `0x0E`. But the
 master's byte was then at `0x0C` — **in the same 32-bit word**. That was the
-defect: not the offset, the shared word. The master now lives in `0x10`–`0x13`
+defect: not the offset, the shared word. The master now lives in `0x38`–`0x3F`
 and the chest owns `0x00`–`0x0F` whole. No word is shared, the argument in “Why
 five words, and no word shared” below still holds unchanged, and the CRC is free
 to cover everything that precedes it **contiguously**.
@@ -121,11 +158,16 @@ another's instance. That is the exact defect the instance number exists to
 close, reintroduced by the transport. Vector V6d in section 11 is that block.
 
 **Established.** The offsets are `LINK_REG_*` in `link_proto.h`. The two
-ownership ranges are `LINK_REG_CHEST_BASE`/`_LEN` = `0x00`/`0x10` and
-`LINK_REG_MASTER_BASE`/`_LEN` = `0x10`/`0x04`, unchanged by v2 — the block is
+ownership ranges are `LINK_REG_CHEST_BASE`/`_LEN` = `0x00`/`0x38` and
+`LINK_REG_MASTER_BASE`/`_LEN` = `0x38`/`0x08`, widened by v3 — the block is
 still twenty bytes and the two ends still share no word.
 
 ### State bits (offset `0x05`)
+
+Bit 3, **`TIME_VALID`**, is new in v3: the chest holds a wall-clock time that was
+**set**, never guessed. See section 14 — and note that it never rises on a
+default, an epoch or a zero.
+
 
 | bit | mask | name | meaning |
 |---|---|---|---|
@@ -184,7 +226,7 @@ arming, whatever the operation is.
 Read it in the same transaction as the pending operation — they are both in the
 chest's zone and the CRC covers both, so one read gives you a pair that is
 consistent or refused, never silently mismatched. Show the operation to the
-owner, and when she presses, echo **that** instance back at `0x11`.
+owner, and when she presses, echo **that** instance back at `0x39`.
 
 It is not a nonce and it is not a secret: it is a discriminator. It wraps at
 256. What that buys, stated as a limit rather than as a guarantee: for a value
@@ -200,7 +242,7 @@ and this is what it is worth.
 
 **The byte you asked us not to leave reserved.** It carries the wire value of
 the mode the chest has **actually installed**, using the same numbering as the
-request at `0x12` (section 8).
+request at `0x3A` (section 8).
 
 Until this byte existed, the protocol had no readback of the mode at all.
 `USB_MOUNTED` says *something* is mounted, never *what*. Your screen could
@@ -222,15 +264,15 @@ matters. `0xFF` is outside the contiguous mode range, so a master comparing
 
 **What you can rely on:**
 
-- `0x0D == 0x12` → the chest is in the mode you asked for. This is the steady
+- `0x0D == 0x3A` → the chest is in the mode you asked for. This is the steady
   state.
 - `0x0D == 0xFF` → a switch is in flight. Show the requested mode as pending;
   do not report a failure. A switch can legitimately take **up to ~15 s**
   (section 5's timeout bounds the same worst case: `usb_mode_apply_wire()` tears
   down the current descriptors and installs the next).
-- `0x0D != 0x12`, both known values, **persisting across several reads** → the
+- `0x0D != 0x3A`, both known values, **persisting across several reads** → the
   chest refused or failed the switch and is still in the previous mode. Rewrite
-  `0x12`; if it does not move, that is a real fault and worth surfacing.
+  `0x3A`; if it does not move, that is a real fault and worth surfacing.
 - `USB_MOUNTED` set → `0x0D` is a known value other than `0x00`. The two
   describe the same fact and may not contradict each other; a block that did
   would be one neither side can arbitrate. Vector V14 is the in-flight case,
@@ -258,12 +300,12 @@ against the name: our own header comment calls it "CRC-16/X-25", which is wrong
 comment, is what runs.
 
 **Why the CRC stops at `0x0D` and does not cover the master's word.** If it
-covered `0x10`–`0x13`, then every legitimate write of yours — putting `0x5A` in
-the confirmation byte, or a mode in `0x12` — would make the block fail its own
+covered `0x38`–`0x3F`, then every legitimate write of yours — putting `0x5A` in
+the confirmation byte, or a mode in `0x3A` — would make the block fail its own
 CRC, on both sides, for the entire time the byte sits there. The chest would be publishing a block
 that reads as corrupt precisely when something is happening. So the CRC is a
 chest→S3 integrity check on chest→S3 fields only. Your word is outside it, and
-you may put whatever you like in `0x11`–`0x13` later without invalidating
+you may put whatever you like in `0x39`–`0x3F` later without invalidating
 anything.
 
 There is no integrity check in the S3→chest direction. Section 5 explains what
@@ -291,7 +333,7 @@ not yet exist, which was the only moment it was free.
 Consequences you can rely on:
 
 - the chest publishes `0x00`–`0x0F` as **one aligned four-word write**, never
-  touching `0x10`–`0x13` (v2 adds the instance number inside that same write —
+  touching `0x38`–`0x3F` (v2 adds the instance number inside that same write —
   it did not change the shape of it);
 - a confirmation you have written and the chest has not yet read **survives**
   every state republication;
@@ -423,7 +465,7 @@ Half-duplex, following Espressif's `spi_slave_hd` protocol. To read the
 register block:
 
 ```
-CMD 0x02 (RDBUF) | ADDR 0x00 | 8 dummy bits | 20 bytes out (slave→master)
+CMD 0x02 (RDBUF) | ADDR 0x00 | 8 dummy bits | 64 bytes out (slave→master)
 ```
 
 To write the confirmation byte:
@@ -486,7 +528,7 @@ section 11 is exactly that block.
 
 ## 5. The confirmation, and the instance it belongs to
 
-**A confirmation is accepted if and only if `0x10` is `0x5A` **and** `0x11` is
+**A confirmation is accepted if and only if `0x38` is `0x5A` **and** `0x39` is
 the instance number the chest currently has armed.** Anything else is ignored,
 and the ignoring is silent.
 
@@ -499,7 +541,7 @@ operation*.
 1. Read the block. See `pending_op ≠ 0` (and `READY` set). **Note the instance
    number at `0x0C` from that same read.**
 2. Show the operation to the owner and obtain a **real key press**.
-3. Write `0x5A` to `0x10` **and the noted instance to `0x11`**. Both bytes, in
+3. Write `0x5A` to `0x38` **and the noted instance to `0x39`**. Both bytes, in
    one write if you can — they are in your word and nothing of ours is in it.
 4. Poll the block. The confirmation counter increments → accepted and relayed.
    The pending operation clears → the chest acted on it.
@@ -510,17 +552,17 @@ that is exactly the mistake this field exists to make impossible.
 
 ### What the chest does, byte by byte
 
-The chest polls `0x10`–`0x13` every 20 ms, in one read. On any non-zero value at
-`0x10` it **immediately writes `0x00` back**, before deciding anything, and
+The chest polls `0x38`–`0x3F` every 20 ms, in one read. On any non-zero value at
+`0x38` it **immediately writes `0x00` back**, before deciding anything, and
 then:
 
-- `0x10 == 0x5A` **and** `0x11 == armed instance` → a real press for the
+- `0x38 == 0x5A` **and** `0x39 == armed instance` → a real press for the
   operation we armed. Relayed to the security layer; the confirmation counter at
   `0x08` increments.
-- `0x10 == 0x5A`, `0x11` ≠ armed instance → **ignored**. The counter does not
+- `0x38 == 0x5A`, `0x39` ≠ armed instance → **ignored**. The counter does not
   move. Logged at INFO on our side, because this is *not* an anomaly: one lost
   write plus one expiry is enough to produce it.
-- `0x10` non-zero and not `0x5A` → discarded, logged as
+- `0x38` non-zero and not `0x5A` → discarded, logged as
   `octet de confirmation inattendu 0x..`. The counter does not move.
 
 **Reclaiming the byte happens in all three cases, and it has to.** In v1 the
@@ -579,28 +621,28 @@ you are waiting to see the counter move, and a second press there would be a
 duplicate anyway.
 
 **V2 widens what that window can swallow, and you should know it.** The reclaim
-rewrites your whole 32-bit word, so a **mode request** you write into `0x12`
+rewrites your whole 32-bit word, so a **mode request** you write into `0x3A`
 during those few cycles can be written back stale and lost. It is narrow (it
 only opens right after a confirmation) and it is not dangerous (nothing is
 exposed that was not already), but unlike a lost press it is **silent**: there
 is no counter for mode changes. The mitigation is on your side and it is one
-line — **re-read `0x12` after writing it, and rewrite if it does not stick.**
-Your polling loop already does this if it compares `0x12` against the mode it
+line — **re-read `0x3A` after writing it, and rewrite if it does not stick.**
+Your polling loop already does this if it compares `0x3A` against the mode it
 wants on every cycle, which is what section 6 asks for anyway.
 
-We could not close it without writing your reserved byte `0x13`, which would set
+We could not close it without writing one of your reserved bytes, which would set
 a trap for the first field you put there.
 
 ## 6. Selecting the USB mode — new in v2
 
-**Byte `0x12`. This is the field that makes the chest usable at all.**
+**Byte `0x3A`. This is the field that makes the chest usable at all.**
 
 Without it the chest boots into `USB_MODE_NONE`, exposes no descriptors, and
 nothing anywhere can change that: its console is compiled without the selector
 command (`BOARD_CONSOLE_ACTIONS 0`) and it has no button. A chest that has just
 been flashed shows up in no `lsusb`, no `lsblk`, no `gpg --card-status`, and
 that is the *normal* state — “lots of things, one at a time”, never two at once.
-`0x12` is how one of them gets chosen.
+`0x3A` is how one of them gets chosen.
 
 ### 6.1 The wire values
 
@@ -629,16 +671,16 @@ understand — and never “the nearest one”.
 
 ### 6.2 Applied on change, against the last *applied* value
 
-The chest acts when the byte **changes**, not on every read: it reads `0x12`
+The chest acts when the byte **changes**, not on every read: it reads `0x3A`
 twenty times a second and re-enumerating that often would be absurd.
 
 The reference it compares against is **the last value it actually applied**,
 starting at `0x00` on boot — not the last value it read. That distinction is
 what makes the selection self-healing, and it is what you asked for:
 
-- the chest reboots; its shared buffer comes back all zeros, so `0x12` reads
+- the chest reboots; its shared buffer comes back all zeros, so `0x3A` reads
   `0x00` and the chest's reference is `0x00`;
-- your master, which re-reads `0x12` every cycle and rewrites it whenever it
+- your master, which re-reads `0x3A` every cycle and rewrites it whenever it
   differs from the mode it wants, sees `0x00` where it wanted `0x02` and writes
   `0x02`;
 - the chest sees a genuine `0 → 2` change and applies it.
@@ -661,11 +703,11 @@ second one to confirm the first would be theatre.
 It has a consequence that deserves to be named rather than left for a reader to
 work out. **`0x01 storage` exposes the owner's microSD as a mass-storage device
 with nobody pressing anything**, and `0x02 pgp` loads her private-key state into
-RAM. Whoever can write `0x12` can therefore read her card.
+RAM. Whoever can write `0x3A` can therefore read her card.
 
 This is acceptable, and here is why — not as a guarantee, as a reasoning:
 
-- Writing `0x12` means being **master of this SPI bus**, which means being
+- Writing `0x3A` means being **master of this SPI bus**, which means being
   **inside the left half of the keyboard**. Whoever is there already has the
   microSD in their hand. The link adds nothing to what they can do.
 - The host the mode exposes something *to* is **the owner's own host**, through
@@ -687,18 +729,18 @@ If that trade ever needs revisiting, `storage` is the candidate — it exposes
 data without any operation being armed. It is a decision for the owner, not a
 protocol change, and she has already taken it once.
 
-### 6.4 What you should do with `0x12`
+### 6.4 What you should do with `0x3A`
 
 1. Decide the mode you want (from a layer, a key, a menu — yours).
-2. Every cycle, read the block. Compare `0x12` against the mode you want.
-3. If it differs, write your value to `0x12`. One byte, in your own word.
+2. Every cycle, read the block. Compare `0x3A` against the mode you want.
+3. If it differs, write your value to `0x3A`. One byte, in your own word.
 4. Read the **active** mode at `0x0D` to see which mode is actually installed.
    `LINK_STATE_USB_MOUNTED` at `0x05` bit 1 still tells you mounted-or-not; the
    byte tells you *which*, and the two never contradict each other.
 5. While `0x0D` is `0xFF`, a switch is in flight: show your request as pending,
    not as a failure. Only a disagreement between two **known** values, persisting
    across several reads, means the chest refused or failed the switch — then
-   rewrite `0x12`, and surface a fault if it still does not move.
+   rewrite `0x3A`, and surface a fault if it still does not move.
 
 This is the readback that the first published v2 did not have, and step 4 is the
 reason it was added: without it, step 2's comparison is the only thing you can
@@ -817,7 +859,7 @@ every block for a reason it could not name.
 Practically, on the master side, "refuses" should mean: treat the chest as
 unusable, log it once with both version numbers, and do not write the
 confirmation byte **or the mode byte**. A chest whose protocol you do not understand is a chest whose
-`0x10` may mean something else.
+`0x38` may mean something else.
 
 **What must change together** when the register map moves:
 
@@ -833,6 +875,11 @@ confirmation byte **or the mode byte**. A chest whose protocol you do not unders
    to KeSp. A contract whose vectors were edited by hand is worse than no
    contract.
 
+**v3 (2026-09-29)** moved every offset: the block went from 20 to 64 bytes, the
+CRC to `0x36`–`0x37`, and your range to `0x38`–`0x3F`. No chest-side reserved byte
+remains — the next field on our side is a v4. Your reserved bytes are `0x3B` and
+`0x3D`–`0x3F`.
+
 Adding a **state bit** (`0x05` bits 3–7) still requires a version bump by rule 1
 — but a master written to ignore unknown state bits will keep working, so the
 bump is cheap for you. The chest's last reserved byte, `0x0D`, was filled on
@@ -841,7 +888,7 @@ a deliberate exception taken while no half had yet been flashed with v2: a
 master that ignored the byte saw `0x00`, which was also the old reserved value,
 so nothing in flight could misread it. That exception is spent — there is no
 reserved byte left on our side, and the next chest-side field is a v3.
-Adding a field to *your* reserved byte `0x13` requires nothing from us: the
+Adding a field to *your* reserved bytes `0x3B`, `0x3D`–`0x3F` requires nothing from us: the
 chest never reads or writes it, and the CRC does not cover it.
 
 Adding a **wire value for a new USB mode** (section 6.1) also requires a version
@@ -859,7 +906,7 @@ The wire is there and the chest drives it. **Whether you use it is your call**,
 because the keyboard is the half that lives on battery and we are not the ones
 paying for it. The chest supports both, and must keep supporting both.
 
-- **Polling.** Read the 20-byte block on an interval and watch
+- **Polling.** Read the 64-byte block on an interval and watch
   `pending_op`. Simplest; no interrupt handling; no dependence on GPIO46 being
   the pin we think it is (section 2). Costs a transaction per interval, on a
   bus you share with the radio, and adds up to half your interval to the
@@ -922,112 +969,116 @@ your parser, and a divergence goes red on whichever side deviates.
 
 **How these were produced**: by compiling a throwaway host program against the
 actual `main/link/link_proto.c` and `main/sys/cr_crc16.c`, building each block
-and printing what `link_proto_is_absent()`, `link_proto_parse_status()`,
-`link_proto_parse_master()`, `link_proto_confirm_accepted()` and
-`link_proto_mode_request()` return for it. Not written by hand, and regenerated
-in full for v2 — **every** byte below changed, because the version byte, the
-instance number and the CRC offset all moved. **Regenerated again on
-2026-09-29** when `0x0D` became the active USB mode: V1 and everything derived
-from it moved (`0x0D` `00` → `01`, CRC `62 3A` → `EB 2B`). V9's CRC did **not**
-change, since its `0x0D` was already zero — if your v2 bench pinned V9 only, it
-will still pass, and that is not evidence the rest is current. They are also pinned in
-`test/test_link_proto.c` (`test_shared_vectors_*`), so the fast check turns red
-here if the chest's behaviour ever stops matching this table.
+and printing what the decoders return for it. Not written by hand. They are also
+pinned in `test/test_link_proto.c` (`test_shared_vectors_*`), so the fast check
+turns red here if the chest's behaviour ever stops matching this table.
 
-All blocks are 20 bytes, in offset order `0x00` → `0x13`. The nominal block V1
-has **instance 3** armed, which is what makes V8 and V11 comparable.
+**Regenerated in full for v3** — every byte moved: the block went from 20 to 64
+bytes, the version byte to `0x03`, the CRC to `0x36`–`0x37`, and the master's
+range to `0x38`. Nothing from the v2 table survives.
+
+The nominal block **V1** is an OATH code pending for **`GITHUB`**: SD present,
+USB mounted, ready, **time valid**, 42 confirmations, **instance 3**, active mode
+`oath`, one account targeted.
+
+### Register blocks (64 bytes, offsets `0x00` → `0x3F`)
 
 | # | bytes |
 |---|---|
-| V1 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 00 00 00 00` |
-| V2 | `00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00` |
-| V3 | `FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF` |
-| V4 | `4E 49 50 58 02 07 01 00 2A 00 00 00 03 01 EB 2B 00 00 00 00` |
-| V5 | `4E 49 50 48 03 07 01 00 2A 00 00 00 03 01 CC 07 00 00 00 00` |
-| V6 | `4E 49 50 48 02 07 01 00 2B 00 00 00 03 01 EB 2B 00 00 00 00` |
-| V6b | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EA 2B 00 00 00 00` |
-| V6c | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2A 00 00 00 00` |
-| V6d | `4E 49 50 48 02 07 01 00 2A 00 00 00 02 01 EB 2B 00 00 00 00` |
-| V6e | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 05 EB 2B 00 00 00 00` |
-| V7 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 00 00 00` *(19 bytes)* |
-| V8 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 5A 03 00 00` |
-| V9 | `4E 49 50 48 02 00 00 00 00 00 00 00 00 00 39 D4 00 00 00 00` |
-| V10 | `FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 00` |
-| V11 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 5A 02 00 00` |
-| V12 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 00 00 09 00` |
-| V13 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 00 00 02 00` |
-| V14 | `4E 49 50 48 02 05 00 00 2A 00 00 00 03 FF 5F 2F 00 00 00 00` |
+| V1 | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
+| V4 | `4E 49 50 58 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
+| V5 | `4E 49 50 48 04 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 94 08 00 00 00 00 00 00 00 00` |
+| V6 | `4E 49 50 48 03 0F 09 00 2B 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
+| V6B | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0D FD 00 00 00 00 00 00 00 00` |
+| V6C | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FC 00 00 00 00 00 00 00 00` |
+| V6D | `4E 49 50 48 03 0F 09 00 2A 00 00 00 02 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
+| V6E | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 01 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
+| V6F | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 67 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
+| V6G | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 23 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 8F 04 00 00 00 00 00 00 00 00` |
+| V8 | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 5A 03 00 00 00 00 00 00` |
+| V9 | `4E 49 50 48 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 95 15 00 00 00 00 00 00 00 00` |
+| V10 | `FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 00` |
+| V11 | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 5A 02 00 00 00 00 00 00` |
+| V12 | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 09 00 00 00 00 00` |
+| V13 | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 02 00 00 00 00 00` |
+| V14 | `4E 49 50 48 03 0D 09 00 2A 00 00 00 03 FF 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 CF C9 00 00 00 00 00 00 00 00` |
+| V15 | `4E 49 50 48 03 07 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 EA 29 00 00 00 00 00 00 00 00` |
+| V16 | `4E 49 50 48 03 0F 0C 00 2A 00 00 00 03 05 0A 0C 00 00 00 00 31 32 20 43 4F 4D 50 54 45 53 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 77 08 00 00 00 00 00 00 00 00` |
 
 | # | what it is | `is_absent` | `parse` | decoded |
 |---|---|---|---|---|
-| V1 | nominal: SD present + USB mounted + ready, PSO:CDS pending, 42 confirmations, instance 3, **active mode `storage`** | `false` | **`true`** | version 2, state `0x07`, pending_op 1, count 42, instance 3, active `0x01` |
-| V2 | chest absent, line reads `0x00` | **`true`** | `false` | — |
-| V3 | chest absent, line reads `0xFF` | **`true`** | `false` | — |
-| V4 | bad magic word — one byte, `NIPH` → `NIPX`; everything else is V1 | `false` | `false` | — |
-| V5 | unknown version: a chest announcing protocol **3**, **CRC recomputed and correct** | `false` | `false` | — |
-| V6 | CRC wrong by one bit: `confirm_count` LSB flipped (42 → 43), CRC left stale | `false` | `false` | — |
-| V6b | CRC wrong by one bit, the other way: payload intact, one bit flipped in the CRC field's **low** byte | `false` | `false` | — |
-| V6c | **proposed by you, and it was missing**: the same, in the CRC field's **high** byte | `false` | `false` | — |
-| V6d | **instance** changed (3 → 2), CRC left stale — the proof, in bytes, that `0x0C` is covered | `false` | `false` | — |
-| V6e | **active mode** changed (`storage` → `oath`), CRC left stale — the same proof for `0x0D` | `false` | `false` | — |
-| V7 | truncated: V1's first 19 bytes, `len = 19` | `false` | `false` | — |
-| V8 | V1 plus a confirmation not yet read, echoing the **armed** instance (3) | `false` | **`true`** | identical to V1; confirmation **accepted** |
-| V9 | chest present and **not ready**: no state bits, nothing pending, counter zero, nothing ever armed, no active mode | `false` | **`true`** | version 2, state `0x00`, pending_op 0, count 0, instance 0, active `0x00` |
-| V10 | **proposed by you**: uniform block except the **last** byte | `false` | `false` | — |
+| V1 | nominal: SD + mounted + ready + **time valid**, code pending for `GITHUB`, 42 confirmations, instance 3 | `false` | **`true`** | version 3, state `0x0F`, pending_op 9, count 42, instance 3, active `0x05`, label `GITHUB`, op_count 1 |
+| V2 | chest absent, line reads `0x00` (64 bytes) | **`true`** | `false` | — |
+| V3 | chest absent, line reads `0xFF` (64 bytes) | **`true`** | `false` | — |
+| V4 | bad magic word, `NIPH` → `NIPX`; everything else is V1 | `false` | `false` | — |
+| V5 | unknown version: a chest announcing protocol **4**, **CRC recomputed and correct** | `false` | `false` | — |
+| V6 | `confirm_count` LSB flipped (42 → 43), CRC left stale | `false` | `false` | — |
+| V6b | payload intact, one bit flipped in the CRC field's **low** byte | `false` | `false` | — |
+| V6c | the same, in the CRC field's **high** byte | `false` | `false` | — |
+| V6d | **instance** changed (3 → 2), CRC left stale | `false` | `false` | — |
+| V6e | **active mode** changed (`oath` → `storage`), CRC left stale | `false` | `false` | — |
+| V6f | **one byte of the label** changed (`G` → `g`), CRC left stale — **the v3 vector you asked for** | `false` | `false` | — |
+| V6g | **`label_len` = 35** for a 34-byte field, **CRC RECOMPUTED AND CORRECT** | `false` | `false` | — |
+| V7 | truncated: V1's first 63 bytes, `len = 63` | `false` | `false` | — |
+| V8 | V1 plus a confirmation not yet read, echoing the **armed** instance (3) at `0x39` | `false` | **`true`** | identical to V1; confirmation **accepted** |
+| V9 | chest present and **not ready**: no state bits, nothing pending, no label, no time | `false` | **`true`** | version 3, everything zero |
+| V10 | uniform `0xFF` except the **last** byte | `false` | `false` | — |
 | V11 | V1 plus a well-formed `0x5A` echoing the **previous** instance (2) | `false` | **`true`** | block valid; confirmation **refused** |
-| V12 | V1 plus an **unknown** mode request (`0x09`) at `0x12` | `false` | **`true`** | block valid; mode request **refused** |
-| V13 | V1 plus a valid mode request (`0x02`, pgp) at `0x12` | `false` | **`true`** | block valid; mode request **applied** (from `0x00`) |
-| V14 | **switch in flight**: active mode `0xFF`, `USB_MOUNTED` cleared, SD + ready | `false` | **`true`** | version 2, state `0x05`, instance 3, active **indeterminate** |
+| V12 | V1 plus an **unknown** mode request (`0x09`) at `0x3A` | `false` | **`true`** | block valid; mode request **refused** |
+| V13 | V1 plus a valid mode request (`0x02`, pgp) at `0x3A` | `false` | **`true`** | block valid; mode request **applied** |
+| V14 | switch in flight: active mode `0xFF`, `USB_MOUNTED` cleared | `false` | **`true`** | state `0x0D`, active **indeterminate** |
+| V15 | mounted and ready but **no time set** (bit 3 clear) | `false` | **`true`** | state `0x07` — your **“NO TIME”** |
+| V16 | a **RESET** pending: `pending_op` `0x0C`, `op_count` **12**, label `12 COMPTES` | `false` | **`true`** | twelve accounts on one press |
+
+### DMA channel (section 13)
+
+| # | bytes | what it is |
+|---|---|---|
+| R1 | `01 00 00 00 00 00 5B 0C` | request: `LIST` from index 0 |
+| R2 | `02 05 00 00 00 00 72 26` | request: `CODE` for account 5 |
+| R3 | `02 04 00 00 00 00 72 26` | R2 with the argument flipped one bit, CRC left — **refused** |
+| L1 | `0C 03 00 01 00 06 47 49 54 48 55 42 01 09 4F 56 48 3A 50 45 52 53 4F 02 07 4F 56 48 3A 50 52 4F E5 D7` | `LIST` reply: 12 total, 3 in this page from index 0, **more** flag set — `GITHUB`, `OVH:PERSO`, `OVH:PRO` |
+| C1 | `05 06 30 30 34 31 38 39 30 32 0C 00 8F 9B` | `CODE` reply: account 5, six digits, `00418902`, twelve seconds left |
 
 Reading notes, since these are the cases that catch a wrong implementation:
 
 - **V1 vs V8, V11, V12, V13** — all four differ from V1 only inside the master's
-  word, and the CRC bytes are identical (`EB 2B`) in all of them. That is the
-  CRC span made visible: a parser that recomputes over 20 bytes instead of 14
+  range, and the CRC bytes are identical (`0C FD`) in all of them. That is the
+  CRC span made visible: a parser that recomputes over 64 bytes instead of 54
   will accept V1 and reject the other four, and will therefore reject the block
   exactly whenever something is in flight.
-- **V8 vs V11** — the two blocks differ in **one byte**, `0x11`: `03` against
+- **V8 vs V11** — the two blocks differ in **one byte**, `0x39`: `03` against
   `02`. V8 is accepted, V11 is refused. If your implementation treats them the
-  same, it has the v1 defect, and the “CODE OTP GITHUB → CODE OTP BANQUE” case
-  is live on your side.
-- **V6d** — the instance byte alone was changed and the CRC left as it was. A
-  v1 parser accepts this block (`0x0C` was the CRC's low byte there, so the
-  bytes mean something else entirely); a v2 parser must reject it. This is the
-  vector that proves the instance is inside the covered span.
-- **V6e** — the same demonstration for the active mode byte. Note it is
-  indistinguishable from V6d in structure: both change one covered byte and
-  leave the CRC. If your parser passes V6d but fails V6e, your span stops at
-  `0x0C` and you are one byte short.
-- **V14** — the one block where requested and active legitimately disagree. A
-  master that treats `0x0D != 0x12` as an error will pass every other vector
-  here and still report a fault every time the owner switches mode. Show the
-  request as pending while `0x0D` is `0xFF`; only a *persisting* disagreement
-  between two known values is a real fault.
-- **V1 vs V14** — `USB_MOUNTED` and the active mode move together: V1 has the
-  bit set and a real mode, V14 has neither. A block with the bit set and active
-  `0x00` is self-contradictory and neither side can arbitrate it; we now refuse
-  to publish one, and you may treat it as corrupt if you ever see it.
-- **V6b and V6c together** — one bit in each half of the CRC field. A parser
-  that only compares the low byte, or that stores the CRC big-endian, passes one
-  and fails the other. Neither alone is sufficient.
+  same, it has the v1 defect, and the “CODE OTP GITHUB → CODE OTP BANQUE” case is
+  live on your side.
+- **V6d, V6e and V6f together** — instance, active mode, label. Three covered
+  fields, three single-byte changes with the CRC left alone, three rejections. If
+  one of them passes, your CRC span is short by exactly that field.
+- **V6g is the one that is not about corruption at all.** Its CRC is *correct*.
+  The block is refused because a `label_len` of 35 cannot describe a 34-byte
+  field — the refusal is about the block's **meaning**, not its transmission. If
+  you truncate instead of refusing, you read bytes that are not the label and
+  display a name the chest never composed, which is the exact thing this field
+  exists to prevent. **Treat `label_len > 34` as a corrupt block.**
+- **V15 and V16** — the two states v2 could not express. V15 is mounted, ready,
+  and has no time: show “NO TIME”, do not ask for a code. V16 is a RESET with
+  `op_count` 12: show the count, because one press destroys twelve secrets.
+- **V6b and V6c together** — one bit in each half of the CRC field. A parser that
+  only compares the low byte, or stores the CRC big-endian, passes one and fails
+  the other. Neither alone is sufficient.
 - **V5** — well-formed, correct CRC, refused on the version byte alone. If your
   parser accepts V5, it will one day misread a chest that is a version ahead.
-- **V10** — nineteen `0xFF` and one `0x00`. An absence test that stops at the
-  first byte, or that only sweeps the chest's zone, calls this “absent” and you
-  lose a chest that is talking to you.
-- **V2 and V3** — `parse` returns `false`, but the reason is *absent*, not
-  *invalid*. A master that logs these as errors will log them constantly, since
-  this is the chest's ordinary state.
-- **V9** — valid and useful: it says "there is a chest here, it is booting".
-  Note that V9's CRC (`39 D4`) is not zero, which is what separates it from V2,
-  and that its instance is `0x00` — nothing has ever been armed.
-- **V12 vs V13** — same position, same block, one byte apart: `09` is refused
-  and the chest stays where it is, `02` is applied. There is no third outcome
-  and no fallback.
+- **V10** — sixty-three `0xFF` and one `0x00`. An absence test that stops at the
+  first byte, or only sweeps the chest's zone, calls this “absent” and you lose a
+  chest that is talking.
+- **R3** — one bit in the request's *argument*, CRC left stale. Without the
+  request CRC, a corrupted frame would arm a confirmation for an account nobody
+  asked for. The owner would see an unexpected name and not press — the right
+  outcome, but better not to get there.
 
-**CRC check value, unchanged by v2**: `cr_crc16("123456789")` = **`0x6F91`**
-(CRC-16/MCRF4XX). Compare that number against your implementation, not the name
-— our own header still calls it "CRC-16/X-25", which would give `0x906E`.
+**CRC check value**: `cr_crc16("123456789")` = **`0x6F91`**. Compare that number,
+not the algorithm's name — our header says “CRC-16/X-25”, which would be
+`0x906E`; the name is wrong, the function is not.
 
 ## 12. Where the code and the design spec disagree
 
@@ -1076,3 +1127,218 @@ the implementation.
    Worth reopening together before either half is flashed, if you find you need
    it — it is one byte and one version bump today, and a much larger
    conversation afterwards.
+
+
+## 13. The DMA channel — browsing accounts and reading codes
+
+**Established**, and running on the chest at commit `440d79d` — but **no frame
+has crossed it yet**. Its receive is armed and segments are queued; the exchange
+itself is unproven. This is the section to exercise first, and the one most
+likely to need a correction.
+
+### Why a second channel at all
+
+The shared register file is **64 bytes** on the P4 and section 1 uses all of
+them. Browsing accounts and returning codes needs more room than exists, so it
+lives on the slave-HD **DMA channels** (`spi_slave_hd_queue_trans`, segment
+mode), which have no such limit.
+
+The split is deliberate: **registers hold what must be readable at any instant
+and at constant cost** — magic, version, state, pending operation, instance,
+active mode, label, CRC. **DMA carries what is asked for.**
+
+### Wire commands
+
+Taken from `components/hal/esp32p4/include/hal/spi_ll.h:81-90`, not from memory.
+In one-line mode the wire byte equals the base command.
+
+| command | byte | when |
+|---|---|---|
+| `RDBUF` | `0x02` | read the shared registers |
+| `WRBUF` | `0x01` | write the shared registers |
+| `WRDMA` | `0x03` | send the request segment |
+| `WR_END` | `0x07` | **after** the WRDMA — closes the write segment |
+| `RDDMA` | `0x04` | read the reply segment |
+| `INT0` | `0x08` | **after** the RDDMA — closes the read segment |
+
+Master-side references: `essl_spi_wrdma_done()` emits `WR_END`,
+`essl_spi_rddma_done()` emits `INT0`.
+
+### The chest keeps a receive queued at all times
+
+**Obligation, not an implementation detail.** Without a queued receive, your
+WRDMA is **lost with no error on either side**. The chest arms one at init —
+before its task even starts, so the very first request you send after plug-in
+cannot fall into a hole — and re-arms immediately after consuming each segment.
+
+This bit us on the first boot of v3, and the failure mode is exactly as
+described: the driver refused the queue because the buffers were not aligned to
+a **64-byte cache line** in *address and length*, and the only trace was one log
+line. Fixed in `440d79d`, and now three `_Static_assert`s refuse the build rather
+than warn at runtime.
+
+**What that costs you: nothing.** The chest rounds the *queued* length up to a
+cache line, but **the length published at `0x12`–`0x13` is the real one**. Read
+exactly what is announced and ignore the padding — reading the rounded length
+would give you bytes that mean nothing and break the reply's CRC.
+
+### The doorbell, and the order that makes it safe
+
+1. You write the request with **WRDMA**, close it with **WR_END**.
+2. You **then** increment `0x3C`.
+3. The chest sees the doorbell change, consumes the segment, serves it.
+4. The chest queues its reply, **then** bumps `0x11`.
+5. You see `0x11` change, read `0x12`–`0x13` for the length, issue **RDDMA**,
+   close with **INT0**.
+
+Two rules fall out of that order, and both matter:
+
+- **The chest never reads a segment you have not announced.** The doorbell is
+  the announcement; a WRDMA without it is ignored.
+- **You must never read a segment the chest has not queued.** Wait for `0x11` to
+  *change*. Do not trigger on `0x10` being non-zero — it stays non-zero after a
+  reply has been read.
+
+On first contact the chest takes your doorbell value as a reference **without
+serving anything**. Otherwise a chest reboot would make it serve a request you
+consider long gone.
+
+### The request — 8 bytes, fixed
+
+```
+0x00      command   (0x01 LIST, 0x02 CODE)
+0x01      argument  (LIST: first index; CODE: account index)
+0x02-0x05 reserved, zero
+0x06-0x07 CRC16 over 0x00..0x05
+```
+
+Fixed size, multiple of four — the driver truncates a receive that is not. The
+CRC is not decorative: the DMA channel has **no error detection of its own**, and
+a corrupted command would arm a confirmation for an account nobody asked for.
+
+A request that fails its CRC, or carries an unattributed command, is **not
+served and arms nothing**. You will see the segment number stay put, and retry —
+the same signal as a refused confirmation.
+
+### `LIST` — names only, no press, no time
+
+```
+0x00  TOTAL number of accounts     <- for your "3/12"
+0x01  number in THIS page
+0x02  first index of this page
+0x03  flags (bit 0 = more follows)
+then, per account: index (1), length (1), name (n)
+then CRC16 over everything preceding
+```
+
+Bounded at **512 bytes**. `LIST` requires **no press and no time**: it returns
+only names, which a YKOATH `LIST` already gives the host — so nothing new is
+exposed and the owner can scroll freely.
+
+**A page shrinks rather than lies.** The chest tries the whole page and drops
+accounts until it fits, because announcing “no more” on a truncated page would
+lose accounts in silence. An empty list is still published: you must be able to
+tell “nothing to show” from “my request got lost”.
+
+### `CODE` — never without a press
+
+```
+0x00      account index
+0x01      digit count (6 or 8)
+0x02-0x09 code in ASCII, LEFT-padded with zeros
+0x0A      seconds left in the window
+0x0B      reserved
+0x0C-0x0D CRC16 over 0x00..0x0B
+```
+
+**The request does not produce a code.** It **arms** a confirmation: the chest
+publishes `pending_op`, the instance, and the **label** of the account, then
+returns. Nothing is computed and nothing is queued.
+
+You show the label, the owner presses, you write `0x5A` + the instance at
+`0x38`–`0x39` — the v2 confirmation protocol, **unchanged**. Only then does the
+chest compute the HMAC, queue the segment and bump `0x11`.
+
+**Without that press, step 5 never happens.** The segment is consumed once and
+cleared.
+
+Two properties you can rely on:
+
+- **A `CODE` request while a CCID confirmation is already in flight is not
+  stolen.** The chest refuses to arm over it; you see the segment number stay
+  put and retry. The link has its own confirmation slot, distinct from the CCID
+  worker's, so an authorisation meant for the host cannot make a code come out
+  on the link.
+- **Without a valid time, no code.** Not a code computed on a guessed time,
+  which would be wrong while looking right. `TIME_VALID` tells you in advance.
+
+The chest applies the **modulo** on this path — unlike the YKOATH path, where
+`ykman` does it. Left-padded with zeros, because a TOTP code is a fixed-length
+string: `0418` is not `418`, and a service expecting six digits rejects five.
+
+### What your side owes, and the chest cannot enforce
+
+Your team stated these; they belong in the contract because the chest has no way
+to hold them for you:
+
+- a code is **never** displayed without a preceding press;
+- it disappears at the end of its window, or as soon as the user navigates;
+- it is **never** auto-refreshed: a new code takes a new press;
+- the list of names scrolls freely.
+
+The reason, in one sentence: today, five seconds in front of an unattended
+keyboard yield **nothing**; if browsing revealed codes, a glance would yield
+**all of them**.
+
+### The index may shift between `LIST` and `CODE`, and that is safe
+
+The host can add or delete an account between your list read and your code
+request, so the index you send may no longer name the same account.
+
+**What makes that harmless is the label, not the index.** What the owner reads
+before pressing is the name the **chest** published at `0x14` when it armed, never
+your cached copy. If the index has shifted, she sees the name actually targeted
+and does not press.
+
+**Always display the label from the register during the prompt**, never the name
+from your own `LIST`.
+
+## 14. Time, and why the chest holds it
+
+**Established.** A TOTP is `HMAC(secret, floor(unix / 30))`: without a time,
+there is no code. **The chest has no clock** — no RTC, no backup cell — and your
+half has no trustworthy one either (internal RC oscillator, minutes of drift per
+day in sleep).
+
+What resolves it is your own observation: **the chest only exists while USB is
+plugged, and while USB is plugged your half never sleeps.** It counts on its
+40 MHz crystal, under 2 s of drift per day — far inside a 30 s window.
+
+So: **the host sets the time once per plug-in**, over the CCID channel the client
+already speaks (`niphar-oath set-time`, extension `INS 0x10`, outside the YKOATH
+set). The chest carries it forward on its monotonic clock.
+
+**The invalidation is free, and that is why the time lives in the chest rather
+than in your half**: the chest reboots when unplugged, so its time erases itself.
+There is no flag to maintain and no stale time possible. Your half survives
+unplugging on battery, which is precisely what would have made it the wrong
+holder.
+
+**Bit 3 of `0x05`, `TIME_VALID`, never rises on a default.** Not zero, not a
+build epoch, not “probably after 2020”. `sec_time_set()` refuses anything below a
+plausibility floor (2024-01-01) and **keeps nothing** in that case. A guessed
+time would produce wrong codes *presented as right* — worse than no code, because
+with “NO TIME” on screen the owner knows what to do.
+
+**A refusal does not clear a time already set.** Otherwise a malicious host would
+switch your display off by sending one absurd frame. It can propose a wrong time
+— the limit below — but it cannot remove the one that works.
+
+**The limit, stated rather than hidden**: a host that lies about the time makes
+the chest compute codes for another window. It learns nothing from that — the
+codes only appear on your screen and never return to the host — and at worst a
+wrong code is displayed and the service rejects it. This is inherent to the
+device class: a lying host is indistinguishable from a week unplugged.
+
+The time survives USB mode switches (the chest does not reboot), so it lives
+outside the OATH applet. It is set **in OATH mode**, since CCID carries it.
