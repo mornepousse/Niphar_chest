@@ -351,58 +351,68 @@ static void test_almost_uniform_is_present(void)
  * la version du protocole qu'on incrémente, et KeSp qu'on prévient.
  */
 
-/* V1 — nominal : SD + USB + prêt, PSO:CDS en attente, 42 confirmations,
- * instance 3. */
+/* V1 — nominal : SD + USB monté + prêt, PSO:CDS en attente, 42
+ * confirmations, instance 3, et le mode ACTIF qui accompagne USB_MOUNTED :
+ * storage. Un bloc annonçant « monté » avec un mode actif `none` serait
+ * contradictoire — c'est ce que 0x0D rend impossible à publier sans le dire. */
 static const uint8_t k_vec_v1[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x00, 0x00,
 };
 /* V4 — mot magique faux d'un octet, tout le reste identique à V1. */
 static const uint8_t k_vec_v4[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x58, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x00, 0x00,
 };
 /* V5 — version 3 annoncée, CRC RECALCULÉ et juste : refusé sur la version
  * seule, pas sur une corruption. */
 static const uint8_t k_vec_v5[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x03, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x45, 0x16, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0xCC, 0x07, 0x00, 0x00, 0x00, 0x00,
 };
 /* V6 — un bit de la charge utile retourné (42 → 43), CRC laissé tel quel. */
 static const uint8_t k_vec_v6[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2B, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x00, 0x00,
 };
 /* V6b — l'inverse : charge utile intacte, un bit retourné dans l'octet BAS du
  * champ CRC. */
 static const uint8_t k_vec_v6b[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x63, 0x3A, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0xEA, 0x2B, 0x00, 0x00, 0x00, 0x00,
 };
 /* V6c — proposé par KeSp, et il manquait : le même bit retourné dans l'octet
  * HAUT du champ CRC. Une implémentation qui ne comparerait que l'octet bas
  * (ou qui rangerait le CRC en gros-boutiste) passerait V6b et tomberait ici. */
 static const uint8_t k_vec_v6c[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x62, 0x3B, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2A, 0x00, 0x00, 0x00, 0x00,
 };
 /* V6d — l'instance changée (3 → 2) sans recalcul du CRC. C'est la PREUVE, en
  * octets, que l'instance entre dans l'étendue couverte : la v1 aurait accepté
  * ce bloc. */
 static const uint8_t k_vec_v6d[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x02, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x02, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x00, 0x00,
+};
+/* V6e — le même argument pour le mode actif : storage → oath sans recalcul du
+ * CRC. Sans ce vecteur, 0x0D serait couvert sur le papier et personne ne
+ * l'aurait vérifié en octets. */
+static const uint8_t k_vec_v6e[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0xEB, 0x2B, 0x00, 0x00, 0x00, 0x00,
 };
 /* V8 — V1 plus une confirmation posée et pas encore lue, avec l'écho de
- * l'instance ARMÉE (3). Le CRC est le MÊME qu'en V1 (0x3A62), et c'est tout
+ * l'instance ARMÉE (3). Le CRC est le MÊME qu'en V1, et c'est tout
  * l'argument sur l'étendue. */
 static const uint8_t k_vec_v8[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x5A, 0x03, 0x00, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x5A, 0x03, 0x00, 0x00,
 };
 /* V9 — coffre présent et PAS prêt : aucun bit d'état, rien en attente, aucune
- * opération jamais armée (instance 0). Son CRC non nul est ce qui le distingue
- * d'un bloc absent. */
+ * opération jamais armée (instance 0), aucun mode actif. Son CRC non nul est ce
+ * qui le distingue d'un bloc absent — et il n'a PAS bougé en passant à 0x0D,
+ * puisque l'octet y valait déjà zéro. */
 static const uint8_t k_vec_v9[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x39, 0xD4, 0x00, 0x00, 0x00, 0x00,
@@ -419,18 +429,26 @@ static const uint8_t k_vec_v10[LINK_REG_SIZE] = {
  * instance armée de 3). La v1 l'aurait accordée. */
 static const uint8_t k_vec_v11[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x5A, 0x02, 0x00, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x5A, 0x02, 0x00, 0x00,
 };
 /* V12 — mode demandé inconnu (0x09). Le bloc du coffre reste valide : c'est la
  * DEMANDE qui se refuse, pas le bloc. */
 static const uint8_t k_vec_v12[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x09, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x09, 0x00,
 };
 /* V13 — le même, avec une valeur de fil attribuée (0x02, pgp) : appliqué. */
 static const uint8_t k_vec_v13[LINK_REG_SIZE] = {
     0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x02, 0x00,
+    0x00, 0x00, 0x03, 0x01, 0xEB, 0x2B, 0x00, 0x00, 0x02, 0x00,
+};
+/* V14 — bascule EN COURS : le mode actif vaut l'indéterminé (0xFF) et
+ * USB_MOUNTED est retombé. C'est le seul état où demandé et actif diffèrent
+ * légitimement, et c'est celui que le clavier doit savoir distinguer d'un
+ * refus — il affiche alors sa demande en attente plutôt qu'une arrivée. */
+static const uint8_t k_vec_v14[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x05, 0x00, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0xFF, 0x5F, 0x2F, 0x00, 0x00, 0x00, 0x00,
 };
 
 static void test_shared_vectors_accepted(void)
@@ -533,6 +551,8 @@ static void test_shared_vectors_rejected(void)
     TEST_ASSERT(!link_proto_parse_status(k_vec_v6b, LINK_REG_SIZE, &out), "V6b CRC octet bas corrompu rejeté");
     TEST_ASSERT(!link_proto_parse_status(k_vec_v6c, LINK_REG_SIZE, &out), "V6c CRC octet haut corrompu rejeté");
     TEST_ASSERT(!link_proto_parse_status(k_vec_v6d, LINK_REG_SIZE, &out), "V6d instance corrompue rejetée");
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v6e, LINK_REG_SIZE, &out),
+                "V6e mode actif corrompu rejeté");
 
     /* V7 — les 19 premiers octets de V1, annoncés pour ce qu'ils sont. */
     TEST_ASSERT(!link_proto_parse_status(k_vec_v1, LINK_REG_SIZE - 1, &out), "V7 tronqué rejeté");
@@ -565,6 +585,7 @@ static void test_shared_vectors_are_what_the_chest_publishes(void)
         .pending_op = 1,
         .confirm_count = 42,
         .instance = 3,
+        .usb_mode_active = LINK_USB_MODE_STORAGE,
     };
     memset(regs, 0, sizeof(regs));
     link_proto_pack_status(regs, &nominal);
@@ -572,7 +593,8 @@ static void test_shared_vectors_are_what_the_chest_publishes(void)
                    "le coffre publie exactement V1");
 
     const link_status_t booting = { .state = 0, .pending_op = 0, .confirm_count = 0,
-                                    .instance = 0 };
+                                    .instance = 0,
+                                    .usb_mode_active = LINK_USB_MODE_NONE };
     memset(regs, 0, sizeof(regs));
     link_proto_pack_status(regs, &booting);
     TEST_ASSERT_EQ(memcmp(regs, k_vec_v9, LINK_REG_SIZE), 0,
@@ -878,6 +900,193 @@ static void test_wire_values_are_the_published_contract(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* Mode USB ACTIF (0x0D) — v2                                                */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * POURQUOI CET OCTET EXISTE. Jusqu'ici le protocole ne publiait aucune relecture
+ * du mode : LINK_STATE_USB_MOUNTED dit « quelque chose est monté », jamais QUOI.
+ * Le clavier ne pouvait donc afficher que le mode qu'il avait DEMANDÉ — les deux
+ * sont indiscernables tant que tout va bien, et divergent exactement quand ça ne
+ * va pas : une bascule qui échoue et se retente. C'est le symptôme que la
+ * propriétaire a rencontré côté coffre (« l'écran affiche sd mais rien »), et il
+ * serait arrivé côté clavier sans même une console pour le démentir.
+ */
+
+static void test_active_mode_roundtrips(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    link_status_t out;
+
+    /* Chaque valeur attribuée, plus l'indéterminé : c'est tout le domaine. */
+    for (unsigned w = 0; w < LINK_USB_MODE_COUNT; w++) {
+        const link_status_t in = { .version = LINK_PROTO_VERSION,
+                                   .state = LINK_STATE_READY,
+                                   .pending_op = 0,
+                                   .confirm_count = 0,
+                                   .instance = 0,
+                                   .usb_mode_active = (uint8_t)w };
+        memset(regs, 0, sizeof(regs));
+        link_proto_pack_status(regs, &in);
+        TEST_ASSERT_EQ(regs[LINK_REG_USB_MODE_ACTIVE], w, "octet publié en 0x0D");
+        memset(&out, 0, sizeof(out));
+        TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "bloc valide");
+        TEST_ASSERT_EQ(out.usb_mode_active, w, "mode actif relu");
+    }
+
+    const link_status_t unk = { .version = LINK_PROTO_VERSION,
+                                .state = 0,
+                                .pending_op = 0,
+                                .confirm_count = 0,
+                                .instance = 0,
+                                .usb_mode_active = LINK_USB_MODE_UNKNOWN };
+    memset(regs, 0, sizeof(regs));
+    link_proto_pack_status(regs, &unk);
+    memset(&out, 0, sizeof(out));
+    TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "indéterminé reste un bloc valide");
+    TEST_ASSERT_EQ(out.usb_mode_active, LINK_USB_MODE_UNKNOWN, "indéterminé relu tel quel");
+}
+
+/*
+ * L'indéterminé ne doit jamais pouvoir se lire comme un mode réel. Sans quoi un
+ * maître qui comparerait bêtement 0x0D à ce qu'il a demandé finirait par tomber
+ * sur une égalité pendant une bascule — et afficherait « arrivé » au milieu du
+ * chemin.
+ */
+static void test_unknown_active_mode_is_not_a_mode(void)
+{
+    TEST_ASSERT(!link_proto_usb_mode_is_known(LINK_USB_MODE_UNKNOWN),
+                "0xFF n'est pas une valeur de fil attribuée");
+    TEST_ASSERT(LINK_USB_MODE_UNKNOWN >= LINK_USB_MODE_COUNT,
+                "hors de la plage contiguë des modes");
+}
+
+/*
+ * Même démonstration que pour l'instance, et pour la même raison : l'octet est
+ * DANS l'étendue du CRC. Le modifier sans recalculer doit faire rejeter le bloc,
+ * sinon un bit retourné sur le fil ferait afficher un mode que le coffre n'a
+ * jamais eu — c'est-à-dire précisément le mensonge que cet octet existe pour
+ * empêcher.
+ */
+static void test_active_mode_is_covered_by_the_crc(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    const link_status_t in = { .version = LINK_PROTO_VERSION,
+                               .state = LINK_STATE_READY | LINK_STATE_USB_MOUNTED,
+                               .pending_op = 0,
+                               .confirm_count = 0,
+                               .instance = 1,
+                               .usb_mode_active = LINK_USB_MODE_PGP };
+    memset(regs, 0, sizeof(regs));
+    link_proto_pack_status(regs, &in);
+
+    link_status_t out;
+    TEST_ASSERT(link_proto_parse_status(regs, sizeof(regs), &out), "bloc intact accepté");
+
+    TEST_ASSERT(LINK_REG_USB_MODE_ACTIVE < LINK_REG_CRC_SPAN,
+                "0x0D tombe dans l'étendue couverte");
+
+    regs[LINK_REG_USB_MODE_ACTIVE] = LINK_USB_MODE_OATH;   /* sans recalculer */
+    TEST_ASSERT(!link_proto_parse_status(regs, sizeof(regs), &out),
+                "mode actif modifié sans recalcul du CRC : rejeté");
+}
+
+/*
+ * Deux modes actifs distincts ne doivent jamais produire le même CRC sur un
+ * bloc par ailleurs identique — sinon l'octet serait couvert sur le papier et
+ * pas dans les faits.
+ */
+static void test_two_active_modes_never_share_a_crc(void)
+{
+    uint16_t crcs[LINK_USB_MODE_COUNT];
+
+    for (unsigned w = 0; w < LINK_USB_MODE_COUNT; w++) {
+        uint8_t regs[LINK_REG_SIZE];
+        const link_status_t in = { .version = LINK_PROTO_VERSION,
+                                   .state = LINK_STATE_READY,
+                                   .pending_op = 0x1234,
+                                   .confirm_count = 7,
+                                   .instance = 9,
+                                   .usb_mode_active = (uint8_t)w };
+        memset(regs, 0, sizeof(regs));
+        link_proto_pack_status(regs, &in);
+        crcs[w] = (uint16_t)regs[LINK_REG_CRC] | (uint16_t)((uint16_t)regs[LINK_REG_CRC + 1] << 8);
+    }
+
+    for (unsigned i = 0; i < LINK_USB_MODE_COUNT; i++) {
+        for (unsigned j = i + 1; j < LINK_USB_MODE_COUNT; j++) {
+            TEST_ASSERT(crcs[i] != crcs[j], "deux modes actifs, deux CRC");
+        }
+    }
+}
+
+/*
+ * L'octet appartient au coffre, et il est le DERNIER avant le CRC : il n'entame
+ * ni la plage du maître, ni le champ de contrôle. Cette vérification existe
+ * parce que la carte a déjà bougé une fois entre les deux dépôts, et que la
+ * divergence s'était vue à la relecture et non au rouge.
+ */
+static void test_active_mode_sits_where_the_contract_says(void)
+{
+    TEST_ASSERT_EQ(LINK_REG_USB_MODE_ACTIVE, 0x0D, "0x0D, comme publié");
+    TEST_ASSERT_EQ(LINK_REG_USB_MODE_ACTIVE + 1, LINK_REG_CRC, "juste avant le CRC");
+    TEST_ASSERT(LINK_REG_USB_MODE_ACTIVE < LINK_REG_MASTER_BASE,
+                "côté coffre de la frontière");
+}
+
+/*
+ * V14 — le seul état où « demandé » et « actif » diffèrent sans que rien ne soit
+ * cassé. Il mérite son vecteur parce que c'est celui que le maître risque de
+ * traiter comme un refus : sans lui, une implémentation qui afficherait une
+ * erreur dès que 0x0D ne vaut pas 0x12 passerait tous les autres vecteurs.
+ */
+static void test_shared_vector_switch_in_progress(void)
+{
+    link_status_t out;
+    memset(&out, 0, sizeof(out));
+    TEST_ASSERT(link_proto_parse_status(k_vec_v14, LINK_REG_SIZE, &out), "V14 accepté");
+    TEST_ASSERT_EQ(out.usb_mode_active, LINK_USB_MODE_UNKNOWN, "V14 mode actif indéterminé");
+    TEST_ASSERT(!(out.state & LINK_STATE_USB_MOUNTED),
+                "V14 rien n'est monté pendant la bascule");
+    TEST_ASSERT(!link_proto_usb_mode_is_known(out.usb_mode_active),
+                "V14 l'indéterminé ne peut pas se lire comme un mode");
+}
+
+/*
+ * LA COHÉRENCE ENTRE LE BIT ET L'OCTET, sur tous les vecteurs publiés.
+ *
+ * « Monté » et « mode actif » décrivent le même fait vu de deux endroits ; un
+ * bloc qui annoncerait USB_MOUNTED avec un mode actif `none` serait une
+ * contradiction que le maître n'a aucun moyen d'arbitrer. C'est exactement ce
+ * que V1 disait avant l'ajout de 0x0D, et rien ne l'aurait signalé : le vecteur
+ * était valide, son CRC juste, et sa contradiction invisible.
+ */
+static void test_mounted_bit_and_active_mode_agree(void)
+{
+    static const uint8_t *const blocks[] = { k_vec_v1, k_vec_v8, k_vec_v9,
+                                             k_vec_v11, k_vec_v12, k_vec_v13,
+                                             k_vec_v14 };
+
+    for (unsigned i = 0; i < sizeof(blocks) / sizeof(blocks[0]); i++) {
+        link_status_t st;
+        memset(&st, 0, sizeof(st));
+        TEST_ASSERT(link_proto_parse_status(blocks[i], LINK_REG_SIZE, &st),
+                    "vecteur de cohérence accepté");
+
+        if (st.state & LINK_STATE_USB_MOUNTED) {
+            TEST_ASSERT(link_proto_usb_mode_is_known(st.usb_mode_active),
+                        "monté : le mode actif est une valeur attribuée");
+            TEST_ASSERT(st.usb_mode_active != LINK_USB_MODE_NONE,
+                        "monté : le mode actif n'est pas « aucun »");
+        } else {
+            TEST_ASSERT(st.usb_mode_active == LINK_USB_MODE_NONE
+                        || st.usb_mode_active == LINK_USB_MODE_UNKNOWN,
+                        "pas monté : aucun mode, ou bascule en cours");
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------ */
 
 void test_link_proto(void)
 {
@@ -913,4 +1122,11 @@ void test_link_proto(void)
     TEST_RUN(test_unknown_is_refused_even_if_it_matches);
     TEST_RUN(test_reboot_recovery_is_a_plain_change_of_value);
     TEST_RUN(test_wire_values_are_the_published_contract);
+    TEST_RUN(test_active_mode_roundtrips);
+    TEST_RUN(test_unknown_active_mode_is_not_a_mode);
+    TEST_RUN(test_active_mode_is_covered_by_the_crc);
+    TEST_RUN(test_two_active_modes_never_share_a_crc);
+    TEST_RUN(test_active_mode_sits_where_the_contract_says);
+    TEST_RUN(test_shared_vector_switch_in_progress);
+    TEST_RUN(test_mounted_bit_and_active_mode_agree);
 }

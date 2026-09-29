@@ -49,7 +49,7 @@
  *   0x06-0x07  opération en attente      coffre→S3   (petit-boutiste)
  *   0x08-0x0B  confirmations consommées  coffre→S3   (petit-boutiste)
  *   0x0C       numéro d'instance         coffre→S3
- *   0x0D       réservé, à zéro           coffre→S3
+ *   0x0D       mode USB ACTIF            coffre→S3
  *   0x0E-0x0F  CRC16 sur 0x00..0x0D      coffre→S3   (petit-boutiste)
  *   0x10       confirmation utilisateur  S3→coffre
  *   0x11       écho du numéro d'instance S3→coffre
@@ -91,7 +91,7 @@
 #define LINK_REG_PENDING_OP     0x06
 #define LINK_REG_CONFIRM_COUNT  0x08
 #define LINK_REG_INSTANCE       0x0C
-#define LINK_REG_RESERVED       0x0D
+#define LINK_REG_USB_MODE_ACTIVE 0x0D
 #define LINK_REG_CRC            0x0E
 #define LINK_REG_USER_CONFIRM   0x10
 #define LINK_REG_CONFIRM_ECHO   0x11
@@ -164,6 +164,22 @@
  * ça fait partie du contrat au même titre que les six valeurs elles-mêmes. */
 #define LINK_USB_MODE_COUNT     0x06
 
+/*
+ * Mode actif INDÉTERMINÉ (0x0D uniquement, jamais 0x12).
+ *
+ * Publié pendant une bascule, c'est-à-dire tant que usb_mode_is_known() est
+ * faux. La règle vient de l'octet d'à côté : LINK_STATE_USB_MOUNTED refuse déjà
+ * délibérément de compter un mode incertain, parce que « ce que voit l'hôte
+ * n'est alors plus garanti, et l'annoncer au clavier serait mentir ». Publier
+ * le mode courant pendant une bascule serait ce mensonge-là, pendant la seule
+ * seconde où il compte.
+ *
+ * Hors de la plage contiguë des modes, donc jamais confondu avec l'un d'eux :
+ * un maître qui compare 0x0D à ce qu'il a demandé ne peut pas tomber sur une
+ * égalité accidentelle en cours de route.
+ */
+#define LINK_USB_MODE_UNKNOWN   0xFF
+
 typedef struct {
     uint8_t  version;
     uint8_t  state;
@@ -199,6 +215,20 @@ typedef struct {
      * chez KeSp) ; ce commentaire dit ce qu'il achète.
      */
     uint8_t  instance;
+    /*
+     * Mode USB RÉELLEMENT INSTALLÉ, en valeur de fil — pas celui qui a été
+     * demandé en 0x12.
+     *
+     * Les deux ne divergent que quand quelque chose ne va pas : une bascule
+     * refusée, échouée, ou encore en cours. C'est exactement là que le maître a
+     * besoin de la différence, et c'est ce qui manquait à la carte de la v2
+     * telle qu'elle est partie chez KeSp : LINK_STATE_USB_MOUNTED dit « quelque
+     * chose est monté », jamais QUOI. Le clavier ne pouvait donc afficher que sa
+     * propre demande, et un coffre bloqué en none restait silencieux.
+     *
+     * Vaut LINK_USB_MODE_UNKNOWN tant que le mode est incertain.
+     */
+    uint8_t  usb_mode_active;
 } link_status_t;
 
 /*

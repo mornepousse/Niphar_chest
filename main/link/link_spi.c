@@ -19,6 +19,7 @@
 #include "sec_confirm.h"
 #include "storage/sd_card.h"
 #include "usb/usb_mode.h"
+#include "usb/usb_mode_wire.h"
 
 static const char *TAG = "link";
 
@@ -287,9 +288,23 @@ static void pack_current(uint8_t *regs, uint16_t pending_op, uint8_t instance)
     /* « Monté » au sens de l'hôte : un jeu de descripteurs est installé. Le
      * mode incertain (entre deux bascules) ne compte pas — ce que voit l'hôte
      * n'est alors plus garanti, et l'annoncer au clavier serait mentir. */
-    if (usb_mode_is_known() && usb_mode_get() != USB_MODE_NONE) {
+    const bool mode_known = usb_mode_is_known();
+    if (mode_known && usb_mode_get() != USB_MODE_NONE) {
         state |= LINK_STATE_USB_MOUNTED;
     }
+
+    /* Le mode ACTIF, et la même règle que le bit ci-dessus : un mode incertain
+     * ne se publie pas, il se déclare incertain. Le clavier affiche alors sa
+     * propre demande en attente, au lieu d'annoncer une arrivée qui n'a pas eu
+     * lieu.
+     *
+     * usb_mode_to_wire() n'avait jusqu'ici aucun appelant dans le firmware :
+     * elle existait pour que l'aller-retour des deux numérotations soit
+     * testable dans les deux sens. C'est son premier usage réel, et c'est le
+     * bon — la traduction passe par le switch sur des noms, jamais par un cast
+     * qui ferait exactement ce que les deux numérotations interdisent. */
+    const uint8_t mode_wire = mode_known ? usb_mode_to_wire(usb_mode_get())
+                                         : LINK_USB_MODE_UNKNOWN;
     if (s_ready) {
         state |= LINK_STATE_READY;
     }
@@ -300,6 +315,7 @@ static void pack_current(uint8_t *regs, uint16_t pending_op, uint8_t instance)
         .pending_op    = pending_op,
         .confirm_count = s_confirm_count,
         .instance      = instance,
+        .usb_mode_active = mode_wire,
     };
 
     /* Tampon de travail, jamais le miroir du tampon partagé : publish() n'en

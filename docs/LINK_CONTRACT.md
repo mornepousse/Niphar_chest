@@ -59,7 +59,7 @@ transaction, and hence a "ready" line we do not have).
 | `0x06`–`0x07` | 1 | 2 | pending operation | chest→S3 | little-endian, `0` = none armed |
 | `0x08`–`0x0B` | 2 | 4 | consumed-confirmation counter | chest→S3 | little-endian, free-running |
 | **`0x0C`** | 3 | 1 | **instance number of the armed operation** | chest→S3 | **new in v2**, see section 5 |
-| `0x0D` | 3 | 1 | reserved, written `0x00` by the chest | chest→S3 | |
+| **`0x0D`** | 3 | 1 | **active USB mode** (wire value) | chest→S3 | **added 2026-09-29**, see “Active USB mode” in section 1 |
 | **`0x0E`–`0x0F`** | 3 | 2 | **CRC16 over `0x00`–`0x0D`** | chest→S3 | little-endian — **moved in v2** |
 | `0x10` | 4 | 1 | user confirmation | S3→chest | see section 5 |
 | **`0x11`** | 4 | 1 | **echo of the instance number** | S3→chest | **new in v2**, see section 5 |
@@ -195,6 +195,51 @@ owner's eyes. The v1 defect needed **two**. A byte is what the layout affords
 and this is what it is worth.
 
 `0x0C` is `0x00` on a chest that has never armed anything (vector V9).
+
+### Active USB mode (`0x0D`) — added after v2 was first published
+
+**The byte you asked us not to leave reserved.** It carries the wire value of
+the mode the chest has **actually installed**, using the same numbering as the
+request at `0x12` (section 8).
+
+Until this byte existed, the protocol had no readback of the mode at all.
+`USB_MOUNTED` says *something* is mounted, never *what*. Your screen could
+therefore only ever show the mode it had **requested** — and requested and
+actual are indistinguishable while everything works, then diverge exactly when
+it does not: a switch that fails and is retried. The owner hit that symptom on
+our side the same day (an SD card answering, a screen saying so, and nothing on
+the host, because the chest had stayed in `none` and nothing said so). On your
+side it would have been worse: no console to contradict the screen.
+
+**`0xFF` means indeterminate**, and it is the only value here that is not a
+mode. The chest publishes it while a switch is in flight — that is, whenever its
+own `usb_mode_is_known()` is false. The rule is inherited from the byte next
+door: `USB_MOUNTED` already refuses to count an uncertain mode, because what the
+host sees is not guaranteed then and announcing it would be a lie. Publishing
+the current mode mid-switch would be exactly that lie, during the one second it
+matters. `0xFF` is outside the contiguous mode range, so a master comparing
+`0x0D` against what it requested cannot hit an accidental equality on the way.
+
+**What you can rely on:**
+
+- `0x0D == 0x12` → the chest is in the mode you asked for. This is the steady
+  state.
+- `0x0D == 0xFF` → a switch is in flight. Show the requested mode as pending;
+  do not report a failure. A switch can legitimately take **up to ~15 s**
+  (section 5's timeout bounds the same worst case: `usb_mode_apply_wire()` tears
+  down the current descriptors and installs the next).
+- `0x0D != 0x12`, both known values, **persisting across several reads** → the
+  chest refused or failed the switch and is still in the previous mode. Rewrite
+  `0x12`; if it does not move, that is a real fault and worth surfacing.
+- `USB_MOUNTED` set → `0x0D` is a known value other than `0x00`. The two
+  describe the same fact and may not contradict each other; a block that did
+  would be one neither side can arbitrate. Vector V14 is the in-flight case,
+  V1 the mounted one.
+
+It is inside the CRC span, like the instance number and for the same reason — a
+flipped bit here would otherwise make your screen name a mode the chest never
+had, which is precisely what the byte exists to prevent. Vector **V6e** proves
+it in bytes.
 
 ### The CRC, and why it stops where it does
 
@@ -647,15 +692,20 @@ protocol change, and she has already taken it once.
 1. Decide the mode you want (from a layer, a key, a menu — yours).
 2. Every cycle, read the block. Compare `0x12` against the mode you want.
 3. If it differs, write your value to `0x12`. One byte, in your own word.
-4. Watch `LINK_STATE_USB_MOUNTED` at `0x05` bit 1 to see that *something* is
-   installed. Note that it tells you mounted-or-not, **not which mode** — the
-   protocol carries no read-back of the active mode, and `0x0D` is reserved
-   rather than used for one because the layout was already in your hands. If you
-   need certainty about which mode is up, the honest answer today is: rewrite
-   `0x12` and trust step 2's comparison.
+4. Read the **active** mode at `0x0D` to see which mode is actually installed.
+   `LINK_STATE_USB_MOUNTED` at `0x05` bit 1 still tells you mounted-or-not; the
+   byte tells you *which*, and the two never contradict each other.
+5. While `0x0D` is `0xFF`, a switch is in flight: show your request as pending,
+   not as a failure. Only a disagreement between two **known** values, persisting
+   across several reads, means the chest refused or failed the switch — then
+   rewrite `0x12`, and surface a fault if it still does not move.
 
-Vectors V12 (unknown value, refused) and V13 (`0x02`, applied) in section 11
-pin both outcomes.
+This is the readback that the first published v2 did not have, and step 4 is the
+reason it was added: without it, step 2's comparison is the only thing you can
+show, which means your screen shows your own intent and calls it a state.
+
+Vectors V12 (unknown value, refused), V13 (`0x02`, applied) and V14 (switch in
+flight) in section 11 pin all three outcomes.
 
 ## 7. The interrupt line
 
@@ -783,9 +833,14 @@ confirmation byte **or the mode byte**. A chest whose protocol you do not unders
    to KeSp. A contract whose vectors were edited by hand is worse than no
    contract.
 
-Adding a **state bit** (`0x05` bits 3–7), or filling the chest's reserved byte
-at `0x0D`, still requires a version bump by rule 1 — but a master written to
-ignore unknown state bits will keep working, so the bump is cheap for you.
+Adding a **state bit** (`0x05` bits 3–7) still requires a version bump by rule 1
+— but a master written to ignore unknown state bits will keep working, so the
+bump is cheap for you. The chest's last reserved byte, `0x0D`, was filled on
+2026-09-29 by the active-mode readback **without** a version bump, and that was
+a deliberate exception taken while no half had yet been flashed with v2: a
+master that ignored the byte saw `0x00`, which was also the old reserved value,
+so nothing in flight could misread it. That exception is spent — there is no
+reserved byte left on our side, and the next chest-side field is a v3.
 Adding a field to *your* reserved byte `0x13` requires nothing from us: the
 chest never reads or writes it, and the CRC does not cover it.
 
@@ -871,7 +926,11 @@ and printing what `link_proto_is_absent()`, `link_proto_parse_status()`,
 `link_proto_parse_master()`, `link_proto_confirm_accepted()` and
 `link_proto_mode_request()` return for it. Not written by hand, and regenerated
 in full for v2 — **every** byte below changed, because the version byte, the
-instance number and the CRC offset all moved. They are also pinned in
+instance number and the CRC offset all moved. **Regenerated again on
+2026-09-29** when `0x0D` became the active USB mode: V1 and everything derived
+from it moved (`0x0D` `00` → `01`, CRC `62 3A` → `EB 2B`). V9's CRC did **not**
+change, since its `0x0D` was already zero — if your v2 bench pinned V9 only, it
+will still pass, and that is not evidence the rest is current. They are also pinned in
 `test/test_link_proto.c` (`test_shared_vectors_*`), so the fast check turns red
 here if the chest's behaviour ever stops matching this table.
 
@@ -880,26 +939,28 @@ has **instance 3** armed, which is what makes V8 and V11 comparable.
 
 | # | bytes |
 |---|---|
-| V1 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 00 62 3A 00 00 00 00` |
+| V1 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 00 00 00 00` |
 | V2 | `00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00` |
 | V3 | `FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF` |
-| V4 | `4E 49 50 58 02 07 01 00 2A 00 00 00 03 00 62 3A 00 00 00 00` |
-| V5 | `4E 49 50 48 03 07 01 00 2A 00 00 00 03 00 45 16 00 00 00 00` |
-| V6 | `4E 49 50 48 02 07 01 00 2B 00 00 00 03 00 62 3A 00 00 00 00` |
-| V6b | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 00 63 3A 00 00 00 00` |
-| V6c | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 00 62 3B 00 00 00 00` |
-| V6d | `4E 49 50 48 02 07 01 00 2A 00 00 00 02 00 62 3A 00 00 00 00` |
-| V7 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 00 62 3A 00 00 00` *(19 bytes)* |
-| V8 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 00 62 3A 5A 03 00 00` |
+| V4 | `4E 49 50 58 02 07 01 00 2A 00 00 00 03 01 EB 2B 00 00 00 00` |
+| V5 | `4E 49 50 48 03 07 01 00 2A 00 00 00 03 01 CC 07 00 00 00 00` |
+| V6 | `4E 49 50 48 02 07 01 00 2B 00 00 00 03 01 EB 2B 00 00 00 00` |
+| V6b | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EA 2B 00 00 00 00` |
+| V6c | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2A 00 00 00 00` |
+| V6d | `4E 49 50 48 02 07 01 00 2A 00 00 00 02 01 EB 2B 00 00 00 00` |
+| V6e | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 05 EB 2B 00 00 00 00` |
+| V7 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 00 00 00` *(19 bytes)* |
+| V8 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 5A 03 00 00` |
 | V9 | `4E 49 50 48 02 00 00 00 00 00 00 00 00 00 39 D4 00 00 00 00` |
 | V10 | `FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 00` |
-| V11 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 00 62 3A 5A 02 00 00` |
-| V12 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 00 62 3A 00 00 09 00` |
-| V13 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 00 62 3A 00 00 02 00` |
+| V11 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 5A 02 00 00` |
+| V12 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 00 00 09 00` |
+| V13 | `4E 49 50 48 02 07 01 00 2A 00 00 00 03 01 EB 2B 00 00 02 00` |
+| V14 | `4E 49 50 48 02 05 00 00 2A 00 00 00 03 FF 5F 2F 00 00 00 00` |
 
 | # | what it is | `is_absent` | `parse` | decoded |
 |---|---|---|---|---|
-| V1 | nominal: SD present + USB mounted + ready, PSO:CDS pending, 42 confirmations, instance 3 | `false` | **`true`** | version 2, state `0x07`, pending_op 1, count 42, instance 3 |
+| V1 | nominal: SD present + USB mounted + ready, PSO:CDS pending, 42 confirmations, instance 3, **active mode `storage`** | `false` | **`true`** | version 2, state `0x07`, pending_op 1, count 42, instance 3, active `0x01` |
 | V2 | chest absent, line reads `0x00` | **`true`** | `false` | — |
 | V3 | chest absent, line reads `0xFF` | **`true`** | `false` | — |
 | V4 | bad magic word — one byte, `NIPH` → `NIPX`; everything else is V1 | `false` | `false` | — |
@@ -908,13 +969,15 @@ has **instance 3** armed, which is what makes V8 and V11 comparable.
 | V6b | CRC wrong by one bit, the other way: payload intact, one bit flipped in the CRC field's **low** byte | `false` | `false` | — |
 | V6c | **proposed by you, and it was missing**: the same, in the CRC field's **high** byte | `false` | `false` | — |
 | V6d | **instance** changed (3 → 2), CRC left stale — the proof, in bytes, that `0x0C` is covered | `false` | `false` | — |
+| V6e | **active mode** changed (`storage` → `oath`), CRC left stale — the same proof for `0x0D` | `false` | `false` | — |
 | V7 | truncated: V1's first 19 bytes, `len = 19` | `false` | `false` | — |
 | V8 | V1 plus a confirmation not yet read, echoing the **armed** instance (3) | `false` | **`true`** | identical to V1; confirmation **accepted** |
-| V9 | chest present and **not ready**: no state bits, nothing pending, counter zero, nothing ever armed | `false` | **`true`** | version 2, state `0x00`, pending_op 0, count 0, instance 0 |
+| V9 | chest present and **not ready**: no state bits, nothing pending, counter zero, nothing ever armed, no active mode | `false` | **`true`** | version 2, state `0x00`, pending_op 0, count 0, instance 0, active `0x00` |
 | V10 | **proposed by you**: uniform block except the **last** byte | `false` | `false` | — |
 | V11 | V1 plus a well-formed `0x5A` echoing the **previous** instance (2) | `false` | **`true`** | block valid; confirmation **refused** |
 | V12 | V1 plus an **unknown** mode request (`0x09`) at `0x12` | `false` | **`true`** | block valid; mode request **refused** |
 | V13 | V1 plus a valid mode request (`0x02`, pgp) at `0x12` | `false` | **`true`** | block valid; mode request **applied** (from `0x00`) |
+| V14 | **switch in flight**: active mode `0xFF`, `USB_MOUNTED` cleared, SD + ready | `false` | **`true`** | version 2, state `0x05`, instance 3, active **indeterminate** |
 
 Reading notes, since these are the cases that catch a wrong implementation:
 
@@ -931,6 +994,19 @@ Reading notes, since these are the cases that catch a wrong implementation:
   v1 parser accepts this block (`0x0C` was the CRC's low byte there, so the
   bytes mean something else entirely); a v2 parser must reject it. This is the
   vector that proves the instance is inside the covered span.
+- **V6e** — the same demonstration for the active mode byte. Note it is
+  indistinguishable from V6d in structure: both change one covered byte and
+  leave the CRC. If your parser passes V6d but fails V6e, your span stops at
+  `0x0C` and you are one byte short.
+- **V14** — the one block where requested and active legitimately disagree. A
+  master that treats `0x0D != 0x12` as an error will pass every other vector
+  here and still report a fault every time the owner switches mode. Show the
+  request as pending while `0x0D` is `0xFF`; only a *persisting* disagreement
+  between two known values is a real fault.
+- **V1 vs V14** — `USB_MOUNTED` and the active mode move together: V1 has the
+  bit set and a real mode, V14 has neither. A block with the bit set and active
+  `0x00` is self-contradictory and neither side can arbitrate it; we now refuse
+  to publish one, and you may treat it as corrupt if you ever see it.
 - **V6b and V6c together** — one bit in each half of the CRC field. A parser
   that only compares the low byte, or that stores the CRC big-endian, passes one
   and fails the other. Neither alone is sufficient.

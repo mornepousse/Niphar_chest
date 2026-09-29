@@ -49,11 +49,12 @@ void link_proto_pack_status(uint8_t *regs, const link_status_t *st)
     put_u32(&regs[LINK_REG_CONFIRM_COUNT], st->confirm_count);
     regs[LINK_REG_INSTANCE] = st->instance;
 
-    /* Le réservé du coffre court jusqu'au CRC : calculé, pas recopié, pour
-     * qu'un champ ajouté avant lui ne laisse pas d'octet non initialisé dans un
-     * bloc qu'on publie d'un seul tenant — et surtout dans une étendue que le
-     * CRC couvre désormais jusqu'à l'octet qui le précède. */
-    memset(&regs[LINK_REG_RESERVED], 0x00, LINK_REG_CRC - LINK_REG_RESERVED);
+    /* Dernier octet du coffre avant le CRC, et plus un réservé depuis que le
+     * mode actif l'occupe. Recopié tel quel, sans validation : ce qui se refuse
+     * se refuse à l'application (link_proto_mode_request), et un bloc qui
+     * mentirait sur son propre mode n'est pas un bloc qu'on veut voir passer
+     * pour valide. */
+    regs[LINK_REG_USB_MODE_ACTIVE] = st->usb_mode_active;
 
     /*
      * La plage du maître (LINK_REG_MASTER_BASE, dont LINK_REG_USER_CONFIRM) lui
@@ -96,6 +97,7 @@ bool link_proto_parse_status(const uint8_t *regs, size_t len, link_status_t *out
     out->pending_op = get_u16(&regs[LINK_REG_PENDING_OP]);
     out->confirm_count = get_u32(&regs[LINK_REG_CONFIRM_COUNT]);
     out->instance = regs[LINK_REG_INSTANCE];
+    out->usb_mode_active = regs[LINK_REG_USB_MODE_ACTIVE];
     return true;
 }
 

@@ -41,7 +41,19 @@ normal behaviour**, not a failure: a chest that has just been flashed or reset
 will show up in no `lsusb`/`lsblk`/`gpg --card-status` as long as nothing has
 been asked of it.
 
-The selector is the serial console (`main/console/console.c`), not USB itself:
+The selector is never USB itself. **Which selector depends on the board**, and
+the difference is not cosmetic:
+
+- `jc_devkit` / `wt9932_key` — the serial console (`main/console/console.c`).
+- `niphar_chest` — **the link**, byte `0x12` written by the S3
+  (`main/link/link_spi.c`). The chest's own console has no power over modes:
+  `boards/niphar_chest/board.h` sets `BOARD_CONSOLE_ACTIONS 0`. A chest with no
+  keyboard attached therefore stays in `USB_MODE_NONE` and there is nothing on
+  it that can change that — which is the behaviour, not a fault. The chest
+  publishes the mode it actually holds at `0x0D` so the keyboard shows the real
+  state rather than its own request.
+
+The console commands, where the console has power:
 
 ```
 usb mode none       # nothing exposed — the idle state
