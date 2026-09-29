@@ -125,6 +125,11 @@ INS_LIST = 0xA1
 INS_CALCULATE = 0xA2
 INS_SELECT = 0xA4
 INS_SEND_REMAINING = 0xA5
+# Extension HORS du jeu YKOATH : ni ykman ni un lecteur générique ne l'émettra.
+# Le coffre n'a aucune horloge — ni RTC, ni pile — et la moitié gauche du
+# clavier n'en a pas davantage. Sans heure posée, l'écran du clavier affiche
+# « NO TIME » plutôt qu'un code faux.
+INS_SET_TIME = 0x10
 
 # Les deux octets de verrouillage du RESET (oath.py:318, et OATH_RESET_P1/P2 de
 # main/security/oath_proto.c). Ils SONT le verrou : sans eux, quatre octets
@@ -325,6 +330,17 @@ def apdu_reset():
     main/security/oath_proto.c). Aucune donnée : c'est une APDU de cas 1.
     """
     return apdu(0x00, INS_RESET, RESET_P1, RESET_P2)
+
+
+def apdu_set_time(unix_s):
+    """Pose l'heure murale du coffre. GROS-BOUTISTE sur huit octets.
+
+    À l'inverse de tout le reste du lien S3↔coffre, qui est petit-boutiste :
+    c'est la convention des cartes à puce, et cette commande vit du côté carte.
+    """
+    if not isinstance(unix_s, int) or unix_s < 0 or unix_s >> 64:
+        raise ValueError("heure hors bornes")
+    return apdu(0x00, INS_SET_TIME, 0x00, 0x00, unix_s.to_bytes(8, "big"))
 
 
 # --------------------------------------------------------------------------
@@ -1096,6 +1112,36 @@ def cmd_delete(cle, args):
     return 1
 
 
+def cmd_set_time(cle, args):
+    """SET TIME : aucun appui — cette commande ne révèle rien et ne détruit rien.
+
+    POURQUOI ELLE EXISTE. Un TOTP vaut HMAC(secret, floor(unix / 30)) : sans
+    heure, pas de code. Le coffre n'a aucune horloge, et le clavier n'en a pas
+    de fiable non plus. L'heure est donc POSÉE une fois par branchement, et le
+    coffre l'entretient sur son temps monotone.
+
+    CE QUI REND L'INVALIDATION GRATUITE : le coffre n'existe que branché et
+    redémarre au débranchement. Son heure s'efface toute seule — il n'y a rien
+    à invalider, et aucune heure périmée n'est possible.
+
+    LA LIMITE, PUISQU'ELLE EST RÉELLE : cette machine dit au coffre quelle heure
+    il est. Une machine qui ment fait calculer les codes d'une autre fenêtre.
+    Elle n'en apprend rien — les codes ne s'affichent que sur l'écran du clavier
+    et ne repassent jamais par l'hôte — mais un code faux peut s'afficher, que
+    le service refusera. C'est inhérent à la classe d'appareil : un hôte menteur
+    ne se distingue pas d'une semaine débranchée.
+    """
+    maintenant = int(time.time())
+    _, sw = cle.exchange(apdu_set_time(maintenant))
+    if sw != 0x9000:
+        print(f"échec : {sw_message(sw)}", file=sys.stderr)
+        return 1
+    horodatage = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(maintenant))
+    print(f"heure posée : {horodatage} UTC")
+    print("valide jusqu'au débranchement du coffre.")
+    return 0
+
+
 def cmd_rename(cle, args):
     """RENAME : le firmware ne demande AUCUN appui — rien n'est détruit.
 
@@ -1171,6 +1217,14 @@ def build_parser():
 
     s = sub.add_parser("list", help="liste les comptes (sans appui)")
     s.set_defaults(fn=cmd_list)
+
+    s = sub.add_parser(
+        "set-time", help="pose l'heure du coffre (sans appui)",
+        description="À lancer une fois par branchement. Sans heure posée, "
+                    "l'écran du clavier affiche « NO TIME » et ne montre aucun "
+                    "code — un code calculé sans heure serait faux tout en "
+                    "paraissant juste. L'heure s'efface au débranchement.")
+    s.set_defaults(fn=cmd_set_time)
 
     s = sub.add_parser(
         "add", help="provisionne un compte (secret lu hors de la ligne de commande)",
