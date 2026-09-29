@@ -77,26 +77,33 @@ the one retained on the chest side.
 
 | signal | chest (P4) | S3 (keyboard) — **intent from 2026-08-06, OBSOLETE** |
 |---|---|---|
-| CS | GPIO7 | ~~GPIO3~~ → **IO7** |
+| CS | GPIO7 | **GPIO3** |
 | MOSI | GPIO8 | MOSI of SPI2, already routed (GPIO40) |
 | SCK | GPIO9 | SCK of SPI2, already routed (GPIO38) |
 | MISO | GPIO10 | MISO of SPI2, already routed (GPIO39) |
-| IRQ (chest→S3) | GPIO11 | ~~GPIO46~~ → **IO11** |
+| IRQ (chest→S3) | GPIO11 | **GPIO46** |
 
-> **The S3 column of this table was an intent, not a routing.** It dates
-> from the day when “the PCB was still editable”. GPIO3 and GPIO46 turned out to be
-> **unusable**: `KeSp_firmware/docs/NIPHARGUS_V2_HARDWARE.md` classes them
-> among the unwired pins (strapping and octal PSRAM), and
-> `test/test_niphar_left_pins.c` makes a test that bites out of it. The real routing
-> therefore diverged, and the `CS_P4` / `IRQ_P4` nets of the KiCad project confirm it.
+> **This table is the routing, verified against the exported netlist on
+> 2026-09-29.** `kicad-cli sch export netlist` on `Niphargus/hardware/pcb/`:
+> net `CS_P4` joins U6 pin 15 (`GPIO3/TOUCH3/ADC1_CH2_15`, the S3) to U16
+> pin 11 (`GPIO7_11`, the P4); net `IRQ_P4` joins U6 pin 16 (`GPIO46_16`) to
+> U16 pin 15 (`GPIO11_15`).
 >
-> **Up-to-date pinout: see “S3↔chest link — the pinout exists in the PCB” at the end
-> of this document** (IO7 and IO11 on the S3 side). The chest column, for its part,
-> has not moved and remains verified: it is the native IOMUX quartet of SPI2.
+> **A retracted correction, and the lesson it carries.** On 2026-09-05 this
+> table was marked stale and “corrected” to IO7 / IO11 on the S3 side. That was
+> wrong: IO7 and IO11 are the **chest-side** numbers, reported by mistake onto
+> the S3 column. The suspicion was raised at the time — “those two numbers are
+> exactly the ones `board.h` already declares on the P4 side” — and set aside
+> anyway. The KeSp session caught it by exporting the netlist, which is the only
+> source that settles a pinout. A number given from memory, even by the person
+> who drew the board, is not a routing.
 >
-> A lesson in method, one that has already cost something here: a design intent and a
-> routing look alike in a table. Dating the first and citing the file of the second
-> is the only way not to confuse them six weeks later.
+> **Two pull resistors, not in any earlier version of this document**:
+> R48 (10 kΩ) pulls `CS_P4` up to **`P4_3V3` — the chest's rail**, and R49
+> (10 kΩ) pulls `IRQ_P4` down to GND. R48 has a consequence for the keyboard:
+> driving GPIO3 while the chest is unpowered pushes ~0.33 mA into a dead rail,
+> the same reasoning that made the IRQ active-high. It also keeps the chest
+> deselected whenever the S3 leaves the line alone.
 
 This is the **native IOMUX quartet of SPI2** on the P4 (`spi_slave.rst:157-162`, values
 for `esp32p4`), hence a direct path without the GPIO matrix. That matters: the driver
@@ -873,20 +880,29 @@ among the “unaddressed design consequences”, the fact that three
 slaves share the bus “each with its own CS”, as if the P4's remained to be
 invented.
 
-That is false, and the source of truth is the PCB project, not that document. The nets
+The nets do exist, and the source of truth is the PCB project. But our own
+reading of it was wrong until 2026-09-29 — see the correction below. The nets
 **`CS_P4` and `IRQ_P4` exist** in `Niphargus/hardware/pcb/` — present in
 `s3.kicad_sch` as well as in `p4.kicad_sch`, hence wired on both sides.
 
-| net | S3 side | chest side (P4) |
-|---|---|---|
-| `CS_P4` | IO7 | GPIO7 (`BOARD_LINK_CS`) |
-| `IRQ_P4` | IO11 | GPIO11 (`BOARD_LINK_IRQ`) |
-| SCK / MISO / MOSI | 38 / 39 / 40, **shared** | 9 / 10 / 8 |
+| net | S3 side (U6) | chest side (U16) | pull |
+|---|---|---|---|
+| `CS_P4` | **GPIO3** (pin 15) | GPIO7 (pin 11, `BOARD_LINK_CS`) | R48 10 kΩ → `P4_3V3` |
+| `IRQ_P4` | **GPIO46** (pin 16) | GPIO11 (pin 15, `BOARD_LINK_IRQ`) | R49 10 kΩ → GND |
+| SCK / MISO / MOSI | 38 / 39 / 40, **shared** | 9 / 10 / 8 | — |
 
-The S3 pinout comes from Mae, not from an automated read of the schematic: pin
-names live in the symbol library, not in the sheet file, and
-following the wire by hand would not have been proof. **To be re-verified
-on the schematic before soldering or before concluding anything from a silence of the link.**
+**Corrected on 2026-09-29 from the exported netlist.** The first version of this
+section put IO7 and IO11 on the S3 side, from a number given by Mae in
+conversation. Those are the **chest-side** numbers. `kicad-cli sch export
+netlist` settles it: `CS_P4` = U6 pin 15 (`GPIO3/TOUCH3/ADC1_CH2_15`) ↔ U16
+pin 11 (`GPIO7_11`); `IRQ_P4` = U6 pin 16 (`GPIO46_16`) ↔ U16 pin 15
+(`GPIO11_15`). The KeSp session caught it and exported the netlist — the only
+source that settles a pinout.
+
+**R48 pulls `CS_P4` up to the chest's own rail**, `P4_3V3`. Two consequences for
+the keyboard: driving GPIO3 while the chest is unpowered pushes ~0.33 mA into a
+dead rail (the same reasoning that made the IRQ active-high), and R48 keeps the
+chest deselected whenever the S3 leaves the line alone.
 
 **The bus is shared three ways** — nRF24 (`CSN` GPIO16), Sharp display (`LCD_CS`
 GPIO14, active HIGH), and the chest. Two consequences that bear on our

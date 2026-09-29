@@ -190,38 +190,56 @@ silently.
 | `MISO` | GPIO10 | chest → S3 |
 | `IRQ` | GPIO11 | chest → S3 |
 
-### S3 side — **to be re-verified before soldering**
+### S3 side — verified against the exported netlist, 2026-09-29
 
-| net | S3 | shared with |
-|---|---|---|
-| `CS_P4` | **IO7** | nobody (one pin per slave) |
-| `IRQ_P4` | **IO11** | nobody |
-| `SCK` | IO38 | nRF24, Sharp display |
-| `MISO` | IO39 | nRF24, Sharp display |
-| `MOSI` | IO40 | nRF24, Sharp display |
+| net | S3 (U6) | pull | shared with |
+|---|---|---|---|
+| `CS_P4` | **GPIO3** (pin 15) | R48 10 kΩ → `P4_3V3` | nobody (one pin per slave) |
+| `IRQ_P4` | **GPIO46** (pin 16) | R49 10 kΩ → GND | nobody |
+| `SCK` | IO38 | — | nRF24, Sharp display |
+| `MISO` | IO39 | — | nRF24, Sharp display |
+| `MOSI` | IO40 | — | nRF24, Sharp display |
 
-> **Read this before you conclude anything from a silent link.**
+> **Correction — this section said IO7 / IO11 until 2026-09-29, and that was
+> wrong.**
 >
-> `CS_P4` and `IRQ_P4` **do exist** as nets in the `Niphargus` KiCad project,
-> in `s3.kicad_sch` as well as `p4.kicad_sch` — wired on both sides. We
-> established that on 2026-09-05 by reading the PCB project, because
-> `KeSp_firmware/docs/NIPHARGUS_V2_HARDWARE.md` mentions neither CS nor IRQ for
-> the P4, and even lists "three slaves each with its own CS" among its
-> *unaddressed* design consequences, as if the P4's remained to be invented.
-> That document is out of date on this point; the PCB is the source of truth.
+> Those are the **chest-side** numbers, reported by mistake onto the S3 column.
+> The KeSp session exported the netlist and settled it:
 >
-> **But the IO7 / IO11 assignment comes from Mae, by hand, not from an
-> automated read of the schematic.** Pin names live in the symbol library, not
-> in the sheet file, so following the wire by eye would not have been proof. It
-> has not been traced in the schematic. Please re-verify it on your side before
-> soldering, and before concluding from a silence that the firmware is at fault.
+> ```
+> kicad-cli sch export netlist --format kicadsexpr \
+>   -o niphar.net Niphargus/hardware/pcb/niphar.kicad_sch
 >
-> An earlier table in our own `docs/HARDWARE.md` said GPIO3 for CS and GPIO46
-> for IRQ. **That was a design intent from 2026-08-06, not a routing**, and it
-> is obsolete: your own `NIPHARGUS_V2_HARDWARE.md` classes GPIO3 and GPIO46
-> among the unwired pins. If you find GPIO3/GPIO46 anywhere — including in our
-> design spec, which still carries them — it is the stale value. The chest
-> column, by contrast, has never moved.
+> net CS_P4  : U6 pin 15 "GPIO3/TOUCH3/ADC1_CH2_15"  +  U16 pin 11 "GPIO7_11"
+> net IRQ_P4 : U6 pin 16 "GPIO46_16"                 +  U16 pin 15 "GPIO11_15"
+> S3 GPIO7 carries /s3/col2 — a matrix column, not the CS.
+> ```
+>
+> We reproduced that export independently before correcting. **The design spec's
+> §3 table was right all along**, and so was the strapping analysis in our
+> `boards/niphar_chest/board.h`: GPIO46 *is* the routed pin, and the reasoning
+> that shows it harmless applies.
+>
+> Two upstream causes, one on each side. Yours:
+> `NIPHARGUS_V2_HARDWARE.md` classed GPIO3 and GPIO46 among the *unwired* pins,
+> with a test that enforces it — which is what made an S3 assignment on those
+> pins look impossible. Ours: a number given in conversation was taken for a
+> routing, even after noticing it matched the chest's own pins exactly.
+>
+> **A pinout is settled by the netlist, not by memory** — including the memory
+> of whoever drew the board.
+
+### The pull-up on `CS_P4` is on the chest's rail
+
+R48 ties `CS_P4` to **`P4_3V3`**, not to the keyboard's rail. Two consequences
+on your side:
+
+- Driving GPIO3 while the chest is unpowered pushes roughly 0.33 mA into a dead
+  rail, through the P4's protection diodes. This is the same reasoning that made
+  the IRQ active-HIGH with a pull-down (section 6) — the chest is unpowered most
+  of the time, since it only wakes when wired.
+- When you leave the line alone, R48 holds the chest **deselected**. That is the
+  safe default, and it means an undriven CS is not an ambiguous state.
 
 ## 3. Line parameters
 
@@ -409,12 +427,19 @@ worth knowing that the line is *guaranteed* silent until you talk, so an IRQ
 before your first transaction means something is wrong, not that the chest is
 eager.
 
-Historical note, in case you find it in our older documents: the IRQ was once
-planned to land on S3 GPIO46, and there is an analysis in our spec explaining
-why that strapping pin was safe. **That analysis is about a pin that is no
-longer used** — the routed net is IO11. Our `board.h` comment still says GPIO46
-and is stale on that point. If IO11 has a strapping role on your side, that
-question is open and we have not answered it.
+**GPIO46 is a strapping pin on your side, and that is already answered.** The
+IRQ lands on S3 GPIO46, and `boards/niphar_chest/board.h` carries the analysis:
+that strap's only role is controlling ROM message printing on UART0, and with
+`EFUSE_UART_PRINT_CONTROL` at its default value its level at reset is
+explicitly "Ignored" (ESP32-S3 TRM v1.8, table 8.3-1, p. 536). Nothing to do
+with GPIO45, which selects the flash rail voltage.
+
+We hold the invariant **"never assert before the S3 has spoken at least once"**
+anyway: it costs nothing, it keeps the line quiet through your boot, and if that
+eFuse were ever changed, GPIO46 would regain a role at reset.
+
+*(An earlier revision of this contract claimed the routed pin was IO11 and that
+this analysis was obsolete. That was our error — see section 2.)*
 
 ## 7. The shared bus, three slaves deep
 
@@ -424,7 +449,7 @@ question is open and we have not answered it.
 |---|---|---|
 | nRF24 | `CSN`, GPIO16 | active LOW |
 | Sharp display | `LCD_CS`, GPIO14 | active **HIGH** |
-| chest (P4) | `CS_P4`, IO7 | active LOW (section 3) |
+| chest (P4) | `CS_P4`, S3 GPIO3 | active LOW (section 3) |
 
 Two consequences bear on both firmwares.
 
@@ -504,18 +529,18 @@ because the keyboard is the half that lives on battery and we are not the ones
 paying for it. The chest supports both, and must keep supporting both.
 
 - **Polling.** Read the 20-byte block on an interval and watch
-  `pending_op`. Simplest; no interrupt handling; no dependence on IO11 being
+  `pending_op`. Simplest; no interrupt handling; no dependence on GPIO46 being
   the pin we think it is (section 2). Costs a transaction per interval, on a
   bus you share with the radio, and adds up to half your interval to the
   latency the owner perceives. The chest refreshes its block every 20 ms, so
   polling faster than that gains nothing.
-- **Interrupt.** A rising edge on IO11 means a confirmation is pending. Cheapest
+- **Interrupt.** A rising edge on GPIO46 means a confirmation is pending. Cheapest
   at rest — nothing on the bus while the chest has nothing to ask. Requires the
-  pull-down (section 6), requires IO11 to be verified, and requires you to
+  pull-down (section 6), requires GPIO46 to be wired as expected, and requires you to
   handle the case where the chest disappears while the line is asserted (it goes
   high-impedance, the pull-down releases it; there is no "cancel" message).
 - **Both** is reasonable: interrupt-driven with a slow polling floor, which
-  costs little and does not depend on IO11 being right. It also degrades into
+  costs little and does not depend on GPIO46 being right. It also degrades into
   pure polling if the IRQ turns out not to be routed where we think, which is
   the honest hedge given section 2.
 
@@ -623,14 +648,19 @@ Found while writing this document. In each case the code is what ships, and this
 contract follows the code. Listed so that nobody reconciles the spec instead of
 the implementation.
 
-1. **The S3 pinout.** The spec's §3 table says CS = GPIO3, IRQ = GPIO46. Both
-   are obsolete and both are wrong: the routed nets are IO7 and IO11
-   (section 2). The spec's whole sub-section arguing that GPIO46's strapping
-   role is harmless is therefore an analysis of a pin that is not used.
-2. **`board.h` carries the same stale value.** The comment on
-   `BOARD_LINK_IRQ` still reads *"Côté clavier ce signal arrive sur GPIO46"* and
-   reproduces the strapping analysis. The `#define` itself is the P4's GPIO11
-   and is correct; only the prose about the far end is stale.
+1. ~~**The S3 pinout.** The spec's §3 table says CS = GPIO3, IRQ = GPIO46. Both
+   are obsolete and both are wrong.~~ **Retracted 2026-09-29 — the spec was
+   right.** The netlist gives S3 GPIO3 for `CS_P4` and S3 GPIO46 for `IRQ_P4`
+   (section 2). It was this contract that was wrong, for one revision.
+2. ~~**`board.h` carries the same stale value.**~~ **Also retracted.** The
+   comment on `BOARD_LINK_IRQ` — *"Côté clavier ce signal arrive sur GPIO46"* —
+   and the strapping analysis that follows it are both correct. A commit that
+   struck them through has been reverted.
+
+   *These two entries are kept struck through rather than deleted: this section
+   exists to stop people reconciling documents against each other instead of
+   against the source, and the fastest way to relearn that lesson is to see it
+   fail once. The source here is the netlist, not any `.md`.*
 3. **The framed data channel does not exist.** The spec specifies a frame format
    (`SOF 0xA5`, version, opcode, length, payload, CRC16) and calls it "not
    implemented in this increment". It is still not implemented: there is no
