@@ -414,7 +414,19 @@ static uint16_t oath_apdu(const uint8_t *in, uint16_t in_len,
      * s'intercaler entre la demande et l'appui, et c'est cela qui rend
      * suffisant le simple index mémorisé dans `touch_slot`.
      */
-    const bool accorde = (ccid_confirm_named(oath_sec_op(s_ctx.touch_op), label) == 1);
+    /*
+     * LE NOMBRE PASSE, ET CE N'EST PAS DECORATIF. Un RESET efface jusqu'a seize
+     * secrets sur CET appui, et l'ecran du clavier ne le saurait pas autrement :
+     * il ne recoit qu'un code d'operation. Le contrat publie a KeSp annonce le
+     * nombre reel (vecteur V16) — passer ici le defaut de 1 rendrait ce contrat
+     * FAUX, et c'est exactement ce qui se produisait avant ce correctif.
+     *
+     * `s_ctx.touch_count` est celui que oath_dispatch() vient de compter, dans
+     * la meme commande : le meme chiffre que oath_reset_label() a mis en toutes
+     * lettres dans `label` deux lignes plus haut. Deux formes, une seule source.
+     */
+    const bool accorde = (ccid_confirm_named_counted(oath_sec_op(s_ctx.touch_op),
+                                                     label, s_ctx.touch_count) == 1);
 
     if (s_ctx.touch_op == OATH_TOUCH_CALCULATE) {
         return oath_finish_calculate(accorde, out, cap);

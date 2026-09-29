@@ -425,6 +425,77 @@ if [ "$otp2_obj_vu" -eq 0 ]; then
     echo "       non exécuté (il le sera à la phase complète)."
 fi
 
+# --- Garde-fou 10 : le nombre de comptes ne redevient pas 1 ------------------
+# Un RESET efface jusqu'a seize secrets sur UN appui, et l'ecran du CLAVIER ne
+# le sait que par l'octet 0x0F du lien : il ne recoit qu'un code d'operation.
+# Le contrat publie a KeSp annonce le nombre reel (vecteur V16, op_count = 12).
+#
+# CE GARDE-FOU EXISTE PARCE QUE LE DEFAUT A DEJA EU LIEU. La plomberie
+# (sec_confirm_arm_counted) a ete ecrite, et RIEN ne l'appelait : le chemin
+# RESET passait par ccid_confirm_named(), qui arme avec 1. Le contrat decrivait
+# donc un comportement que le firmware ne produisait pas — et les vecteurs ne
+# pouvaient pas l'attraper, puisqu'ils verifient que pack_status EMBALLE
+# fidelement ce qu'on lui donne, jamais que le coffre PRODUIT la bonne valeur.
+# Aucun test hote ne le peut non plus : le chemin est de l'ESP-IDF.
+#
+# Deux assertions : la variante comptee est employee, et la variante qui
+# defaute a 1 n'apparait PAS dans mode_oath.c. Commentaires depouilles — le
+# fichier cite ccid_confirm_named() dans sa prose.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "» garde-fou 10 SAUTE (python3 absent) — le nombre de comptes non verifie"
+else
+    python3 - <<'PYGUARD' || fail=1
+import re, sys
+
+src = open("main/usb/mode_oath.c", encoding="utf-8").read()
+
+# Commentaires et chaines remplaces par du blanc (memes lignes conservees).
+out, i, n = [], 0, len(src)
+while i < n:
+    c = src[i]
+    if c == '/' and i + 1 < n and src[i+1] == '*':
+        j = src.find('*/', i + 2); j = n if j == -1 else j + 2
+        out.append(''.join(ch if ch == '\n' else ' ' for ch in src[i:j])); i = j
+    elif c == '/' and i + 1 < n and src[i+1] == '/':
+        j = src.find('\n', i); j = n if j == -1 else j
+        out.append(' ' * (j - i)); i = j
+    elif c == '"':
+        j = i + 1
+        while j < n and src[j] != '"':
+            j += 2 if src[j] == '\\' else 1
+        j = min(j + 1, n)
+        out.append(''.join(ch if ch == '\n' else ' ' for ch in src[i:j])); i = j
+    else:
+        out.append(c); i += 1
+code = ''.join(out)
+
+bad = 0
+
+if re.search(r"\bccid_confirm_named\s*\(", code):
+    print("\033[0;31m✗ OATH : mode_oath.c appelle ccid_confirm_named(), qui arme avec 1\033[0m",
+          file=sys.stderr)
+    print("         Un RESET annoncerait « 1 compte » au clavier alors qu'il en", file=sys.stderr)
+    print("         efface douze. Utiliser ccid_confirm_named_counted().", file=sys.stderr)
+    bad += 1
+
+m = re.search(r"ccid_confirm_named_counted\s*\(([^;]*?)\)\s*==", code, re.S)
+if not m:
+    print("\033[0;31m✗ OATH : aucun appel a ccid_confirm_named_counted() dans mode_oath.c\033[0m",
+          file=sys.stderr)
+    print("         Le nombre de comptes vises ne traverse plus jusqu'au lien.", file=sys.stderr)
+    bad += 1
+elif "s_ctx.touch_count" not in m.group(1):
+    print("\033[0;31m✗ OATH : le nombre passe a la confirmation n'est pas s_ctx.touch_count\033[0m",
+          file=sys.stderr)
+    print("         C'est le seul chiffre que oath_dispatch() vient de compter, et", file=sys.stderr)
+    print("         celui que oath_reset_label() a mis en toutes lettres dans", file=sys.stderr)
+    print("         l'etiquette. Deux formes, une seule source — ou elles divergent.", file=sys.stderr)
+    bad += 1
+
+sys.exit(1 if bad else 0)
+PYGUARD
+fi
+
 # --- Garde-fou 9 : l'appui qui detruit des secrets ne devient pas decoratif --
 # main/usb/mode_oath.c enonce DEUX regles et dit lui-meme que rien ne les
 # protege (« Rendre cette attente non bloquante casserait la garantie sans

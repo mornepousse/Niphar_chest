@@ -445,11 +445,11 @@ static bool dongle_sign(const uint8_t d[32],
  * Arms sec_confirm, then polls every 20 ms.  While waiting, fires a CCID
  * time-extension (WTX) frame every CCID_WTX_PERIOD_MS so scdaemon does not
  * time out.  Returns 1 if authorised by touch, 2 if denied / timed out. */
-static int dongle_confirm_named(sec_op_t op, const char *label)
+static int dongle_confirm_named(sec_op_t op, const char *label, uint8_t count)
 {
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     const uint32_t deadline = now + SEC_CONFIRM_TIMEOUT_MS;
-    sec_confirm_arm_named(CCID_CONFIRM_SLOT, op, label, now);
+    sec_confirm_arm_counted(CCID_CONFIRM_SLOT, op, label, count, now);
     uint32_t last_wtx = now;
     uint8_t  slot     = 0;
 
@@ -497,13 +497,18 @@ static int dongle_confirm_named(sec_op_t op, const char *label)
  */
 static int dongle_confirm(sec_op_t op)
 {
-    return dongle_confirm_named(op, NULL);
+    return dongle_confirm_named(op, NULL, 1u);
 }
 
 /* Meme corps, ouvert aux modes qui ont un compte a nommer (usb/mode_oath.c). */
 int ccid_confirm_named(sec_op_t op, const char *label)
 {
-    return dongle_confirm_named(op, label);
+    return dongle_confirm_named(op, label, 1u);
+}
+
+int ccid_confirm_named_counted(sec_op_t op, const char *label, uint8_t count)
+{
+    return dongle_confirm_named(op, label, count);
 }
 
 /* Derive the public key for READ PUBLIC KEY (INS 0x47 P1=0x81) — gpg keytocard

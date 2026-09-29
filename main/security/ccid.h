@@ -87,3 +87,20 @@ void ccid_set_applet(ccid_applet_fn_t applet);
  * L'hote est tenu au courant par des trames WTX toutes les 1,5 s.
  */
 int ccid_confirm_named(sec_op_t op, const char *label);
+
+/*
+ * Comme ccid_confirm_named(), en annoncant COMBIEN de comptes l'operation
+ * touche. `count` traverse jusqu'au lien, qui le publie en 0x0F pour que
+ * l'ecran du CLAVIER puisse dire « 12 CPT » sur un RESET.
+ *
+ * ccid_confirm_named() vaut ccid_confirm_named_counted(op, label, 1).
+ *
+ * POURQUOI LA VARIANTE EXISTE PLUTOT QU'UN DEFAUT : parce que le defaut a
+ * DEJA menti. Le chemin RESET passait par ccid_confirm_named(), donc armait
+ * avec 1, alors que le contrat publie a KeSp annonce le nombre reel (vecteur
+ * V16, op_count = 12). Le contrat decrivait un comportement que le firmware ne
+ * produisait pas, et les vecteurs ne pouvaient pas l'attraper : ils verifient
+ * que pack_status EMBALLE fidelement ce qu'on lui donne, jamais que le coffre
+ * PRODUIT la bonne valeur.
+ */
+int ccid_confirm_named_counted(sec_op_t op, const char *label, uint8_t count);
