@@ -36,6 +36,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stddef.h>
 
 #include "esp_err.h"
@@ -83,3 +84,30 @@ void link_spi_set_ready(bool ready);
  * agir, et la console du coffre garde son absence de pouvoir.
  */
 bool link_spi_snapshot(uint8_t *out, size_t cap);
+
+/*
+ * Ce que le TRANSPORT sait de lui-meme, pour la console. Aucun de ces champs ne
+ * traverse le fil : ils repondent aux questions qu'on se pose quand le fil ne
+ * marche pas.
+ *
+ * `rx_armee` est la plus importante. Sans reception en file, un WRDMA du maitre
+ * est perdu SANS ERREUR des deux cotes — c'est la panne muette que le contrat
+ * impose d'ecarter, et elle s'est produite au premier demarrage de la v3 pour
+ * un probleme d'alignement. La seule trace etait une ligne de journal au
+ * demarrage, qui a defile depuis. Au banc, « une reception etait-elle armee ? »
+ * sera la premiere question, et il faut pouvoir y repondre a l'instant ou on se
+ * la pose.
+ */
+typedef struct {
+    bool    rx_armee;       /* une reception DMA est en file */
+    bool    maitre_vu;      /* le maitre a touche le tampon au moins une fois */
+    uint32_t touches;       /* combien de fois — grimpe si le fil est vivant */
+    bool    sonnette_vue;   /* une reference de sonnette a ete prise */
+    uint8_t sonnette;       /* derniere valeur de sonnette servie */
+    uint8_t segment_type;   /* dernier segment publie : type... */
+    uint8_t segment_num;    /* ...numero... */
+    uint16_t segment_len;   /* ...et longueur */
+} link_spi_diag_t;
+
+/* Renseigne `out`. Rend false si le lien n'est pas installe. */
+bool link_spi_diag(link_spi_diag_t *out);

@@ -240,6 +240,21 @@ static int cmd_link(int argc, char **argv)
            (int)st.label_len, st.label);
     printf("segment DMA   : type %u, n° %u, %u o\n",
            st.dma_kind, st.dma_seq, st.dma_len);
+
+    /* Le transport, qui ne traverse pas le fil : ce sont les questions qu'on se
+     * pose quand le fil ne marche pas. */
+    link_spi_diag_t d;
+    if (link_spi_diag(&d)) {
+        printf("--- transport ---\n");
+        printf("réception DMA : %s\n",
+               d.rx_armee ? "armée"
+                          : "NON ARMÉE — toute requête du clavier serait perdue");
+        printf("maître        : %s, %lu accès au tampon\n",
+               d.maitre_vu ? "présent" : "jamais vu",
+               (unsigned long)d.touches);
+        printf("sonnette      : %s, dernière servie %u\n",
+               d.sonnette_vue ? "référence prise" : "pas encore lue", d.sonnette);
+    }
     return 0;
 }
 #endif /* BOARD_LINK_AVAILABLE */

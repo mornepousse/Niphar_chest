@@ -138,6 +138,11 @@ static bool     s_mode_complained_valid;
  * clavier, où elle arrive sur un de ses pins de strapping.
  */
 static volatile bool s_master_seen;
+/* Combien de fois le maitre a touche le tampon partage. Un drapeau collant ne
+ * dit que « au moins une fois depuis le demarrage » ; un compteur qui GRIMPE
+ * entre deux releves prouve que le fil est vivant a l'instant ou on regarde.
+ * C'est la difference entre « ca a marche un jour » et « ca marche ». */
+static volatile uint32_t s_master_touches;
 
 /* Dernier bloc réellement poussé dans le tampon partagé, pour ne réécrire que
  * ce qui change — voir publish(). Dimensionné à la SEULE zone du coffre : ce
@@ -245,6 +250,7 @@ static IRAM_ATTR bool on_master_touch(void *arg, spi_slave_hd_event_t *event, Ba
     (void)event;
     (void)awoken;
     s_master_seen = true;
+    s_master_touches++;
     return false;
 }
 
@@ -1082,6 +1088,23 @@ bool link_spi_snapshot(uint8_t *out, size_t cap)
 }
 
 
+bool link_spi_diag(link_spi_diag_t *out)
+{
+    if (out == NULL) {
+        return false;
+    }
+    out->rx_armee     = s_rx_armed;
+    out->maitre_vu    = s_master_seen;
+    out->touches      = s_master_touches;
+    out->sonnette_vue = s_req_seq_seen;
+    out->sonnette     = s_last_req_seq;
+    out->segment_type = s_dma_kind;
+    out->segment_num  = s_dma_seq;
+    out->segment_len  = s_dma_len;
+    return true;
+}
+
+
 #else /* !BOARD_LINK_AVAILABLE */
 
 /*
@@ -1112,6 +1135,13 @@ bool link_spi_snapshot(uint8_t *out, size_t cap)
      * vrai quelle que soit la carte. */
     (void)out;
     (void)cap;
+    return false;
+}
+
+
+bool link_spi_diag(link_spi_diag_t *out)
+{
+    (void)out;
     return false;
 }
 

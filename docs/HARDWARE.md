@@ -800,6 +800,44 @@ who has the board in hand to produce the event, then watching whether the device
 sees it. Here, thirty seconds of listening and four presses were enough — and nothing
 of what was written in the meantime got any closer to the truth.
 
+### The wire works — the S3 is polling the chest at 4 Hz — 2026-09-29
+
+**Established, and it settles the biggest open question of section 2 of the
+link contract**: the electrical side of the S3↔chest link had never been proven.
+It is now, for master reads.
+
+The chest counts how many times the master touches its shared buffer. That
+counter is incremented from the driver's ISR, on `SPI_EV_BUF_TX` and
+`SPI_EV_BUF_RX` — **master activity only**, never our own writes. Sampled three
+times inside a single boot:
+
+```
+t+ 6s : maître : présent, 8 accès au tampon
+t+14s : maître : présent, 40 accès au tampon
+t+22s : maître : présent, 72 accès au tampon
+```
+
+Thirty-two accesses per eight seconds: a steady **4 Hz**, which is exactly the
+250 ms polling interval the KeSp team stated.
+
+**What this proves.** The master issues transactions the chest's SPI peripheral
+decodes as well-formed shared-buffer commands, four times a second, without
+interruption. That implicitly validates everything the command phase depends on:
+**CS active low**, **mode 0**, bit order, the command/address/dummy shape, and
+the physical wiring on GPIO7/8/9/10. Noise does not produce well-formed commands
+at a steady rate.
+
+**What it does not prove.** We see *that* the master transacts, not *what it
+reads*: the chest cannot tell whether the bytes arrived intact at the other end.
+Nor does it say anything about the DMA channel — `WRDMA`/`RDDMA` are a different
+command path and remain entirely untested.
+
+**A measurement artefact worth recording**, because it nearly produced a wrong
+conclusion: opening the serial port resets the chip. Three separate `link`
+invocations all reported “9 accesses”, which looks like a frozen counter — it
+was three fresh boots sampled at the same elapsed time. The counter only shows
+its growth when several readings are taken **inside one boot**.
+
 ### Link v3 — the published block, checked against the model — 2026-09-29
 
 **The chest publishes exactly what the host model computes, CRC included.**
