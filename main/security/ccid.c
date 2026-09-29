@@ -501,11 +501,6 @@ static int dongle_confirm(sec_op_t op)
 }
 
 /* Meme corps, ouvert aux modes qui ont un compte a nommer (usb/mode_oath.c). */
-int ccid_confirm_named(sec_op_t op, const char *label)
-{
-    return dongle_confirm_named(op, label, 1u);
-}
-
 int ccid_confirm_named_counted(sec_op_t op, const char *label, uint8_t count)
 {
     return dongle_confirm_named(op, label, count);

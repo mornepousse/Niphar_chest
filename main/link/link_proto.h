@@ -358,6 +358,28 @@ typedef struct {
 } link_master_t;
 
 /*
+ * QUI APPELLE QUOI, PARCE QUE LA MOITIÉ DE CE FICHIER N'A PAS D'APPELANT ICI.
+ *
+ * Ce module décrit les DEUX côtés du lien, et le coffre n'en exerce qu'un. Les
+ * fonctions ci-dessous sans appelant dans `main/` ne sont pas du code mort :
+ *
+ *   - le COFFRE appelle `link_proto_pack_status()`, `link_proto_parse_master()`,
+ *     `link_proto_confirm_accepted()`, `link_proto_mode_request()`,
+ *     `link_proto_parse_request()`, `link_proto_pack_list()`,
+ *     `link_proto_pack_code()` et `link_proto_format_code()` ;
+ *   - le MAÎTRE (KeSp_firmware) appelle `link_proto_parse_status()`,
+ *     `link_proto_is_absent()`, `link_proto_usb_mode_is_known()` et
+ *     `link_proto_pack_request()`. Elles vivent ici parce que le contrat est
+ *     défini du côté esclave, et elles ne sont exercées, de ce dépôt, que par
+ *     `test/test_link_proto.c`.
+ *
+ * C'est écrit parce qu'un audit « fonction publique sans appelant » les
+ * remonte, et qu'on ne doit pas les supprimer en croyant nettoyer : ce sont
+ * elles qui rendent le contrat vérifiable sur l'hôte, des deux bords, avant
+ * qu'un seul fil ait été branché.
+ */
+
+/*
  * Sérialise l'état du coffre dans `regs` (LINK_REG_SIZE octets), CRC compris.
  * N'écrit AUCUN octet de la plage du maître (LINK_REG_MASTER_BASE), qui lui
  * appartient — un appui déjà posé et pas encore lu y survit intact.

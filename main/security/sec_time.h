@@ -49,7 +49,17 @@
  */
 #define SEC_TIME_MIN_PLAUSIBLE  1704067200u
 
-/* Oublie l'heure. Appele au demarrage, et par les tests. */
+/*
+ * Oublie l'heure.
+ *
+ * PAS appele au demarrage, et ce n'est pas un oubli : les statiques de ce
+ * module sont a zero par construction, donc le coffre demarre deja sans heure.
+ * Un appel explicite au boot donnerait l'illusion que l'invalidation depend de
+ * lui — alors qu'elle depend du REDEMARRAGE, qui est ce qui rend l'heure du
+ * coffre auto-invalidante (voir l'en-tete de ce fichier).
+ *
+ * Existe pour les tests, qui ont besoin de repartir d'un etat connu.
+ */
 void sec_time_reset(void);
 
 /*

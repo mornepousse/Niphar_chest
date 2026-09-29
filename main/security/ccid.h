@@ -86,21 +86,25 @@ void ccid_set_applet(ccid_applet_fn_t applet);
  * l'appui (voir la note DEPENDANCE AU TRANSPORT de security/oath_proto.h).
  * L'hote est tenu au courant par des trames WTX toutes les 1,5 s.
  */
-int ccid_confirm_named(sec_op_t op, const char *label);
-
 /*
- * Comme ccid_confirm_named(), en annoncant COMBIEN de comptes l'operation
- * touche. `count` traverse jusqu'au lien, qui le publie en 0x0F pour que
- * l'ecran du CLAVIER puisse dire « 12 CPT » sur un RESET.
+ * Demande une confirmation physique, en annoncant COMBIEN de comptes
+ * l'operation touche. `count` traverse jusqu'au lien, qui le publie en 0x0F
+ * pour que l'ecran du CLAVIER puisse dire « 12 CPT » sur un RESET — il ne
+ * recoit qu'un code d'operation, et ne le saurait pas autrement.
  *
- * ccid_confirm_named() vaut ccid_confirm_named_counted(op, label, 1).
+ * IL N'Y A PAS DE VARIANTE QUI DEFAUTE A 1, ET C'EST DELIBERE. Elle a existe,
+ * et elle a menti : le chemin RESET passait par elle, donc armait avec 1,
+ * alors que le contrat publie a KeSp annonce le nombre reel (vecteur V16,
+ * op_count = 12). Le contrat decrivait un comportement que le firmware ne
+ * produisait pas.
  *
- * POURQUOI LA VARIANTE EXISTE PLUTOT QU'UN DEFAUT : parce que le defaut a
- * DEJA menti. Le chemin RESET passait par ccid_confirm_named(), donc armait
- * avec 1, alors que le contrat publie a KeSp annonce le nombre reel (vecteur
- * V16, op_count = 12). Le contrat decrivait un comportement que le firmware ne
- * produisait pas, et les vecteurs ne pouvaient pas l'attraper : ils verifient
- * que pack_status EMBALLE fidelement ce qu'on lui donne, jamais que le coffre
- * PRODUIT la bonne valeur.
+ * Les vecteurs ne pouvaient pas l'attraper : ils verifient que l'emballeur
+ * EMBALLE fidelement ce qu'on lui donne, jamais que le coffre PRODUIT la
+ * bonne valeur. Aucun test hote non plus — le chemin est de l'ESP-IDF de bout
+ * en bout. Retirer le defaut rend le defaut impossible, la ou un garde-fou ne
+ * faisait que l'interdire a un endroit.
+ *
+ * Passer 1 explicitement reste correct, et c'est ce que font toutes les
+ * operations qui ne visent qu'une chose.
  */
 int ccid_confirm_named_counted(sec_op_t op, const char *label, uint8_t count);
