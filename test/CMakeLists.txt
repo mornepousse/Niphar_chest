@@ -13,6 +13,7 @@ add_executable(test_runner
     test_main.c
     test_link_proto.c
     test_sec_time.c
+    test_totp_rfc6238.c
     test_msc_lba.c
     test_cr_crc16.c
     test_sec_confirm.c

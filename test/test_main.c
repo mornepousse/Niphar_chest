@@ -6,6 +6,7 @@ int _test_fail_count = 0;
 
 extern void test_link_proto(void);
 extern void test_sec_time(void);
+extern void test_totp_rfc6238(void);
 extern void test_msc_lba(void);
 extern void test_cr_crc16(void);
 extern void test_sec_confirm(void);
@@ -37,6 +38,7 @@ int main(void)
 
     test_link_proto();
     test_sec_time();
+    test_totp_rfc6238();
     test_cr_crc16();
     test_sec_confirm();
     test_sec_store();
