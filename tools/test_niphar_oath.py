@@ -604,6 +604,53 @@ class TestResetHote(unittest.TestCase):
 # RENAME et RESET — les trames, I5
 # --------------------------------------------------------------------------
 class TestApduDestructrices(unittest.TestCase):
+    def test_set_time_est_gros_boutiste(self):
+        # À l'INVERSE de tout le reste du lien S3↔coffre, qui est
+        # petit-boutiste : c'est la convention des cartes à puce, et cette
+        # commande vit du côté carte. Se tromper de sens donnerait une heure
+        # absurde — mais PLAUSIBLE une fois sur quelques milliards, et le
+        # coffre calculerait alors des codes faux sans rien signaler.
+        trame = oath.apdu_set_time(1790000000)
+        self.assertEqual(trame[:5], b"\x00\x10\x00\x00\x08")
+        self.assertEqual(trame[5:], (1790000000).to_bytes(8, "big"))
+
+    def test_set_time_porte_exactement_huit_octets(self):
+        # oath_do_set_time() exige lc == 8, ni plus ni moins : sept octets
+        # seraient une autre heure, plausible, et neuf ne diraient pas où
+        # commence le nombre.
+        self.assertEqual(len(oath.apdu_set_time(1790000000)), 5 + 8)
+        self.assertEqual(oath.apdu_set_time(1790000000)[4], 8)
+
+    def test_set_time_refuse_ce_qui_n_est_pas_une_heure(self):
+        # Le refus est local : une valeur hors bornes ne part même pas sur le
+        # fil. Le plancher de plausibilité du firmware reste la garde qui
+        # compte, mais faire voyager une aberration pour se la faire refuser
+        # n'apprend rien à personne.
+        for mauvais in (-1, 1 << 64, "maintenant", None, 3.5):
+            with self.assertRaises((ValueError, TypeError)):
+                oath.apdu_set_time(mauvais)
+
+    def test_set_time_ne_demande_aucun_appui(self):
+        # Elle ne révèle rien et ne détruit rien. Un appui ici habituerait la
+        # propriétaire à confirmer une commande sans conséquence — et un appui
+        # de routine est un appui qu'on ne lit plus.
+        cle = FauxTransport()
+        self.assertEqual(oath.cmd_set_time(cle, None), 0)
+        self.assertEqual(cle.ins_envoyees(), [oath.INS_SET_TIME])
+        # Délai ORDINAIRE, pas délai d'appui : les commandes qui attendent un
+        # geste passent TOUCH_TIMEOUT_S (quinze secondes). Celle-ci n'attend
+        # personne, et faire patienter l'outil quinze secondes sur un câble
+        # arraché serait un aveu que la commande demande quelque chose.
+        self.assertEqual(cle.timeouts, [oath.PLAIN_TIMEOUT_S])
+        self.assertNotEqual(oath.PLAIN_TIMEOUT_S, oath.TOUCH_TIMEOUT_S)
+
+    def test_set_time_signale_un_refus_du_coffre(self):
+        # 6A80 : le coffre a trouvé l'heure invraisemblable. L'outil ne doit pas
+        # annoncer un succès — sans quoi la propriétaire croirait son clavier
+        # prêt alors qu'il affichera « NO TIME ».
+        cle = FauxTransport(sw_set_time=0x6A80)
+        self.assertEqual(oath.cmd_set_time(cle, None), 1)
+
     def test_reset_porte_les_deux_octets_de_verrouillage(self):
         # P1/P2 = DE:AD SONT le verrou : c'est leur unique raison d'être, et
         # sans eux la clé répond 6A80 (OATH_RESET_P1/P2, oath_proto.c).
@@ -664,10 +711,16 @@ class FauxTransport(oath.Cle):
     """
 
     def __init__(self, comptes=(), echecs=None, explosions=(),
-                 code_digits=None, code_raw=None):
+                 code_digits=None, code_raw=None, sw_set_time=0x9000):
         super().__init__(verbose=False)
         self.comptes = [oath.check_name(c) for c in comptes]
         self.envoyees = []
+        # Le mot d'état que SET TIME renvoie, et le délai passé à chaque
+        # échange. Le second sert à prouver une ABSENCE : une commande qui ne
+        # demande aucun appui ne doit pas armer un délai de quinze secondes,
+        # sans quoi un câble arraché ferait attendre l'outil pour rien.
+        self.sw_set_time = sw_set_time
+        self.timeouts = []
         self.echecs = dict(echecs or {})
         self.explosions = {oath.check_name(n) for n in explosions}
         self.code_digits = code_digits
@@ -676,7 +729,10 @@ class FauxTransport(oath.Cle):
     def _xfr(self, apdu_bytes, timeout_s):
         apdu_bytes = bytes(apdu_bytes)
         self.envoyees.append(apdu_bytes)
+        self.timeouts.append(timeout_s)
         ins = apdu_bytes[1]
+        if ins == oath.INS_SET_TIME:
+            return bytes([self.sw_set_time >> 8, self.sw_set_time & 0xFF])
         if ins == oath.INS_LIST:
             corps = b"".join(
                 oath.tlv(oath.TAG_NAME_LIST,
