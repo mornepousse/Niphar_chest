@@ -494,12 +494,29 @@ static void serve_list(uint8_t first)
         if (total - 1u < first) {
             continue;   /* page précédente */
         }
+        /*
+         * UN NOM ABSENT NE FAIT PAS SAUTER L'ENTREE, IL LA REND VIDE.
+         *
+         * Le maitre calcule la position d'un compte comme `first` + son rang
+         * DANS LA PAGE. Sauter une entree deja comptee dans `total` decalerait
+         * donc tout ce qui suit d'un cran, et le clavier afficherait le bon nom
+         * en face de la mauvaise position. Relevé par l'equipe KeSp a la
+         * relecture.
+         *
+         * Le cas est INATTEIGNABLE aujourd'hui : sec_store_label() ne rend NULL
+         * que hors bornes — impossible, la boucle borne `i` — ou sur un slot
+         * vide, que oath_slot_is_oath() vient d'exclure (il exige type & 0xF0
+         * == 0x20, donc type non nul). Corrige quand meme, et dans ce sens-la :
+         * une branche « qui ne peut pas arriver » est exactement par ou le
+         * defaut de confirmation de la v1 est entre, le jour ou le code autour
+         * d'elle a bouge.
+         *
+         * Vide plutot que saute, parce qu'un nom blanc SE VOIT a l'ecran. Un
+         * decalage silencieux, non.
+         */
         const char *nom = sec_store_label(i);
-        if (nom == NULL) {
-            continue;
-        }
         idx[n]  = i;
-        noms[n] = nom;
+        noms[n] = (nom != NULL) ? nom : "";
         n++;
     }
 

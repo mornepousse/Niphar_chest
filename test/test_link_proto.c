@@ -1696,6 +1696,34 @@ static void test_v3_format_puis_emballe(void)
     TEST_ASSERT_EQ(buf[1], 6, "et le nombre de chiffres dit six");
 }
 
+/*
+ * UNE ENTREE SANS NOM GARDE SA PLACE. Le maitre calcule la position d'un compte
+ * comme `first` + son rang dans la page : une entree sautee decalerait tout ce
+ * qui suit, et le clavier afficherait le bon nom en face de la mauvaise
+ * position. Releve par l'equipe KeSp.
+ */
+static void test_v3_liste_garde_les_places(void)
+{
+    uint8_t buf[LINK_DMA_MAX];
+    static const char *const noms[] = { "GITHUB", "", "OVH:PRO" };
+    const uint8_t idx[3] = { 0, 4, 7 };
+
+    const uint16_t n = link_proto_pack_list(buf, sizeof(buf), 3, 0, idx, noms, 3, false);
+    TEST_ASSERT(n > 0, "page ecrite malgre un nom vide");
+    TEST_ASSERT_EQ(buf[LINK_LIST_OFF_COUNT], 3, "TROIS entrees, pas deux");
+
+    /* Les trois entrees se suivent, et la deuxieme porte bien son index. */
+    uint16_t o = LINK_LIST_HDR_SIZE;
+    TEST_ASSERT_EQ(buf[o], 0, "entree 0 : slot 0");
+    TEST_ASSERT_EQ(buf[o + 1], 6, "entree 0 : six caracteres");
+    o = (uint16_t)(o + 2 + 6);
+    TEST_ASSERT_EQ(buf[o], 4, "entree 1 : slot 4, la place est gardee");
+    TEST_ASSERT_EQ(buf[o + 1], 0, "entree 1 : nom vide");
+    o = (uint16_t)(o + 2 + 0);
+    TEST_ASSERT_EQ(buf[o], 7, "entree 2 : slot 7, non decale");
+    TEST_ASSERT_EQ(buf[o + 1], 7, "entree 2 : sept caracteres");
+}
+
 /* ------------------------------------------------------------------------ */
 
 void test_link_proto(void)
@@ -1756,6 +1784,7 @@ void test_link_proto(void)
     TEST_RUN(test_v3_requete_refuse_court_et_inconnu);
     TEST_RUN(test_v3_liste_entete);
     TEST_RUN(test_v3_liste_bornee);
+    TEST_RUN(test_v3_liste_garde_les_places);
     TEST_RUN(test_v3_reponse_code);
     TEST_RUN(test_v3_reponse_code_huit_chiffres);
     TEST_RUN(test_v3_format_code);
