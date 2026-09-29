@@ -15,6 +15,7 @@
 #include "usb/usb_device.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_random.h"
 
 #include "nvs.h"         /* ESP_ERR_NVS_NOT_FOUND */
@@ -371,6 +372,11 @@ static uint16_t oath_apdu(const uint8_t *in, uint16_t in_len,
         return oath_sw(out, cap, OATH_SW_WRONG_LENGTH);
     }
 
+    /* Le temps MONOTONE, fourni et non lu : oath_proto.c est de la logique pure
+     * et compile sur l'hote, ou aucune horloge ESP-IDF n'existe. Seule SET TIME
+     * s'en sert — pour retenir A QUEL INSTANT monotone l'heure murale a ete
+     * posee, sans quoi elle n'avancerait jamais. */
+    s_ctx.now_ms = (uint32_t)(esp_timer_get_time() / 1000);
     const uint16_t n = oath_dispatch(&cmd, out, cap, &s_ctx);
     if (n != OATH_SW_NEEDS_TOUCH) {
         return n;

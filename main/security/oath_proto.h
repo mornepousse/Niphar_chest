@@ -117,6 +117,17 @@ typedef struct {
      * autre partirait.
      */
     uint8_t  touch_slot;
+
+    /*
+     * Temps MONOTONE, en millisecondes, rempli par l'appelant AVANT chaque
+     * dispatch. Zero est une valeur legitime.
+     *
+     * Une seule commande s'en sert — SET TIME, qui doit retenir a quel instant
+     * monotone l'heure murale a ete posee. Il est fourni plutot que lu, parce
+     * que ce fichier est de la logique PURE : il compile sur l'hote, ou aucune
+     * horloge ESP-IDF n'existe, et c'est cette contrainte qui le rend testable.
+     */
+    uint32_t now_ms;
     /* Combien de comptes l'operation en attente detruit. L'ecran doit le dire :
      * un seul appui pour douze secrets merite un nombre affiche. Le porter ici
      * evite a l'affichage de recompter le magasin — deux comptages du meme

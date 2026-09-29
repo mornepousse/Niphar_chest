@@ -1,4 +1,5 @@
 #include "oath_proto.h"
+#include "sec_time.h"
 
 #include <string.h>
 
@@ -668,6 +669,51 @@ uint16_t oath_touch_commit(oath_ctx_t *ctx, bool granted, uint8_t *out, uint16_t
     return sw_only(out, cap, ok ? SW_OK : SW_MEMORY);
 }
 
+
+/*
+ * SET TIME (INS 0x10) — extension HORS du jeu YKOATH.
+ *
+ * YKOATH n'a aucune commande d'heure : l'hote envoie le defi dans CALCULATE,
+ * donc il connait deja l'heure et la carte n'a rien a retenir. Mais depuis la
+ * v3 du lien, c'est le CLAVIER qui demande les codes, et ni lui ni le coffre
+ * n'ont d'horloge fiable. L'heure doit donc etre POSEE, par le seul canal ou un
+ * logiciel hote parle deja au coffre.
+ *
+ * 0x10 est hors du jeu YKOATH : ni ykman ni un lecteur generique ne l'emettra.
+ * C'est une extension assumee, pas la reinterpretation d'une commande existante
+ * — reinterpreter aurait casse la compatibilite que le SELECT annonce.
+ *
+ * GROS-BOUTISTE, a l'inverse de tout le reste du lien : c'est la convention des
+ * cartes a puce, et cette commande vit du cote carte.
+ *
+ * AUCUN APPUI : elle ne revele rien et ne detruit rien.
+ */
+static uint16_t oath_do_set_time(const apdu_t *cmd, uint8_t *out, uint16_t cap,
+                                 uint32_t now_ms)
+{
+    /* Huit octets exactement. Ni plus — on ne devine pas ou commence le
+     * nombre — ni moins : une heure tronquee serait une heure differente, et
+     * plausible. */
+    if (cmd->lc != 8u) return sw_only(out, cap, SW_WRONG_DATA);
+
+    uint64_t unix_s = 0;
+    for (unsigned i = 0; i < 8u; i++) {
+        unix_s = (unix_s << 8) | (uint64_t)cmd->data[i];
+    }
+
+    /*
+     * Le refus NE TOUCHE PAS l'heure deja posee, et c'est deliberé : effacer
+     * une heure valide sur une trame invraisemblable donnerait a un hote
+     * malveillant un moyen trivial d'eteindre l'affichage du clavier. Il ne
+     * peut que proposer une heure fausse — ce que le contrat declare deja
+     * comme limite — pas supprimer celle qui marche.
+     */
+    if (!sec_time_set(unix_s, now_ms)) {
+        return sw_only(out, cap, SW_WRONG_DATA);
+    }
+    return sw_only(out, cap, SW_OK);
+}
+
 uint16_t oath_dispatch(const apdu_t *cmd, uint8_t *out, uint16_t cap,
                        oath_ctx_t *ctx)
 {
@@ -710,6 +756,7 @@ uint16_t oath_dispatch(const apdu_t *cmd, uint8_t *out, uint16_t cap,
     case 0x02u: return oath_do_delete(cmd, out, cap, ctx);
     case 0x05u: return oath_do_rename(cmd, out, cap, ctx);
     case 0x04u: return oath_do_reset(cmd, out, cap, ctx);
+    case 0x10u: return oath_do_set_time(cmd, out, cap, ctx->now_ms);
     default:    return sw_only(out, cap, SW_INS_UNKNOWN);
     }
 }

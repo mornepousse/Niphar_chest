@@ -2,6 +2,7 @@
 #include "oath_proto.h"
 #include "apdu.h"
 #include "sec_store.h"
+#include "sec_time.h"
 
 #include <stdio.h>
 
@@ -1998,9 +1999,140 @@ static void test_select_capacite_a_la_frontiere(void)
     }
 }
 
+/* ------------------------------------------------------------------------ */
+/* SET TIME — l'extension hors YKOATH qui pose l'heure du coffre             */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * POURQUOI UNE EXTENSION. YKOATH n'a aucune commande d'heure : l'hote envoie le
+ * defi dans CALCULATE, donc il connait deja l'heure et la carte n'a pas besoin
+ * de la retenir. Mais depuis la v3 du lien, c'est le CLAVIER qui demande les
+ * codes, et il n'a pas d'horloge fiable — le coffre non plus. L'heure doit donc
+ * etre POSEE une fois par branchement, par le seul canal ou un logiciel hote
+ * parle deja au coffre.
+ *
+ * INS 0x10 est hors du jeu YKOATH : ykman ne l'emettra jamais, et un lecteur
+ * generique non plus. C'est une extension assumee, pas une reinterpretation
+ * d'une commande existante — reinterpreter aurait casse la compatibilite que le
+ * SELECT annonce.
+ */
+
+static void test_set_time_pose_l_heure(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    uint8_t out[64];
+    sec_time_reset();
+    oath_select_ok(&ctx);
+
+    TEST_ASSERT(!sec_time_is_valid(), "aucune heure avant");
+
+    /* 1790000000, en GROS-BOUTISTE : convention des
+     * cartes a puce, et l'inverse de tout le reste du lien — d'ou le test. */
+    const uint8_t data[8] = { 0x00, 0x00, 0x00, 0x00, 0x6A, 0xB1, 0x3B, 0x80 };
+    const uint16_t n = oath_cmd(&ctx, 0x10, 0x00, 0x00, data, sizeof(data), out, sizeof(out));
+    TEST_ASSERT_EQ(n, 2, "reponse sans donnees");
+    TEST_ASSERT(sw_is(out, n, 0x90, 0x00), "acceptee");
+    TEST_ASSERT(sec_time_is_valid(), "heure posee");
+
+    uint64_t u = 0;
+    TEST_ASSERT(sec_time_now(0u, &u), "lisible");
+    TEST_ASSERT_EQ((uint32_t)u, 1790000000u, "gros-boutiste decode correctement");
+}
+
+/*
+ * UNE HEURE INVRAISEMBLABLE SE REFUSE, ET NE LAISSE RIEN DERRIERE. C'est le
+ * cas qui compte : un octet a zero, une variable non initialisee, une epoque de
+ * compilation. Retenir ca en levant le bit « heure valide » ferait calculer des
+ * codes faux PRESENTES COMME JUSTES — pire que pas de code, puisque le clavier
+ * peut afficher « NO TIME ».
+ */
+static void test_set_time_refuse_une_heure_invraisemblable(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    uint8_t out[64];
+    sec_time_reset();
+    oath_select_ok(&ctx);
+
+    const uint8_t zero[8] = { 0 };
+    uint16_t n = oath_cmd(&ctx, 0x10, 0x00, 0x00, zero, sizeof(zero), out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "zero refuse");
+    TEST_ASSERT(!sec_time_is_valid(), "et rien n'est retenu");
+
+    /* Une heure posee d'abord, puis une invraisemblable : la premiere DOIT
+     * survivre. Un refus qui effacerait l'heure valide donnerait a un hote
+     * malveillant un moyen trivial d'eteindre l'affichage du clavier. */
+    const uint8_t bonne[8] = { 0x00, 0x00, 0x00, 0x00, 0x6A, 0xB1, 0x3B, 0x80 };
+    oath_cmd(&ctx, 0x10, 0x00, 0x00, bonne, sizeof(bonne), out, sizeof(out));
+    TEST_ASSERT(sec_time_is_valid(), "heure valable posee");
+    n = oath_cmd(&ctx, 0x10, 0x00, 0x00, zero, sizeof(zero), out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "la mauvaise est refusee");
+    TEST_ASSERT(sec_time_is_valid(), "l'ancienne heure survit au refus");
+}
+
+static void test_set_time_exige_huit_octets(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    uint8_t out[64];
+    sec_time_reset();
+    oath_select_ok(&ctx);
+
+    const uint8_t sept[7] = { 0x00, 0x00, 0x00, 0x00, 0x6A, 0xB1, 0x3B };
+    uint16_t n = oath_cmd(&ctx, 0x10, 0x00, 0x00, sept, sizeof(sept), out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "sept octets refuses");
+    TEST_ASSERT(!sec_time_is_valid(), "rien retenu");
+
+    /* NEUF octets dont les huit premiers portent une heure PARFAITEMENT
+     * valable : seule la longueur peut motiver le refus. Un test a neuf zeros
+     * serait rejete par le plancher de plausibilite et ne dirait donc rien sur
+     * la borne — il passerait meme si la garde etait « au moins huit ». */
+    const uint8_t neuf[9] = { 0x00, 0x00, 0x00, 0x00, 0x6A, 0xB1, 0x3B, 0x80, 0x00 };
+    n = oath_cmd(&ctx, 0x10, 0x00, 0x00, neuf, sizeof(neuf), out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x80), "neuf octets refuses, meme avec une heure valable dedans");
+    TEST_ASSERT(!sec_time_is_valid(), "rien retenu");
+}
+
+/* Comme toute commande de l'applet, elle exige un SELECT prealable : sans lui,
+ * n'importe quel logiciel hote poserait l'heure sans avoir dit a qui il parle. */
+static void test_set_time_exige_la_selection(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    uint8_t out[64];
+    memset(&ctx, 0, sizeof(ctx));
+    sec_time_reset();
+
+    const uint8_t data[8] = { 0x00, 0x00, 0x00, 0x00, 0x6A, 0xB1, 0x3B, 0x80 };
+    const uint16_t n = oath_cmd(&ctx, 0x10, 0x00, 0x00, data, sizeof(data), out, sizeof(out));
+    TEST_ASSERT(sw_is(out, n, 0x6A, 0x82), "refusee sans selection");
+    TEST_ASSERT(!sec_time_is_valid(), "aucune heure posee");
+}
+
+/* SET TIME ne demande AUCUN appui : elle ne revele rien et ne detruit rien. */
+static void test_set_time_ne_demande_pas_l_appui(void)
+{
+    sec_store_init();
+    oath_ctx_t ctx;
+    uint8_t out[64];
+    sec_time_reset();
+    oath_select_ok(&ctx);
+
+    const uint8_t data[8] = { 0x00, 0x00, 0x00, 0x00, 0x6A, 0xB1, 0x3B, 0x80 };
+    const uint16_t n = oath_cmd(&ctx, 0x10, 0x00, 0x00, data, sizeof(data), out, sizeof(out));
+    TEST_ASSERT(n != OATH_SW_NEEDS_TOUCH, "aucun appui demande");
+    TEST_ASSERT_EQ(ctx.touch_op, OATH_TOUCH_NONE, "aucune operation armee");
+}
+
 void test_oath_proto(void)
 {
     TEST_SUITE("oath_proto");
+    TEST_RUN(test_set_time_pose_l_heure);
+    TEST_RUN(test_set_time_refuse_une_heure_invraisemblable);
+    TEST_RUN(test_set_time_exige_huit_octets);
+    TEST_RUN(test_set_time_exige_la_selection);
+    TEST_RUN(test_set_time_ne_demande_pas_l_appui);
     TEST_RUN(test_troncature_rfc4226);
     TEST_RUN(test_hmac_len_garde_minimale);
     TEST_RUN(test_offset_lu_du_dernier_quartet);
