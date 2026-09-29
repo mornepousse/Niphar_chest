@@ -432,6 +432,63 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 
+# --- Garde-fou 8 : la prose du contrat ne vieillit pas sous le tableau ------
+# Les tests epingles de test_link_proto.c comparent les vecteurs au CODE. Rien
+# ne comparait les vecteurs a la PROSE qui les commente — et le 2026-09-29, la
+# note de lecture du §11 a survecu a une regeneration en annoncant un CRC
+# (« 62 3A ») que plus aucun bloc du tableau ne portait. Releve par KeSp a la
+# relecture, pas par un rouge : c'est exactement ce qu'un contrat publie ne peut
+# pas se permettre, puisque l'autre moitie implemente contre la prose autant que
+# contre la table.
+#
+# La regle : toute suite de plusieurs octets citee dans les NOTES DE LECTURE doit
+# apparaitre telle quelle dans au moins une ligne du tableau des vecteurs. Les
+# octets isoles (« 0x11 », « 03 ») sont hors de portee — ils designent des
+# offsets ou des valeurs, pas des extraits de bloc. La note de production, qui
+# cite legitimement l'ANCIENNE valeur pour dire qu'elle a change, est hors de la
+# zone balayee.
+CONTRACT="docs/LINK_CONTRACT.md"
+if [ -f "$CONTRACT" ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "» garde-fou 8 SAUTE (python3 absent) — coherence prose/vecteurs non verifiee"
+    else
+        python3 - "$CONTRACT" <<'PYGUARD' || exit 1
+import re, sys
+
+doc = open(sys.argv[1], encoding="utf-8").read()
+
+rows = re.findall(r"^\|\s*V[0-9a-zA-Z]+\s*\|\s*`([0-9A-F][0-9A-F ]+)`", doc, re.M)
+if not rows:
+    print("\033[0;31m✗ garde-fou 8 : aucun vecteur trouve dans %s\033[0m" % sys.argv[1],
+          file=sys.stderr)
+    print("         le tableau du §11 a-t-il change de forme ? Le garde-fou ne peut", file=sys.stderr)
+    print("         plus rien affirmer — l'ajuster plutot que le laisser muet.", file=sys.stderr)
+    sys.exit(1)
+
+start = doc.find("Reading notes, since")
+if start == -1:
+    print("\033[0;31m✗ garde-fou 8 : les notes de lecture du §11 sont introuvables\033[0m",
+          file=sys.stderr)
+    sys.exit(1)
+end = doc.find("\n## ", start)
+notes = doc[start:end if end != -1 else len(doc)]
+
+bad = 0
+for lit in set(re.findall(r"`([0-9A-F]{2}(?: [0-9A-F]{2})+)`", notes)):
+    if not any(lit in r for r in rows):
+        print("\033[0;31m✗ contrat : la note de lecture du §11 cite « %s », "
+              "qu'aucun vecteur du tableau ne porte\033[0m" % lit, file=sys.stderr)
+        bad += 1
+
+if bad:
+    print("         La prose a survecu a une regeneration du tableau. Le tableau fait", file=sys.stderr)
+    print("         foi (il est engendre en executant link_proto.c) : c'est la note", file=sys.stderr)
+    print("         qu'on met a jour, jamais l'inverse.", file=sys.stderr)
+    sys.exit(1)
+PYGUARD
+    fi
+fi
+
 # --- Tests hôte -----------------------------------------------------------
 # Avant le build : ils sont plus rapides, et un échec ici rend le build inutile.
 # Seule la logique pure y passe — le reste n'est pas testable sans matériel,

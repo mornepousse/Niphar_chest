@@ -982,7 +982,7 @@ has **instance 3** armed, which is what makes V8 and V11 comparable.
 Reading notes, since these are the cases that catch a wrong implementation:
 
 - **V1 vs V8, V11, V12, V13** — all four differ from V1 only inside the master's
-  word, and the CRC bytes are identical (`62 3A`) in all of them. That is the
+  word, and the CRC bytes are identical (`EB 2B`) in all of them. That is the
   CRC span made visible: a parser that recomputes over 20 bytes instead of 14
   will accept V1 and reject the other four, and will therefore reject the block
   exactly whenever something is in flight.
