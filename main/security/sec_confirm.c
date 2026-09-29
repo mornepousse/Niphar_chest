@@ -485,9 +485,13 @@ sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op, 
      * elle ne lit que des entiers, son analyse de torn read tient, et elle est
      * sur le chemin de tick d'appelants qui n'ont pas besoin du nom.
      */
-    SEC_CONFIRM_LOCK();
+    /* Le verrou et la copie de l'etiquette tiennent sur UNE ligne, expres.
+     * C'est ce texte-la qui est declare dans .tripwire-divergences, et un
+     * motif qui survivrait au deplacement du memcpy hors du verrou ne
+     * protegerait rien : sous TEST_HOST, SEC_CONFIRM_LOCK() vaut ((void)0),
+     * donc aucun test du harnais hote ne peut voir la difference. */
+    SEC_CONFIRM_LOCK(); if (out_label) memcpy(out_label, s_label, sizeof(s_label));
     if (out_op) *out_op = s_op;
-    if (out_label) memcpy(out_label, s_label, sizeof(s_label));
     const int expire = (s_state == SEC_CONFIRM_PENDING &&
                         (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS);
     const sec_confirm_state_t st = s_state;
