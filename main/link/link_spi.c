@@ -1067,6 +1067,21 @@ void link_spi_set_ready(bool ready)
     s_ready = ready;
 }
 
+bool link_spi_snapshot(uint8_t *out, size_t cap)
+{
+    if (out == NULL || cap < LINK_REG_CHEST_LEN || !s_published_valid) {
+        return false;
+    }
+    /* Copie simple : la tâche du lien écrit s_published d'un bloc toutes les
+     * LINK_TICK_MS, et un lecteur qui tomberait au milieu repartirait avec un
+     * bloc mi-ancien mi-neuf. C'est acceptable ICI et nulle part ailleurs :
+     * cette fonction sert à REGARDER, pas à décider. Le maître, lui, lit le
+     * tampon matériel, que le CRC protège. */
+    memcpy(out, s_published, LINK_REG_CHEST_LEN);
+    return true;
+}
+
+
 #else /* !BOARD_LINK_AVAILABLE */
 
 /*
@@ -1089,5 +1104,16 @@ void link_spi_set_ready(bool ready)
 {
     (void)ready;
 }
+
+bool link_spi_snapshot(uint8_t *out, size_t cap)
+{
+    /* Sans lien, il n'y a rien à regarder — et la console n'enregistre même pas
+     * la commande sur ces cartes. Le pendant existe pour que l'en-tête reste
+     * vrai quelle que soit la carte. */
+    (void)out;
+    (void)cap;
+    return false;
+}
+
 
 #endif /* BOARD_LINK_AVAILABLE */

@@ -15,6 +15,8 @@
 #include "usb/msc_disk.h"
 #include "usb/usb_device.h"
 #include "usb/usb_mode.h"
+#include "link/link_proto.h"
+#include "link/link_spi.h"
 
 static const char *TAG = "console";
 
@@ -171,6 +173,77 @@ static int cmd_usb(int argc, char **argv)
     return 0;
 }
 
+#if BOARD_LINK_AVAILABLE
+/*
+ * « link » — ce que le coffre PUBLIE, octet par octet, en lecture seule.
+ *
+ * POURQUOI CETTE COMMANDE EXISTE. Sans maitre SPI en face, le bloc de
+ * registres est INVISIBLE : on ne peut ni le lire, ni donc constater qu'il
+ * ment. C'est exactement la que le nombre de comptes d'un RESET a pu valoir 1
+ * pendant des heures alors que le contrat publie annoncait N — un defaut que
+ * ni les tests hote ni le materiel ne pouvaient montrer, faute d'un endroit ou
+ * regarder.
+ *
+ * Elle n'est PAS derriere BOARD_CONSOLE_ACTIONS : regarder n'est pas agir, et
+ * la console du coffre garde son absence de pouvoir sur les modes.
+ */
+static int cmd_link(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    if (!link_spi_is_up()) {
+        printf("lien : non installé\n");
+        return 1;
+    }
+
+    uint8_t regs[LINK_REG_SIZE];
+    memset(regs, 0, sizeof(regs));
+    if (!link_spi_snapshot(regs, sizeof(regs))) {
+        printf("lien : rien de publié pour l'instant\n");
+        return 1;
+    }
+
+    printf("bloc publié (%d o, plage du coffre) :\n", LINK_REG_CHEST_LEN);
+    for (unsigned i = 0; i < LINK_REG_CHEST_LEN; i += 16u) {
+        printf("  %02X :", i);
+        for (unsigned j = 0; j < 16u && i + j < LINK_REG_CHEST_LEN; j++) {
+            printf(" %02X", regs[i + j]);
+        }
+        printf("\n");
+    }
+
+    /* Décodé par le MEME code que le maître emploiera : si le bloc ne passe pas
+     * ici, il ne passera pas chez eux non plus, et on le saura avant le banc. */
+    link_status_t st;
+    if (!link_proto_parse_status(regs, LINK_REG_SIZE, &st)) {
+        printf("décodage : REFUSÉ par link_proto_parse_status()\n");
+        printf("  (magie, version, CRC ou longueur de libellé — voir "
+               "docs/LINK_CONTRACT.md §11)\n");
+        return 1;
+    }
+
+    printf("version       : %u\n", st.version);
+    printf("état          : 0x%02X  [%s%s%s%s]\n", st.state,
+           (st.state & LINK_STATE_SD_PRESENT)  ? "sd "     : "",
+           (st.state & LINK_STATE_USB_MOUNTED) ? "monté "  : "",
+           (st.state & LINK_STATE_READY)       ? "prêt "   : "",
+           (st.state & LINK_STATE_TIME_VALID)  ? "heure"   : "");
+    printf("opération     : %u%s\n", st.pending_op,
+           st.pending_op == 0 ? "  (rien d'armé)" : "");
+    printf("confirmations : %lu\n", (unsigned long)st.confirm_count);
+    printf("instance      : %u\n", st.instance);
+    printf("mode actif    : 0x%02X%s\n", st.usb_mode_active,
+           st.usb_mode_active == LINK_USB_MODE_UNKNOWN ? "  (bascule en cours)" : "");
+    printf("comptes visés : %u\n", st.op_count);
+    printf("libellé       : %u o « %.*s »\n", st.label_len,
+           (int)st.label_len, st.label);
+    printf("segment DMA   : type %u, n° %u, %u o\n",
+           st.dma_kind, st.dma_seq, st.dma_len);
+    return 0;
+}
+#endif /* BOARD_LINK_AVAILABLE */
+
 static int cmd_sec(int argc, char **argv)
 {
     if (argc < 2) {
@@ -247,6 +320,20 @@ esp_err_t console_start(void)
         ESP_LOGE(TAG, "commande usb : %s", esp_err_to_name(err));
         return err;
     }
+
+#if BOARD_LINK_AVAILABLE
+    const esp_console_cmd_t link_cmd = {
+        .command = "link",
+        .help = "Lien S3 : le bloc publié, brut puis décodé (lecture seule)",
+        .hint = NULL,
+        .func = &cmd_link,
+    };
+    err = esp_console_cmd_register(&link_cmd);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "commande link : %s", esp_err_to_name(err));
+        return err;
+    }
+#endif /* BOARD_LINK_AVAILABLE */
 
     const esp_console_cmd_t sec_cmd = {
         .command = "sec",

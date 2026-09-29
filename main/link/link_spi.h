@@ -36,6 +36,7 @@
  */
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "esp_err.h"
 
@@ -65,3 +66,20 @@ bool link_spi_is_up(void);
  * Sans effet sur une carte sans lien.
  */
 void link_spi_set_ready(bool ready);
+
+/*
+ * Recopie le dernier bloc PUBLIE par le coffre (LINK_REG_CHEST_LEN octets),
+ * pour la console. Rend false si rien n'a encore ete publie, ou si `cap` ne
+ * suffit pas — sans toucher `out`.
+ *
+ * DIAGNOSTIC SEUL, et c'est sa raison d'etre. Sans maitre SPI en face, ce que
+ * le coffre publie est INVISIBLE : on ne peut ni le lire, ni donc constater
+ * qu'il ment. C'est exactement la ou le nombre de comptes d'un RESET a pu
+ * valoir 1 pendant des heures alors que le contrat annoncait N — un defaut que
+ * ni les tests hote ni le materiel ne pouvaient montrer, faute d'un endroit ou
+ * regarder.
+ *
+ * En lecture seule, donc hors de BOARD_CONSOLE_ACTIONS : regarder n'est pas
+ * agir, et la console du coffre garde son absence de pouvoir.
+ */
+bool link_spi_snapshot(uint8_t *out, size_t cap);

@@ -800,6 +800,54 @@ who has the board in hand to produce the event, then watching whether the device
 sees it. Here, thirty seconds of listening and four presses were enough — and nothing
 of what was written in the meantime got any closer to the truth.
 
+### Link v3 — the published block, checked against the model — 2026-09-29
+
+**The chest publishes exactly what the host model computes, CRC included.**
+First time the register block has been confronted with anything: until now it
+was invisible, because reading it needs an SPI master and none exists yet.
+
+A read-only `link` console command was added for this (`main/console/console.c`,
+behind `BOARD_LINK_AVAILABLE`, deliberately **not** behind
+`BOARD_CONSOLE_ACTIONS` — looking is not acting, and the chest's console keeps
+its lack of power over modes). On the chest at commit `1293193` + this change:
+
+```
+niphar> link
+bloc publié (56 o, plage du coffre) :
+  00 : 4E 49 50 48 03 05 00 00 00 00 00 00 00 00 00 00
+  10 : 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  20 : 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+  30 : 00 00 00 00 00 00 76 A3
+version       : 3
+état          : 0x05  [sd prêt ]
+opération     : 0  (rien d'armé)
+mode actif    : 0x00
+comptes visés : 0
+libellé       : 0 o «  »
+segment DMA   : type 0, n° 0, 0 o
+```
+
+A throwaway host program built against the same `link_proto.c` produced the
+**same fifty-six bytes**, `76 A3` included. The magic word, the version byte,
+the state bits, the zeroed label and the CRC all agree between silicon and
+model.
+
+**What this proves**: `pack_current()` composes the block correctly on the real
+device, and a block produced by the chest is accepted by
+`link_proto_parse_status()` — the very function the master will use. If it
+parses here, it parses there.
+
+**What it does not prove**, and the distinction matters: no SPI master has read
+these bytes *over the wire*. Electrical timing, CS polarity, the dummy phase and
+the DMA channel are all still untested. This closes the “does the chest compose
+the right bytes” question, not the “does the wire carry them” one.
+
+**Why the command exists at all**: without it, the block was unobservable, and
+that is exactly where a defect hid for hours — the number of accounts targeted
+by a RESET published `1` while the contract announced `N` (fixed in `2d32b27`).
+Neither the host tests nor the hardware could show it, for want of somewhere to
+look.
+
 ### OATH/TOTP validation — 2026-08-19
 
 YKOATH applet on CCID, `wt9932_key` board (MAC `30:ED:A0:E0:BC:5F`), firmware
