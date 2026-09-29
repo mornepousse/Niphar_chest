@@ -14,6 +14,16 @@ wakes up when wired. “Lots of things, one at a time”:
   validated on hardware (see the status below).
 - Removable **storage**.
 
+**The chest has no selector of its own.** Unlike the standalone key, its console
+has no power over USB modes: the keyboard's left half drives it over an SPI
+link, and the chest publishes back what it is doing — including **the name of
+the account** an operation targets, so the keyboard's screen can show *which*
+account the owner is approving rather than only *what kind* of operation is
+pending. The wire protocol is specified in
+[`docs/LINK_CONTRACT.md`](docs/LINK_CONTRACT.md), which is the contract the
+[KeSp_firmware](https://gitlab.com/harrael/KeSp_firmware) team implements
+against.
+
 Hardware: see [`docs/HARDWARE.md`](docs/HARDWARE.md) — contract verified against
 the netlist (Niphargus review of 2026-08-06).
 
@@ -27,8 +37,31 @@ Three boards, a single firmware (see [`docs/HARDWARE.md`](docs/HARDWARE.md)):
       two buttons and one LED on the front panel, validated on hardware on
       2026-08-17 by a real physical press (see
       [`docs/HARDWARE.md`](docs/HARDWARE.md)).
-- [x] **niphar_chest** (the chest) — **built**. The board exists and was flashed
-      on 2026-09-05.
+- [x] **niphar_chest** (the chest) — **built and running**. Flashed on
+      2026-09-05; runs the v3 link since 2026-09-29. Boots, installs the SPI
+      slave, detects the microSD, publishes its register block.
+- [x] **S3↔chest link, protocol v3** — 64 bytes of shared SPI registers plus a
+      DMA channel. The chest publishes its state, the **label** of the armed
+      operation, how many accounts it targets, the **active** USB mode and a
+      *time-valid* bit; the keyboard requests a mode, confirms a press with an
+      **instance echo**, and browses accounts over DMA. Contract and 24 test
+      vectors in [`docs/LINK_CONTRACT.md`](docs/LINK_CONTRACT.md), regenerated
+      by executing the code and pinned in `test/test_link_proto.c`.
+      **Not yet exercised end to end**: the register block is published on real
+      hardware, but no SPI master has read it and **no frame has crossed the DMA
+      channel** — that needs the keyboard's bench.
+
+- [x] **Wall-clock time** (`niphar-oath set-time`) — the chest has no RTC, so
+      the host sets the time once per plug-in over the CCID channel the client
+      already speaks (`INS 0x10`, outside the YKOATH set). The chest carries it
+      forward on its monotonic clock, and **it erases itself on unplug** —
+      the chest only exists while wired, so there is no stale time to
+      invalidate. The *time-valid* bit never rises on a guessed time: without
+      it the keyboard shows “NO TIME” rather than a code that would be wrong
+      while looking right. Chain verified against the **official RFC 6238
+      vectors** (`test/test_totp_rfc6238.c`), cross-checked with `oathtool` and
+      `hashlib`. Not yet exercised on hardware.
+
 - [x] **OATH/TOTP** (`usb mode oath`) — YKOATH applet over CCID, the sixth USB
       mode. Validated on hardware on 2026-08-19: the key returns the right TOTP
       code, cross-checked against `oathtool` at a controlled instant, and a
