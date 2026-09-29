@@ -5,6 +5,7 @@
 
 #include "usb/usb_mode.h"
 #include "usb/usb_mode_state.h"
+#include "usb/usb_mode_wire.h"
 
 static void test_name_never_null(void)
 {
@@ -130,6 +131,77 @@ static void test_reported_mode_stays_in_range(void)
     }
 }
 
+/* ------------------------------------------------------------------------ */
+/* Valeurs de fil <-> modes internes                                          */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Ce que ces tests protegent : le jour ou quelqu'un reordonnera usb_mode_t —
+ * pour inserer un mode entre deux autres, pour grouper les personnalites CCID
+ * — le fil publie a KeSp ne doit pas bouger avec. Une bascule silencieuse la
+ * exposerait la microSD de Mae quand le clavier demande PGP, sans qu'aucun
+ * build ne rougisse.
+ *
+ * Ecrits comme un aller-retour dans LES DEUX SENS, pas comme une table
+ * recopiee : une table recopiee ne prouve que la recopie.
+ */
+
+static void test_wire_roundtrip_is_a_bijection(void)
+{
+    /* Sens interne -> fil -> interne. */
+    for (int m = 0; m < USB_MODE_COUNT; m++) {
+        const uint8_t w = usb_mode_to_wire((usb_mode_t)m);
+        usb_mode_t back = USB_MODE_COUNT;
+        TEST_ASSERT(w < LINK_USB_MODE_COUNT, "chaque mode interne a une valeur de fil");
+        TEST_ASSERT(usb_mode_from_wire(w, &back), "cette valeur de fil est reconnue");
+        TEST_ASSERT_EQ(back, m, "aller-retour interne -> fil -> interne");
+    }
+
+    /* Sens fil -> interne -> fil. Les deux ensemble font la bijection : sans
+     * celui-ci, deux modes internes pourraient tomber sur la meme valeur de
+     * fil sans que rien ne le voie. */
+    for (unsigned w = 0; w < LINK_USB_MODE_COUNT; w++) {
+        usb_mode_t m = USB_MODE_COUNT;
+        TEST_ASSERT(usb_mode_from_wire((uint8_t)w, &m), "chaque valeur de fil a un mode");
+        TEST_ASSERT(m < USB_MODE_COUNT, "et ce mode est dans les bornes");
+        TEST_ASSERT_EQ(usb_mode_to_wire(m), w, "aller-retour fil -> interne -> fil");
+    }
+
+    /* Autant de valeurs de fil que de modes : une numerotation qui grandirait
+     * d'un cote seulement laisserait un mode injoignable par le lien, ou une
+     * valeur de fil sans destination. */
+    TEST_ASSERT_EQ(LINK_USB_MODE_COUNT, USB_MODE_COUNT,
+                   "les deux numerotations couvrent le meme nombre de modes");
+}
+
+/* Une valeur hors contrat ne donne AUCUN mode — ni le plus proche, ni « aucun »
+ * (qui demonterait l'interface que la proprietaire est en train d'utiliser). */
+static void test_unknown_wire_value_yields_no_mode(void)
+{
+    unsigned accepted = 0;
+    for (unsigned w = LINK_USB_MODE_COUNT; w < 256; w++) {
+        usb_mode_t m = USB_MODE_PGP;   /* temoin : doit rester intact */
+        if (usb_mode_from_wire((uint8_t)w, &m)) {
+            accepted++;
+        }
+        if (m != USB_MODE_PGP) {
+            accepted++;
+        }
+    }
+    TEST_ASSERT_EQ(accepted, 0,
+                   "aucune valeur hors contrat ne rend de mode, ni n'ecrit dans out");
+}
+
+/* Un mode interne hors bornes ne produit pas une valeur de fil valable : mieux
+ * vaut une valeur qu'aucun maitre n'attend qu'une valeur qu'il croira comprendre. */
+static void test_out_of_range_mode_has_no_wire_value(void)
+{
+    TEST_ASSERT_EQ(usb_mode_to_wire((usb_mode_t)USB_MODE_COUNT), LINK_USB_MODE_COUNT,
+                   "mode hors bornes : pas de valeur de fil");
+    TEST_ASSERT_EQ(usb_mode_to_wire((usb_mode_t)255), LINK_USB_MODE_COUNT,
+                   "valeur aberrante : pas de valeur de fil");
+}
+
 void test_usb_mode(void)
 {
     TEST_SUITE("usb_mode");
@@ -141,4 +213,7 @@ void test_usb_mode(void)
     TEST_RUN(test_failure_after_uninstall_reports_none);
     TEST_RUN(test_no_failure_path_claims_certainty);
     TEST_RUN(test_reported_mode_stays_in_range);
+    TEST_RUN(test_wire_roundtrip_is_a_bijection);
+    TEST_RUN(test_unknown_wire_value_yields_no_mode);
+    TEST_RUN(test_out_of_range_mode_has_no_wire_value);
 }

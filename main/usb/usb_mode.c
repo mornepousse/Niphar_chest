@@ -14,6 +14,7 @@
 #include "usb/usb_device.h"
 #include "usb/usb_mode_cycle.h"
 #include "usb/usb_mode_state.h"
+#include "usb/usb_mode_wire.h"
 
 static const char *TAG = "usb_mode";
 
@@ -380,4 +381,24 @@ esp_err_t usb_mode_set(usb_mode_t mode)
 esp_err_t usb_mode_cycle_next(void)
 {
     return usb_mode_set(usb_mode_cycle_after(s_mode));
+}
+
+esp_err_t usb_mode_apply_wire(uint8_t wire)
+{
+    usb_mode_t mode = USB_MODE_NONE;
+
+    /*
+     * Le refus AVANT la bascule, et sans repli. Une valeur de fil inconnue veut
+     * dire l'une de deux choses — un maître d'une autre version du protocole,
+     * ou un bus qui se dégrade — et aucune des deux ne justifie de changer ce
+     * que l'hôte voit. Rester où l'on est est la seule réponse qui ne mente ni
+     * à la propriétaire ni à l'hôte.
+     */
+    if (!usb_mode_from_wire(wire, &mode)) {
+        ESP_LOGW(TAG, "mode USB 0x%02X demandé par le lien : valeur inconnue, refusée (on reste en %s)",
+                 wire, usb_mode_name(s_mode));
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return usb_mode_set(mode);
 }

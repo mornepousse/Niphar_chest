@@ -106,6 +106,79 @@ if grep -rn 'usb_mode_set' main/ --include='*.c' --include='*.h' \
     fail=1
 fi
 
+# Le sélecteur venu du lien, confiné par le MÊME raisonnement — et déclaré ici
+# plutôt que d'élargir le grep ci-dessus.
+#
+# Le coffre a besoin que quelque chose puisse changer son mode USB : sa console
+# n'a aucun pouvoir (BOARD_CONSOLE_ACTIONS 0), donc sans le lien il démarre en
+# USB_MODE_NONE et rien ne l'en sort. Ajouter link_spi.c à la liste des fichiers
+# autorisés à nommer usb_mode_set aurait rendu le garde plus permissif POUR TOUS
+# afin de servir un seul appelant. usb_mode_apply_wire() est le point d'entrée
+# nommé qui le sert sans rien relâcher — même motif que usb_mode_cycle_next()
+# pour hmi.c — et il mérite le même confinement, sans quoi il deviendrait
+# lui-même le contournement du garde-fou qu'il évite d'affaiblir.
+if grep -rn 'usb_mode_apply_wire' main/ --include='*.c' --include='*.h' \
+        | grep -vE '^main/usb/usb_mode\.(c|h):' \
+        | grep -vE '^main/link/link_spi\.c:'; then
+    echo "ERREUR : usb_mode_apply_wire est référencé hors de usb_mode.{c,h} et"
+    echo "         de link_spi.c. Ce point d'entrée existe pour que le LIEN"
+    echo "         puisse changer de mode sans que usb_mode_set sorte de ses"
+    echo "         deux fichiers ; l'ouvrir à un troisième appelant reviendrait"
+    echo "         à élargir le garde-fou par la porte de derrière."
+    fail=1
+fi
+
+# --- Garde-fou 7 : le coffre ne doit pas redevenir inerte -------------------
+# La v1 du protocole du lien n'avait AUCUN champ pour demander un mode USB, et
+# la console du coffre n'a aucun pouvoir (BOARD_CONSOLE_ACTIONS 0) : il démarrait
+# donc en USB_MODE_NONE et RIEN ne pouvait l'en sortir. microSD qui répond,
+# applets présents, lien qui fonctionne — et l'hôte qui ne voit jamais rien.
+# Ça n'a produit aucune erreur, aucun log, aucun rouge : c'est exactement la
+# classe de panne qu'un check doit attraper, parce que l'usage ne la distingue
+# pas d'un appareil qui marche mais qu'on tient mal.
+#
+# Le contrôle est POSITIF et BINAIRE : sur une carte qui a le lien, link_spi.c
+# DOIT référencer les trois symboles qui font de lui un sélecteur et un relais.
+# Un grep de source dirait la même chose en moins : le corps entier de ce
+# fichier vit derrière « #if BOARD_LINK_AVAILABLE », donc le texte peut être là
+# sans être compilé — et c'est précisément ce que le coffre ne pardonne pas.
+#
+#   usb_mode_apply_wire     -> le lien peut CHANGER de mode (sinon : inerte)
+#   sec_confirm_peek_armed  -> l'instance vient du compteur d'armements, pas
+#                              d'une devinette sur le code de l'opération
+#   sec_confirm_authorize   -> l'appui est bien relayé
+link_obj_vu=0
+for d in build build_jc_devkit build_niphar_chest build_wt9932_key; do
+    obj="$d/esp-idf/main/CMakeFiles/__idf_main.dir/link/link_spi.c.obj"
+    [ -f "$obj" ] || continue
+    board="$(sed -n 's/^BOARD:[^=]*=//p' "$d/CMakeCache.txt" 2>/dev/null | head -1)"
+    [ -n "$board" ] && [ -f "boards/$board/board.h" ] || continue
+    link_avail="$(sed -n 's/^[[:space:]]*#define[[:space:]]\{1,\}BOARD_LINK_AVAILABLE[[:space:]]\{1,\}//p' \
+            "boards/$board/board.h" | head -1 | awk '{print $1}')"
+    # Une carte sans lien compile des souches : rien à exiger d'elle.
+    [ "$link_avail" = "1" ] || continue
+    # `|| true` : grep sort en 1 sans correspondance, et `set -e` couperait le
+    # script avant les garde-fous suivants.
+    syms="$(nm -u "$obj" 2>/dev/null \
+            | grep -oE '(usb_mode_apply_wire|sec_confirm_peek_armed|sec_confirm_authorize)$' \
+            | sort -u || true)"
+    for sym in usb_mode_apply_wire sec_confirm_peek_armed sec_confirm_authorize; do
+        if ! printf '%s\n' "$syms" | grep -qx "$sym"; then
+            echo "ERREUR : $d ($board, carte à lien) — link_spi.c.obj ne référence pas $sym."
+            echo "         Le coffre n'a pas d'autre chemin : sa console n'a aucun"
+            echo "         pouvoir, donc sans le lien il démarre en USB_MODE_NONE et"
+            echo "         rien ne l'en sort. Voir docs/LINK_CONTRACT.md et"
+            echo "         LINK_PROTO_VERSION 2 dans main/link/link_proto.h."
+            fail=1
+        fi
+    done
+    link_obj_vu=1
+done
+if [ "$link_obj_vu" -eq 0 ]; then
+    echo "note : aucun build de carte à lien présent — contrôle binaire du"
+    echo "       garde-fou 7 non exécuté (il le sera à la phase complète)."
+fi
+
 # --- Garde-fou 4 (suite) : ce que les deux greps ci-dessus ne voient PAS ----
 # Ils excluent console.c EN BLOC. Ils resteraient donc verts si le
 # « #if BOARD_CONSOLE_ACTIONS » qui entoure les deux béquilles disparaissait —

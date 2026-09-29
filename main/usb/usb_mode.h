@@ -12,6 +12,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef TEST_HOST
 /* usb_mode_name.c est compilé sur l'hôte (voir test/CMakeLists.txt) : pas
@@ -59,6 +60,34 @@ esp_err_t usb_mode_set(usb_mode_t mode);
  * cycle reste chez le module qui possède les modes.
  */
 esp_err_t usb_mode_cycle_next(void);
+
+/*
+ * Applique un mode demandé par le LIEN S3↔coffre, désigné par sa valeur de fil
+ * (link/link_proto.h, LINK_USB_MODE_*) et non par usb_mode_t.
+ *
+ * EXISTE POUR LA MÊME RAISON QUE usb_mode_cycle_next(), et c'est la seule
+ * raison. usb_mode_set est confiné par le garde-fou 4 de scripts/fast.sh à ce
+ * module et à la console ; le lien doit pourtant pouvoir changer de mode, parce
+ * que sur le coffre il est le SEUL à le pouvoir (boards/niphar_chest/board.h
+ * pose BOARD_CONSOLE_ACTIONS 0, donc la béquille console n'y est même pas
+ * compilée — sans ce chemin, le coffre démarre en USB_MODE_NONE et rien ne l'en
+ * sort). Élargir la liste des fichiers autorisés aurait rendu le garde-fou plus
+ * permissif pour tout le monde afin de servir un seul appelant ; un point
+ * d'entrée nommé le sert sans rien relâcher, et la politique — quelle valeur de
+ * fil correspond à quel mode, et laquelle se refuse — reste chez le module qui
+ * possède les modes.
+ *
+ * Une valeur de fil non attribuée est REFUSÉE : ESP_ERR_INVALID_ARG, le mode
+ * courant est conservé, et le refus est journalisé. Jamais de repli sur
+ * USB_MODE_NONE — ça démonterait l'interface que la propriétaire est en train
+ * d'utiliser en réponse à un octet qu'on n'a pas compris.
+ *
+ * Sinon, rend ce que rend usb_mode_set() pour le mode correspondant, y compris
+ * ESP_ERR_INVALID_STATE quand une bascule est déjà en cours. L'appelant est
+ * censé réessayer : voir link/link_spi.c, qui ne retient la valeur appliquée
+ * qu'en cas de succès.
+ */
+esp_err_t usb_mode_apply_wire(uint8_t wire);
 
 usb_mode_t usb_mode_get(void);
 

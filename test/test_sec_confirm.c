@@ -494,6 +494,121 @@ static void test_aucun_octet_de_pile_ne_franchit_le_terminateur(void)
     }
 }
 
+/* ------------------------------------------------------------------------ */
+/* Numero d'armement — ce qui distingue deux operations du MEME code          */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Le defaut que ce compteur ferme vit dans le lien S3<->coffre, pas ici : une
+ * confirmation reprise apres une ecriture perdue confirmait l'operation
+ * SUIVANTE des lors qu'elle portait le meme code. « CODE OTP GITHUB » puis
+ * « CODE OTP BANQUE » : meme slot, meme sec_op_t, meme etiquette possible, et
+ * un horodatage qui peut tomber dans la meme milliseconde. Rien, dans ce que
+ * sec_confirm exposait, ne les separait.
+ *
+ * Ce que ces tests exigent est donc precisement ce qui manquait : deux
+ * ARMEMENTS, meme identiques en tous points, ne portent jamais le meme numero.
+ */
+
+static void test_arm_sequence_separates_identical_operations(void)
+{
+    uint32_t a = 0, b = 0;
+
+    sec_confirm_reset();
+    sec_confirm_arm_named(3, SEC_OP_OTP, "GITHUB", 1000);
+    sec_confirm_peek_armed(1000, NULL, NULL, &a);
+
+    /* Exactement le meme armement, a la milliseconde pres. */
+    sec_confirm_arm_named(3, SEC_OP_OTP, "GITHUB", 1000);
+    sec_confirm_peek_armed(1000, NULL, NULL, &b);
+
+    TEST_ASSERT(a != b, "deux armements identiques portent des numeros differents");
+}
+
+/* Monotone et pas seulement different : le maitre compare une valeur qu'il a
+ * lue, et un numero qui reviendrait en arriere rendrait valable un echo qu'on
+ * vient de refuser. */
+static void test_arm_sequence_is_monotonic(void)
+{
+    uint32_t prev = 0, cur = 0;
+    unsigned backwards = 0;
+
+    sec_confirm_reset();
+    sec_confirm_peek_armed(0, NULL, NULL, &prev);
+
+    for (unsigned i = 0; i < 300; i++) {
+        sec_confirm_arm(0, SEC_OP_SIGN, 1000 + i);
+        sec_confirm_peek_armed(1000 + i, NULL, NULL, &cur);
+        if (cur != prev + 1) {
+            backwards++;
+        }
+        prev = cur;
+    }
+    TEST_ASSERT_EQ(backwards, 0, "un armement, un increment, jamais de retour en arriere");
+
+    /* Et l'octet de poids faible — celui que le lien publie — a bien fait le
+     * tour au moins une fois en 300 armements : c'est ce qui justifie que le
+     * protocole n'en transporte qu'un. */
+    TEST_ASSERT(prev > 256, "le tour de l'octet publie est couvert par ce test");
+}
+
+/* Ce qui ne doit PAS l'incrementer : seul un armement compte. Un numero qui
+ * bougerait a l'expiration ou a la consommation invaliderait un echo que le
+ * maitre a lu de bonne foi, et le coffre refuserait un appui legitime sans
+ * pouvoir dire pourquoi. */
+static void test_only_arming_moves_the_sequence(void)
+{
+    uint32_t after_arm = 0, after = 0;
+    uint8_t slot = 0;
+
+    sec_confirm_reset();
+    sec_confirm_arm(1, SEC_OP_DECRYPT, 1000);
+    sec_confirm_peek_armed(1000, NULL, NULL, &after_arm);
+
+    sec_confirm_peek_armed(1100, NULL, NULL, &after);
+    TEST_ASSERT_EQ(after, after_arm, "une lecture n'incremente rien");
+
+    sec_confirm_authorize(1100);
+    sec_confirm_peek_armed(1100, NULL, NULL, &after);
+    TEST_ASSERT_EQ(after, after_arm, "un octroi n'incremente rien");
+
+    (void)sec_confirm_poll(1100, &slot);
+    sec_confirm_peek_armed(1100, NULL, NULL, &after);
+    TEST_ASSERT_EQ(after, after_arm, "la consommation n'incremente rien");
+
+    sec_confirm_reset();
+    sec_confirm_peek_armed(1100, NULL, NULL, &after);
+    TEST_ASSERT_EQ(after, after_arm, "reset() desarme, il n'arme pas");
+
+    sec_confirm_arm(1, SEC_OP_DECRYPT, 2000);
+    sec_confirm_peek_armed(2000, NULL, NULL, &after);
+    TEST_ASSERT_EQ(after, after_arm + 1, "seul un nouvel armement incremente");
+}
+
+/* L'etat, l'operation et le numero se lisent ENSEMBLE — un seul appel, comme
+ * l'exige l'en-tete. Ce test verifie que le nouvel accesseur rend exactement ce
+ * que rendait l'ancien, pour que la regle « un seul accesseur » ne se paye pas
+ * d'une divergence entre les deux. */
+static void test_peek_armed_agrees_with_peek_labeled(void)
+{
+    sec_op_t op_a = SEC_OP_UNKNOWN, op_b = SEC_OP_UNKNOWN;
+    char lab_a[OATH_NAME_DISPLAY_MAX], lab_b[OATH_NAME_DISPLAY_MAX];
+
+    sec_confirm_reset();
+    sec_confirm_arm_named(2, SEC_OP_OATH_CODE, "PROTON", 1000);
+
+    const sec_confirm_state_t a = sec_confirm_peek_labeled(1000, &op_a, lab_a);
+    const sec_confirm_state_t b = sec_confirm_peek_armed(1000, &op_b, lab_b, NULL);
+
+    TEST_ASSERT_EQ(a, b, "meme etat");
+    TEST_ASSERT_EQ(op_a, op_b, "meme operation");
+    TEST_ASSERT_EQ(strcmp(lab_a, lab_b), 0, "meme etiquette");
+
+    /* Et out_seq a NULL ne casse rien : c'est ce que fait peek_labeled. */
+    TEST_ASSERT_EQ(sec_confirm_peek_armed(1000, NULL, NULL, NULL), a,
+                   "out_seq NULL accepte");
+}
+
 void test_sec_confirm(void)
 {
     TEST_SUITE("sec_confirm state machine");
@@ -523,4 +638,8 @@ void test_sec_confirm(void)
     TEST_RUN(test_etiquette_de_longueur_maximale_est_recopiee_entiere);
     TEST_RUN(test_arm_sans_nom_laisse_l_etiquette_vide);
     TEST_RUN(test_aucun_octet_de_pile_ne_franchit_le_terminateur);
+    TEST_RUN(test_arm_sequence_separates_identical_operations);
+    TEST_RUN(test_arm_sequence_is_monotonic);
+    TEST_RUN(test_only_arming_moves_the_sequence);
+    TEST_RUN(test_peek_armed_agrees_with_peek_labeled);
 }

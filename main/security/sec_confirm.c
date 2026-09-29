@@ -321,6 +321,26 @@ static sec_op_t            s_op       = SEC_OP_UNKNOWN;
  * prochain lecteur devrait re-deriver. */
 static char s_label[OATH_NAME_DISPLAY_MAX] = { 0 };
 
+/*
+ * Numero d'armement — monotone, JAMAIS remis a zero par reset().
+ *
+ * Ce qu'il separe : deux armements que rien d'autre ne distingue. Meme slot,
+ * meme sec_op_t, meme etiquette, et un s_armed_ms qui peut tomber dans la meme
+ * milliseconde — c'est le cas d'un hote qui enchaine deux « CODE OTP » pour
+ * deux comptes differents, et c'est ce cas-la qui a rendu le lien confirmable
+ * a tort (voir sec_confirm_peek_armed() dans l'en-tete, et LINK_PROTO_VERSION
+ * 2 dans link/link_proto.h).
+ *
+ * Pas remis a zero par reset(), et c'est delibere : reset() DESARME, il
+ * n'arme pas. Un numero qui reviendrait sur ses pas rendrait a nouveau valable
+ * un echo que le coffre vient de refuser — exactement ce qu'on ferme.
+ *
+ * Le debordement au bout de 2^32 armements est sans consequence ici : c'est
+ * l'octet de poids faible que le lien publie, et sa reutilisation tous les 256
+ * armements est deja analysee (link_proto.h, champ `instance`).
+ */
+static uint32_t s_arm_seq = 0;
+
 void sec_confirm_reset(void)
 {
     /* Sous verrou : voir le bullet sec_confirm_reset() de l'entete
@@ -365,6 +385,11 @@ void sec_confirm_arm_named(uint8_t slot, sec_op_t op, const char *label, uint32_
     s_slot     = slot;
     s_op       = op;
     s_armed_ms = now_ms;
+    /* Sixieme champ du groupe indivisible : il doit changer DANS la meme
+     * section critique que l'operation qu'il numerote, sans quoi un lecteur
+     * pourrait repartir avec l'operation d'un armement et le numero du
+     * precedent — un couple que personne n'a jamais publie. */
+    s_arm_seq++;
     memcpy(s_label, formatted, sizeof(s_label));
     SEC_CONFIRM_UNLOCK();
 }
@@ -457,7 +482,8 @@ sec_confirm_state_t sec_confirm_peek(uint32_t now_ms)
     return s_state;
 }
 
-sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op, char *out_label)
+sec_confirm_state_t sec_confirm_peek_armed(uint32_t now_ms, sec_op_t *out_op,
+                                           char *out_label, uint32_t *out_seq)
 {
     /*
      * SOUS VERROU — corrige a la revue finale de branche OATH (I3).
@@ -492,9 +518,24 @@ sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op, 
      * donc aucun test du harnais hote ne peut voir la difference. */
     SEC_CONFIRM_LOCK(); if (out_label) memcpy(out_label, s_label, sizeof(s_label));
     if (out_op) *out_op = s_op;
+    /* Sous le MEME verrou que l'etat et l'operation : c'est ce qui interdit le
+     * couple dechire (operation d'un armement, numero du suivant) que le lien
+     * renverrait alors au maitre comme s'il l'avait montre. */
+    if (out_seq) *out_seq = s_arm_seq;
     const int expire = (s_state == SEC_CONFIRM_PENDING &&
                         (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS);
     const sec_confirm_state_t st = s_state;
     SEC_CONFIRM_UNLOCK();
     return expire ? SEC_CONFIRM_TIMEDOUT : st;
 }
+
+/*
+ * Un appel, pas une copie du corps ci-dessus : « un seul accesseur » vaut aussi
+ * pour l'auditeur. Les appelants qui n'ont pas besoin du numero d'armement
+ * (hmi.c, pour l'ecran) gardent leur signature.
+ */
+sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op, char *out_label)
+{
+    return sec_confirm_peek_armed(now_ms, out_op, out_label, NULL);
+}
+

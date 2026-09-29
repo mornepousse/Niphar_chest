@@ -115,3 +115,29 @@ sec_confirm_state_t sec_confirm_peek(uint32_t now_ms);
  * armee.
  */
 sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op, char *out_label);
+/*
+ * Comme sec_confirm_peek_labeled(), avec en plus le NUMERO D'ARMEMENT.
+ *
+ * Un compteur monotone, incremente par arm()/arm_named() a chaque appel — pas
+ * a chaque changement d'operation. C'est toute la difference, et elle est la
+ * raison d'etre de cette fonction : deux armements successifs du MEME code
+ * (deux « CODE OTP », pour deux comptes differents) sont indiscernables par le
+ * code et par l'horodatage, mais portent des numeros differents. Le lien
+ * S3<->coffre en publie l'octet de poids faible (link/link_proto.h,
+ * LINK_REG_INSTANCE) et n'accepte une confirmation que si le maitre le lui
+ * renvoie : un appui ne peut donc plus glisser d'une operation a la suivante.
+ *
+ * UN SEUL ACCESSEUR, toujours : le numero est lu DANS LE MEME corps de
+ * fonction et sous le MEME verrou que l'etat et l'operation. C'est ce qui
+ * interdit qu'un appelant reparte avec l'operation d'un armement et le numero
+ * du suivant — un bloc « dechire » qui ferait renvoyer au maitre le numero
+ * d'une operation qu'il n'a pas montree, c'est-a-dire le defaut meme que ce
+ * numero existe pour fermer. sec_confirm_peek_labeled() est desormais un
+ * appel de celle-ci avec out_seq a NULL, pour qu'il n'y ait qu'un corps a
+ * auditer.
+ *
+ * `out_seq` peut etre NULL. Les trois autres parametres ont exactement le
+ * contrat de sec_confirm_peek_labeled().
+ */
+sec_confirm_state_t sec_confirm_peek_armed(uint32_t now_ms, sec_op_t *out_op,
+                                           char *out_label, uint32_t *out_seq);

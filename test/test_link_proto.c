@@ -351,43 +351,86 @@ static void test_almost_uniform_is_present(void)
  * la version du protocole qu'on incrémente, et KeSp qu'on prévient.
  */
 
-/* V1 — nominal : SD + USB + prêt, PSO:CDS en attente, 42 confirmations. */
+/* V1 — nominal : SD + USB + prêt, PSO:CDS en attente, 42 confirmations,
+ * instance 3. */
 static const uint8_t k_vec_v1[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x01, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0xAF, 0xEA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x00, 0x00,
 };
 /* V4 — mot magique faux d'un octet, tout le reste identique à V1. */
 static const uint8_t k_vec_v4[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x58, 0x01, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0xAF, 0xEA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x4E, 0x49, 0x50, 0x58, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x00, 0x00,
 };
-/* V5 — version 2 annoncée, CRC RECALCULÉ et juste : refusé sur la version
+/* V5 — version 3 annoncée, CRC RECALCULÉ et juste : refusé sur la version
  * seule, pas sur une corruption. */
 static const uint8_t k_vec_v5[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0x7F, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x45, 0x16, 0x00, 0x00, 0x00, 0x00,
 };
 /* V6 — un bit de la charge utile retourné (42 → 43), CRC laissé tel quel. */
 static const uint8_t k_vec_v6[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x01, 0x07, 0x01, 0x00, 0x2B, 0x00,
-    0x00, 0x00, 0xAF, 0xEA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2B, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x00, 0x00,
 };
-/* V6b — l'inverse : charge utile intacte, un bit retourné DANS le champ CRC. */
+/* V6b — l'inverse : charge utile intacte, un bit retourné dans l'octet BAS du
+ * champ CRC. */
 static const uint8_t k_vec_v6b[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x01, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0xAE, 0xEA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x63, 0x3A, 0x00, 0x00, 0x00, 0x00,
 };
-/* V8 — V1 au seul octet du maître près : une confirmation posée et pas encore
- * lue. Le CRC est le MÊME qu'en V1 (0xEAAF), et c'est tout l'argument. */
+/* V6c — proposé par KeSp, et il manquait : le même bit retourné dans l'octet
+ * HAUT du champ CRC. Une implémentation qui ne comparerait que l'octet bas
+ * (ou qui rangerait le CRC en gros-boutiste) passerait V6b et tomberait ici. */
+static const uint8_t k_vec_v6c[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x62, 0x3B, 0x00, 0x00, 0x00, 0x00,
+};
+/* V6d — l'instance changée (3 → 2) sans recalcul du CRC. C'est la PREUVE, en
+ * octets, que l'instance entre dans l'étendue couverte : la v1 aurait accepté
+ * ce bloc. */
+static const uint8_t k_vec_v6d[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x02, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x00, 0x00,
+};
+/* V8 — V1 plus une confirmation posée et pas encore lue, avec l'écho de
+ * l'instance ARMÉE (3). Le CRC est le MÊME qu'en V1 (0x3A62), et c'est tout
+ * l'argument sur l'étendue. */
 static const uint8_t k_vec_v8[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x01, 0x07, 0x01, 0x00, 0x2A, 0x00,
-    0x00, 0x00, 0xAF, 0xEA, 0x00, 0x00, 0x5A, 0x00, 0x00, 0x00,
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x5A, 0x03, 0x00, 0x00,
 };
-/* V9 — coffre présent et PAS prêt : aucun bit d'état, rien en attente. Son CRC
- * non nul est ce qui le distingue d'un bloc absent. */
+/* V9 — coffre présent et PAS prêt : aucun bit d'état, rien en attente, aucune
+ * opération jamais armée (instance 0). Son CRC non nul est ce qui le distingue
+ * d'un bloc absent. */
 static const uint8_t k_vec_v9[LINK_REG_SIZE] = {
-    0x4E, 0x49, 0x50, 0x48, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x61, 0x7A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x39, 0xD4, 0x00, 0x00, 0x00, 0x00,
+};
+/* V10 — proposé par KeSp : un bloc uniforme SAUF le dernier octet. Un test
+ * d'absence qui s'arrêterait au premier octet, ou qui ne balaierait que les
+ * dix-neuf premiers, dirait « absent » sur un coffre qui parle. */
+static const uint8_t k_vec_v10[LINK_REG_SIZE] = {
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
+};
+/* V11 — le défaut de la v1, en octets : bloc du coffre parfaitement valide,
+ * confirmation parfaitement formée, écho sur l'instance PRÉCÉDENTE (2 pour une
+ * instance armée de 3). La v1 l'aurait accordée. */
+static const uint8_t k_vec_v11[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x5A, 0x02, 0x00, 0x00,
+};
+/* V12 — mode demandé inconnu (0x09). Le bloc du coffre reste valide : c'est la
+ * DEMANDE qui se refuse, pas le bloc. */
+static const uint8_t k_vec_v12[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x09, 0x00,
+};
+/* V13 — le même, avec une valeur de fil attribuée (0x02, pgp) : appliqué. */
+static const uint8_t k_vec_v13[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x00, 0x62, 0x3A, 0x00, 0x00, 0x02, 0x00,
 };
 
 static void test_shared_vectors_accepted(void)
@@ -396,19 +439,21 @@ static void test_shared_vectors_accepted(void)
 
     memset(&out, 0, sizeof(out));
     TEST_ASSERT(link_proto_parse_status(k_vec_v1, LINK_REG_SIZE, &out), "V1 accepté");
-    TEST_ASSERT_EQ(out.version, 1, "V1 version");
+    TEST_ASSERT_EQ(out.version, 2, "V1 version");
     TEST_ASSERT_EQ(out.state, 0x07, "V1 état");
     TEST_ASSERT_EQ(out.pending_op, 1, "V1 opération en attente");
     TEST_ASSERT_EQ(out.confirm_count, 42, "V1 compteur");
+    TEST_ASSERT_EQ(out.instance, 3, "V1 instance");
     TEST_ASSERT(!link_proto_is_absent(k_vec_v1, LINK_REG_SIZE), "V1 pas absent");
 
-    /* V8 ne diffère de V1 que par l'octet du maître — donc même verdict ET
+    /* V8 ne diffère de V1 que par la plage du maître — donc même verdict ET
      * mêmes champs décodés. C'est l'étendue du CRC rendue visible. */
     memset(&out, 0, sizeof(out));
     TEST_ASSERT(link_proto_parse_status(k_vec_v8, LINK_REG_SIZE, &out), "V8 accepté");
     TEST_ASSERT_EQ(out.state, 0x07, "V8 état identique à V1");
     TEST_ASSERT_EQ(out.pending_op, 1, "V8 opération identique à V1");
     TEST_ASSERT_EQ(out.confirm_count, 42, "V8 compteur identique à V1");
+    TEST_ASSERT_EQ(out.instance, 3, "V8 instance identique à V1");
     TEST_ASSERT_EQ(memcmp(k_vec_v1, k_vec_v8, LINK_REG_CRC + 2), 0,
                    "V1 et V8 partagent octets couverts par le CRC, CRC compris");
 
@@ -417,8 +462,56 @@ static void test_shared_vectors_accepted(void)
     TEST_ASSERT_EQ(out.state, 0x00, "V9 aucun bit d'état");
     TEST_ASSERT_EQ(out.pending_op, 0, "V9 rien en attente");
     TEST_ASSERT_EQ(out.confirm_count, 0, "V9 compteur nul");
+    TEST_ASSERT_EQ(out.instance, 0, "V9 aucune opération jamais armée");
     TEST_ASSERT(!link_proto_is_absent(k_vec_v9, LINK_REG_SIZE),
                 "V9 présent et non prêt, pas absent");
+
+    /* V11, V12 et V13 portent un bloc du coffre identique à V1 : c'est la
+     * plage du MAÎTRE qui les distingue, et elle n'entre pas dans le CRC. */
+    memset(&out, 0, sizeof(out));
+    TEST_ASSERT(link_proto_parse_status(k_vec_v11, LINK_REG_SIZE, &out), "V11 bloc valide");
+    TEST_ASSERT_EQ(out.instance, 3, "V11 instance armée");
+    TEST_ASSERT(link_proto_parse_status(k_vec_v12, LINK_REG_SIZE, &out), "V12 bloc valide");
+    TEST_ASSERT(link_proto_parse_status(k_vec_v13, LINK_REG_SIZE, &out), "V13 bloc valide");
+}
+
+/* Les vecteurs qui portent une écriture du maître, et ce que le coffre en
+ * fait. C'est là que la v2 se lit en octets. */
+static void test_shared_vectors_master_side(void)
+{
+    link_status_t st;
+    link_master_t m;
+
+    /* V8 — l'écho porte l'instance ARMÉE : accepté. */
+    TEST_ASSERT(link_proto_parse_status(k_vec_v8, LINK_REG_SIZE, &st), "V8 bloc valide");
+    TEST_ASSERT(link_proto_parse_master(k_vec_v8, LINK_REG_SIZE, &m), "V8 plage maître lue");
+    TEST_ASSERT_EQ(m.confirm, LINK_USER_CONFIRM_MAGIC, "V8 octet de confirmation");
+    TEST_ASSERT_EQ(m.echo, 3, "V8 écho");
+    TEST_ASSERT(link_proto_confirm_accepted(&m, st.instance), "V8 confirmation acceptée");
+
+    /* V11 — même bloc, même 0x5A, écho sur l'instance PRÉCÉDENTE : refusé. La
+     * v1 aurait accordé, et c'est le défaut que KeSp a relevé. */
+    TEST_ASSERT(link_proto_parse_status(k_vec_v11, LINK_REG_SIZE, &st), "V11 bloc valide");
+    TEST_ASSERT(link_proto_parse_master(k_vec_v11, LINK_REG_SIZE, &m), "V11 plage maître lue");
+    TEST_ASSERT_EQ(m.confirm, LINK_USER_CONFIRM_MAGIC, "V11 confirmation bien formée");
+    TEST_ASSERT_EQ(m.echo, 2, "V11 écho périmé");
+    TEST_ASSERT(!link_proto_confirm_accepted(&m, st.instance),
+                "V11 confirmation périmée refusée en silence");
+
+    /* V12 — mode inconnu : refusé, le coffre reste où il est. */
+    TEST_ASSERT(link_proto_parse_master(k_vec_v12, LINK_REG_SIZE, &m), "V12 plage maître lue");
+    TEST_ASSERT_EQ(m.usb_mode, 0x09, "V12 valeur de fil inconnue");
+    TEST_ASSERT(!link_proto_usb_mode_is_known(m.usb_mode), "V12 mode inconnu");
+    TEST_ASSERT_EQ(link_proto_mode_request(m.usb_mode, LINK_USB_MODE_NONE),
+                   LINK_MODE_REQ_REFUSE, "V12 refusé");
+
+    /* V13 — même place, valeur attribuée : appliqué. */
+    TEST_ASSERT(link_proto_parse_master(k_vec_v13, LINK_REG_SIZE, &m), "V13 plage maître lue");
+    TEST_ASSERT_EQ(m.usb_mode, LINK_USB_MODE_PGP, "V13 pgp demandé");
+    TEST_ASSERT_EQ(link_proto_mode_request(m.usb_mode, LINK_USB_MODE_NONE),
+                   LINK_MODE_REQ_APPLY, "V13 appliqué");
+    TEST_ASSERT_EQ(link_proto_mode_request(m.usb_mode, LINK_USB_MODE_PGP),
+                   LINK_MODE_REQ_UNCHANGED, "V13 relu une seconde fois : rien");
 }
 
 static void test_shared_vectors_rejected(void)
@@ -437,17 +530,27 @@ static void test_shared_vectors_rejected(void)
     TEST_ASSERT(!link_proto_parse_status(k_vec_v4, LINK_REG_SIZE, &out), "V4 magique faux rejeté");
     TEST_ASSERT(!link_proto_parse_status(k_vec_v5, LINK_REG_SIZE, &out), "V5 version inconnue rejetée");
     TEST_ASSERT(!link_proto_parse_status(k_vec_v6, LINK_REG_SIZE, &out), "V6 charge utile corrompue rejetée");
-    TEST_ASSERT(!link_proto_parse_status(k_vec_v6b, LINK_REG_SIZE, &out), "V6b champ CRC corrompu rejeté");
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v6b, LINK_REG_SIZE, &out), "V6b CRC octet bas corrompu rejeté");
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v6c, LINK_REG_SIZE, &out), "V6c CRC octet haut corrompu rejeté");
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v6d, LINK_REG_SIZE, &out), "V6d instance corrompue rejetée");
 
     /* V7 — les 19 premiers octets de V1, annoncés pour ce qu'ils sont. */
     TEST_ASSERT(!link_proto_parse_status(k_vec_v1, LINK_REG_SIZE - 1, &out), "V7 tronqué rejeté");
 
-    /* V4, V5, V6, V6b ne sont pas des blocs absents : leur rejet vient bien du
-     * contrôle annoncé et pas d'une ligne flottante. */
+    /* V10 — uniforme sauf le dernier octet : PAS un bloc absent, et rejeté par
+     * le mot magique, pas par l'absence. */
+    TEST_ASSERT(!link_proto_is_absent(k_vec_v10, LINK_REG_SIZE),
+                "V10 un seul octet différent suffit à écarter l'absence");
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v10, LINK_REG_SIZE, &out), "V10 non interprété");
+
+    /* V4, V5, V6, V6b, V6c, V6d ne sont pas des blocs absents : leur rejet
+     * vient bien du contrôle annoncé et pas d'une ligne flottante. */
     TEST_ASSERT(!link_proto_is_absent(k_vec_v4, LINK_REG_SIZE), "V4 pas un bloc absent");
     TEST_ASSERT(!link_proto_is_absent(k_vec_v5, LINK_REG_SIZE), "V5 pas un bloc absent");
     TEST_ASSERT(!link_proto_is_absent(k_vec_v6, LINK_REG_SIZE), "V6 pas un bloc absent");
     TEST_ASSERT(!link_proto_is_absent(k_vec_v6b, LINK_REG_SIZE), "V6b pas un bloc absent");
+    TEST_ASSERT(!link_proto_is_absent(k_vec_v6c, LINK_REG_SIZE), "V6c pas un bloc absent");
+    TEST_ASSERT(!link_proto_is_absent(k_vec_v6d, LINK_REG_SIZE), "V6d pas un bloc absent");
 }
 
 /* V1 et V9 doivent rester ce que pack_status PRODUIT, pas seulement ce qu'il
@@ -461,13 +564,15 @@ static void test_shared_vectors_are_what_the_chest_publishes(void)
         .state = LINK_STATE_SD_PRESENT | LINK_STATE_USB_MOUNTED | LINK_STATE_READY,
         .pending_op = 1,
         .confirm_count = 42,
+        .instance = 3,
     };
     memset(regs, 0, sizeof(regs));
     link_proto_pack_status(regs, &nominal);
     TEST_ASSERT_EQ(memcmp(regs, k_vec_v1, LINK_REG_SIZE), 0,
                    "le coffre publie exactement V1");
 
-    const link_status_t booting = { .state = 0, .pending_op = 0, .confirm_count = 0 };
+    const link_status_t booting = { .state = 0, .pending_op = 0, .confirm_count = 0,
+                                    .instance = 0 };
     memset(regs, 0, sizeof(regs));
     link_proto_pack_status(regs, &booting);
     TEST_ASSERT_EQ(memcmp(regs, k_vec_v9, LINK_REG_SIZE), 0,
@@ -485,6 +590,291 @@ static void test_crc_variant_check_value(void)
     static const uint8_t digits[9] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
     TEST_ASSERT_EQ(cr_crc16(digits, sizeof(digits)), 0x6F91,
                    "valeur de contrôle du CRC publiée dans LINK_CONTRACT.md");
+}
+
+
+/* ------------------------------------------------------------------------ */
+/* v2 — la confirmation porte une INSTANCE, pas seulement un code             */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Le défaut que ces tests ferment, et qu'aucun test de la v1 ne voyait :
+ *
+ *   la propriétaire appuie pour « CODE OTP GITHUB » ; l'écriture du maître se
+ *   perd sur le bus ; l'opération expire ; l'hôte en arme une autre, du MÊME
+ *   code (« CODE OTP BANQUE ») ; la reprise du maître, qui ne portait que le
+ *   code, la confirme. Elle n'a jamais donné son accord pour ce compte-là.
+ *
+ * Écrits comme des PROPRIÉTÉS et pas comme des constantes recopiées : « un
+ * écho périmé ne passe pas » est vrai pour tous les couples (armée, écho), pas
+ * seulement pour celui qu'on aurait choisi. Les boucles accumulent les écarts
+ * et n'affirment qu'une fois — un contre-exemple noie sinon la sortie.
+ */
+
+static void test_confirm_needs_the_magic_AND_the_instance(void)
+{
+    unsigned wrong = 0, accepted_total = 0;
+
+    for (unsigned armed = 0; armed < 256; armed++) {
+        for (unsigned confirm = 0; confirm < 256; confirm++) {
+            for (unsigned echo = 0; echo < 256; echo++) {
+                const link_master_t m = {
+                    .confirm = (uint8_t)confirm,
+                    .echo = (uint8_t)echo,
+                    .usb_mode = LINK_USB_MODE_NONE,
+                };
+                const bool got = link_proto_confirm_accepted(&m, (uint8_t)armed);
+                const bool want = (confirm == LINK_USER_CONFIRM_MAGIC) && (echo == armed);
+                if (got != want) {
+                    wrong++;
+                }
+                if (got) {
+                    accepted_total++;
+                }
+            }
+        }
+    }
+
+    TEST_ASSERT_EQ(wrong, 0,
+                   "accepté SI ET SEULEMENT SI 0x5A et écho == instance armée");
+    /* Exactement un couple (confirm, echo) par instance armée, donc 256 en
+     * tout : le « et seulement si » compté plutôt que supposé. Sans lui, une
+     * implémentation qui accepterait tout passerait le test ci-dessus le jour
+     * où `want` serait écrit de travers. */
+    TEST_ASSERT_EQ(accepted_total, 256,
+                   "une seule écriture acceptable par instance armée");
+}
+
+/* Le scénario de KeSp, joué tel quel : deux opérations du MÊME code, dont la
+ * seconde ne doit rien recevoir de l'appui destiné à la première. */
+static void test_stale_echo_from_a_same_coded_operation_is_refused(void)
+{
+    /* Instance 7 : « CODE OTP GITHUB ». Le maître la lit, montre l'opération,
+     * obtient l'appui — et son écriture se perd. */
+    const uint8_t github = 7;
+    /* L'opération expire. L'hôte en arme une autre, même code, instance
+     * suivante : « CODE OTP BANQUE ». */
+    const uint8_t banque = 8;
+
+    const link_master_t retry = {
+        .confirm = LINK_USER_CONFIRM_MAGIC,
+        .echo = github,
+        .usb_mode = LINK_USB_MODE_NONE,
+    };
+
+    TEST_ASSERT(!link_proto_confirm_accepted(&retry, banque),
+                "la reprise d'un appui pour GITHUB ne confirme pas BANQUE");
+    TEST_ASSERT(link_proto_confirm_accepted(&retry, github),
+                "la même reprise reste valable tant que GITHUB est armée");
+}
+
+/* Une écriture bien formée mais sans le motif magique ne passe jamais, quel que
+ * soit l'écho — l'instance ne remplace pas le filtre anti-bruit, elle s'y
+ * ajoute. */
+static void test_instance_does_not_replace_the_magic_filter(void)
+{
+    unsigned accepted = 0;
+    for (unsigned confirm = 0; confirm < 256; confirm++) {
+        if (confirm == LINK_USER_CONFIRM_MAGIC) {
+            continue;
+        }
+        const link_master_t m = { .confirm = (uint8_t)confirm, .echo = 42,
+                                  .usb_mode = LINK_USB_MODE_NONE };
+        if (link_proto_confirm_accepted(&m, 42)) {
+            accepted++;
+        }
+    }
+    TEST_ASSERT_EQ(accepted, 0,
+                   "écho juste mais octet de confirmation faux : jamais accepté");
+}
+
+/* ------------------------------------------------------------------------ */
+/* v2 — l'instance entre dans le CRC                                          */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Ce que ça achète, et qui justifie d'avoir déplacé le CRC en 0x0E : le coffre
+ * publie sa zone en une écriture, mais le maître peut lire pendant. Sans
+ * couverture, un bloc DÉCHIRÉ — l'opération d'un armement avec l'instance du
+ * suivant — passerait le CRC et le maître montrerait une opération en
+ * renvoyant l'instance d'une autre. C'est exactement le défaut qu'on ferme,
+ * réintroduit par le transport.
+ */
+static void test_instance_is_covered_by_the_crc(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    link_status_t in = { .state = LINK_STATE_READY, .pending_op = 4,
+                         .confirm_count = 9, .instance = 0 };
+    link_status_t out;
+
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < 256; i++) {
+        in.instance = (uint8_t)i;
+        link_proto_pack_status(regs, &in);
+
+        /* Le bloc intact est accepté, et rend l'instance publiée. */
+        if (!link_proto_parse_status(regs, sizeof(regs), &out) || out.instance != i) {
+            accepted++;
+        }
+
+        /* Le même bloc, instance changée SANS recalcul du CRC : refusé. */
+        regs[LINK_REG_INSTANCE] ^= 0xFF;
+        if (link_proto_parse_status(regs, sizeof(regs), &out)) {
+            accepted++;
+        }
+    }
+    TEST_ASSERT_EQ(accepted, 0,
+                   "l'instance est publiée, relue, et protégée par le CRC");
+}
+
+/* Plus fort : deux instances différentes ne peuvent pas donner le même CRC sur
+ * un bloc par ailleurs identique. C'est ce qui rend la détection sûre et pas
+ * seulement probable — un CRC16 sur une erreur d'un seul octet ne s'annule
+ * jamais. */
+static void test_two_instances_never_share_a_crc(void)
+{
+    uint16_t crc[256];
+    uint8_t regs[LINK_REG_SIZE];
+    link_status_t in = { .state = 0x07, .pending_op = 1, .confirm_count = 42,
+                         .instance = 0 };
+
+    for (unsigned i = 0; i < 256; i++) {
+        in.instance = (uint8_t)i;
+        link_proto_pack_status(regs, &in);
+        crc[i] = (uint16_t)regs[LINK_REG_CRC] | (uint16_t)((uint16_t)regs[LINK_REG_CRC + 1] << 8);
+    }
+
+    unsigned collisions = 0;
+    for (unsigned a = 0; a < 256; a++) {
+        for (unsigned b = a + 1; b < 256; b++) {
+            if (crc[a] == crc[b]) {
+                collisions++;
+            }
+        }
+    }
+    TEST_ASSERT_EQ(collisions, 0, "256 instances, 256 CRC distincts");
+}
+
+/* ------------------------------------------------------------------------ */
+/* v2 — la plage du maître                                                    */
+/* ------------------------------------------------------------------------ */
+
+static void test_parse_master_reads_the_three_bytes(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+    const link_status_t in = { .state = 0, .pending_op = 0, .confirm_count = 0,
+                               .instance = 0 };
+    link_master_t m;
+
+    link_proto_pack_status(regs, &in);
+    regs[LINK_REG_USER_CONFIRM] = LINK_USER_CONFIRM_MAGIC;
+    regs[LINK_REG_CONFIRM_ECHO] = 0x11;
+    regs[LINK_REG_USB_MODE_REQ] = LINK_USB_MODE_OATH;
+
+    TEST_ASSERT(link_proto_parse_master(regs, sizeof(regs), &m), "plage du maître lue");
+    TEST_ASSERT_EQ(m.confirm, LINK_USER_CONFIRM_MAGIC, "octet de confirmation");
+    TEST_ASSERT_EQ(m.echo, 0x11, "écho d'instance");
+    TEST_ASSERT_EQ(m.usb_mode, LINK_USB_MODE_OATH, "mode demandé");
+
+    /* Même garde que parse_status : un transfert court ne doit pas faire lire
+     * au-delà du tampon. */
+    TEST_ASSERT(!link_proto_parse_master(regs, LINK_REG_SIZE - 1, &m),
+                "bloc tronqué refusé");
+
+    /* Et les trois octets se lisent même sur un bloc du coffre invalide : ils
+     * ne dépendent pas de son CRC, qui ne les couvre pas. */
+    regs[LINK_REG_CRC] ^= 0xFF;
+    TEST_ASSERT(link_proto_parse_master(regs, sizeof(regs), &m),
+                "plage du maître lisible même si le bloc du coffre est corrompu");
+}
+
+/* ------------------------------------------------------------------------ */
+/* v2 — le mode USB demandé                                                   */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Deux règles, et la seconde est celle qui peut faire mal : une valeur inconnue
+ * est REFUSÉE, le coffre reste où il est. Pas de repli sur « aucun » (qui
+ * démonterait l'interface que la propriétaire utilise), pas de « la plus
+ * proche » (qui exposerait autre chose que ce qu'on a demandé).
+ */
+
+static void test_no_unknown_wire_value_ever_applies(void)
+{
+    unsigned applied_unknown = 0, refused_known = 0, wrong_unchanged = 0;
+
+    for (unsigned requested = 0; requested < 256; requested++) {
+        for (unsigned applied = 0; applied < 256; applied++) {
+            const link_mode_req_t r =
+                link_proto_mode_request((uint8_t)requested, (uint8_t)applied);
+            const bool known = link_proto_usb_mode_is_known((uint8_t)requested);
+
+            if (r == LINK_MODE_REQ_APPLY && (!known || requested == applied)) {
+                applied_unknown++;
+            }
+            if (r == LINK_MODE_REQ_REFUSE && known) {
+                refused_known++;
+            }
+            if (r == LINK_MODE_REQ_UNCHANGED && requested != applied) {
+                wrong_unchanged++;
+            }
+        }
+    }
+
+    TEST_ASSERT_EQ(applied_unknown, 0,
+                   "on n'applique QUE une valeur connue et différente de l'appliquée");
+    TEST_ASSERT_EQ(refused_known, 0, "on ne refuse QUE ce qu'on ne connaît pas");
+    TEST_ASSERT_EQ(wrong_unchanged, 0,
+                   "« inchangé » ne se dit que d'une valeur déjà appliquée");
+}
+
+/* Le refus l'emporte sur l'égalité : une valeur inconnue déjà « appliquée » ne
+ * peut pas exister (le coffre n'applique que du connu), mais si elle arrivait,
+ * la taire serait pire que la dire. */
+static void test_unknown_is_refused_even_if_it_matches(void)
+{
+    TEST_ASSERT_EQ(link_proto_mode_request(0x77, 0x77), LINK_MODE_REQ_REFUSE,
+                   "inconnu refusé même s'il égale la dernière valeur appliquée");
+}
+
+/* La reprise après un reboot du coffre, telle que KeSp l'a demandée : le
+ * tampon partagé repart à zéro, le maître relit 0x12, le voit différent du mode
+ * qu'il veut, le réécrit — et le coffre applique. */
+static void test_reboot_recovery_is_a_plain_change_of_value(void)
+{
+    /* Après reboot : rien n'a été appliqué, et le maître veut PGP. */
+    TEST_ASSERT_EQ(link_proto_mode_request(LINK_USB_MODE_PGP, LINK_USB_MODE_NONE),
+                   LINK_MODE_REQ_APPLY, "0 -> pgp après reboot : appliqué");
+    /* Et une fois appliqué, la même valeur relue à chaque cycle ne rebascule
+     * rien : « au changement », pas « à chaque lecture ». */
+    TEST_ASSERT_EQ(link_proto_mode_request(LINK_USB_MODE_PGP, LINK_USB_MODE_PGP),
+                   LINK_MODE_REQ_UNCHANGED, "pgp relu vingt fois par seconde : rien");
+}
+
+/*
+ * Les six valeurs de fil sont le contrat publié : elles sont recopiées ici
+ * EXPRÈS, comme les vecteurs de la section 10, parce que c'est cette recopie
+ * qui surveille la divergence entre le code et le document. Les propriétés
+ * au-dessus disent ce que le code fait ; celle-ci dit ce que KeSp a dans les
+ * mains.
+ */
+static void test_wire_values_are_the_published_contract(void)
+{
+    TEST_ASSERT_EQ(LINK_USB_MODE_NONE,    0x00, "0x00 none");
+    TEST_ASSERT_EQ(LINK_USB_MODE_STORAGE, 0x01, "0x01 storage");
+    TEST_ASSERT_EQ(LINK_USB_MODE_PGP,     0x02, "0x02 pgp");
+    TEST_ASSERT_EQ(LINK_USB_MODE_OTP,     0x03, "0x03 otp");
+    TEST_ASSERT_EQ(LINK_USB_MODE_FIDO,    0x04, "0x04 fido");
+    TEST_ASSERT_EQ(LINK_USB_MODE_OATH,    0x05, "0x05 oath");
+
+    unsigned known = 0;
+    for (unsigned w = 0; w < 256; w++) {
+        if (link_proto_usb_mode_is_known((uint8_t)w)) {
+            known++;
+        }
+    }
+    TEST_ASSERT_EQ(known, LINK_USB_MODE_COUNT,
+                   "six valeurs attribuées, et pas une de plus");
 }
 
 /* ------------------------------------------------------------------------ */
@@ -509,7 +899,18 @@ void test_link_proto(void)
     TEST_RUN(test_almost_uniform_is_present);
     TEST_RUN(test_reject_short_buffer);
     TEST_RUN(test_shared_vectors_accepted);
+    TEST_RUN(test_shared_vectors_master_side);
     TEST_RUN(test_shared_vectors_rejected);
     TEST_RUN(test_shared_vectors_are_what_the_chest_publishes);
     TEST_RUN(test_crc_variant_check_value);
+    TEST_RUN(test_confirm_needs_the_magic_AND_the_instance);
+    TEST_RUN(test_stale_echo_from_a_same_coded_operation_is_refused);
+    TEST_RUN(test_instance_does_not_replace_the_magic_filter);
+    TEST_RUN(test_instance_is_covered_by_the_crc);
+    TEST_RUN(test_two_instances_never_share_a_crc);
+    TEST_RUN(test_parse_master_reads_the_three_bytes);
+    TEST_RUN(test_no_unknown_wire_value_ever_applies);
+    TEST_RUN(test_unknown_is_refused_even_if_it_matches);
+    TEST_RUN(test_reboot_recovery_is_a_plain_change_of_value);
+    TEST_RUN(test_wire_values_are_the_published_contract);
 }

@@ -53,12 +53,17 @@ static const char *TAG = "link";
 /*
  * Le bloc se publie en UNE SEULE plage : 0x00..0x0F, toute la zone du coffre.
  *
- * Ça n'a pas toujours été possible. La carte des registres logeait le CRC du
- * coffre (0x0E) dans le même mot de 32 bits que l'octet du maître (0x0C), ce
- * qui obligeait à publier en deux morceaux et à sauter l'octet du maître — et
- * le second morceau, incomplet, passait par un lire-modifier-écrire pendant
- * lequel un appui du S3 pouvait être perdu. link_proto.h a séparé les deux
- * extrémités dans des mots distincts ; la découpe n'a plus de raison d'être.
+ * Ça n'a pas toujours été possible. La toute première carte logeait le CRC du
+ * coffre et l'octet du maître dans le MÊME mot de 32 bits, ce qui obligeait à
+ * publier en deux morceaux et à sauter l'octet du maître — et le second
+ * morceau, incomplet, passait par un lire-modifier-écrire pendant lequel un
+ * appui du S3 pouvait être perdu. link_proto.h a séparé les deux extrémités
+ * dans des mots distincts ; la découpe n'a plus de raison d'être.
+ *
+ * Le CRC est revenu en 0x0E à la v2 et ce n'est PAS un retour en arrière : le
+ * défaut d'alors n'était pas son offset mais le MOT qu'il partageait. Le maître
+ * vit maintenant en 0x10-0x13, le coffre possède 0x00-0x0F en entier, et les
+ * assertions ci-dessous continuent de le prouver à chaque build.
  *
  * L'application écrit ce tampon PAR MOTS de 32 bits, le maître le lit et
  * l'écrit PAR OCTETS (spi_slave_hd.rst, « Writing/Reading Shared Registers ») :
@@ -92,6 +97,31 @@ _Static_assert(LINK_REG_SIZE <= SOC_SPI_MAXIMUM_BUFFER_SIZE,
 static bool     s_up;             /* le pilote est installé */
 static bool     s_ready;          /* app_main() est allé au bout */
 static uint32_t s_confirm_count;  /* appuis relayés à sec_confirm */
+
+/*
+ * Dernière valeur de fil du mode RÉELLEMENT APPLIQUÉE — pas la dernière lue.
+ *
+ * LINK_USB_MODE_NONE au démarrage, et c'est la vérité : le coffre démarre sans
+ * rien exposer. C'est ce repère-là qui rend la sélection auto-réparante après un
+ * reboot du coffre — le tampon partagé repart à zéro, le maître relit 0x12, le
+ * voit différent du mode qu'il veut, le réécrit, et le coffre voit un vrai
+ * changement. Un repère sur la dernière valeur LUE aurait dit « inchangé » et
+ * laissé le coffre muet jusqu'à ce que la propriétaire change de mode deux fois.
+ *
+ * Mis à jour SEULEMENT quand la bascule a réussi : une bascule refusée (une
+ * autre est déjà en cours, ESP_ERR_INVALID_STATE) est donc retentée au tour
+ * suivant, sans que le maître ait rien à détecter.
+ */
+static uint8_t  s_mode_applied = LINK_USB_MODE_NONE;
+
+/*
+ * Dernière valeur de mode dont on s'est plaint. Le protocole veut qu'une valeur
+ * inconnue soit refusée ET journalisée ; sans ce souvenir, un maître qui laisse
+ * un octet aberrant en 0x12 ferait écrire cinquante lignes par seconde, ce qui
+ * revient à ne rien journaliser du tout. Une ligne par valeur distincte.
+ */
+static uint8_t  s_mode_complained = LINK_USB_MODE_NONE;
+static bool     s_mode_complained_valid;
 
 /*
  * Le S3 nous a-t-il parlé au moins une fois ? Posé depuis l'ISR du pilote,
@@ -245,7 +275,7 @@ static void publish(uint8_t *regs)
 
 /* Sérialise l'état réel du coffre. La composition des bits appartient à
  * link_proto ; ici on ne fait que constater. */
-static void pack_current(uint8_t *regs, uint16_t pending_op)
+static void pack_current(uint8_t *regs, uint16_t pending_op, uint8_t instance)
 {
     uint8_t state = 0;
 
@@ -269,6 +299,7 @@ static void pack_current(uint8_t *regs, uint16_t pending_op)
         .state         = state,
         .pending_op    = pending_op,
         .confirm_count = s_confirm_count,
+        .instance      = instance,
     };
 
     /* Tampon de travail, jamais le miroir du tampon partagé : publish() n'en
@@ -300,48 +331,131 @@ static void pack_current(uint8_t *regs, uint16_t pending_op)
  * : les trois octets réservés qui suivent appartiennent au maître, les remettre
  * à zéro d'autorité poserait un piège au premier champ qu'il y mettra.
  */
-static void drain_user_confirm(uint32_t t)
+static void drain_user_confirm(uint32_t t, const link_master_t *m, uint8_t armed)
 {
-    uint8_t confirm = 0x00;
-    spi_slave_hd_read_buffer(LINK_HOST, LINK_REG_USER_CONFIRM, &confirm, 1);
-    if (confirm == 0x00) {
+    if (m->confirm == 0x00) {
         return;
     }
 
     /*
      * Reprendre l'octet quoi qu'il vaille, et AVANT de statuer dessus : laissé
-     * en place, il serait relu à chaque tour et rejouerait le même appui sur
-     * toutes les opérations armées ensuite. Un geste, une autorisation.
+     * en place, il serait relu à chaque tour. Et depuis la v2 ce n'est plus
+     * seulement une question de rejeu : un 0x5A dont l'écho ne correspond à
+     * rien aujourd'hui correspondrait à une instance FUTURE au bout de quelques
+     * armements. Le laisser en place transformerait un appui périmé en appui
+     * différé. Un geste, une autorisation.
      */
     uint8_t cleared = 0x00;
     spi_slave_hd_write_buffer(LINK_HOST, LINK_REG_USER_CONFIRM, &cleared, 1);
 
-    if (confirm != LINK_USER_CONFIRM_MAGIC) {
+    /* Une écriture du maître prouve à elle seule qu'il est là, qu'elle soit
+     * valable ou non. */
+    s_master_seen = true;
+
+    if (link_proto_confirm_accepted(m, armed)) {
+        /*
+         * sec_confirm décide, pas nous : hors d'une opération armée, cet appel
+         * n'a aucun effet — un appui hors contexte n'est pas une erreur. Le
+         * compteur, lui, compte ce qui a été RELAYÉ, pas ce qui a été accordé :
+         * c'est ce qui permet au maître de distinguer « mon écriture est
+         * arrivée » de « elle a servi ».
+         */
+        sec_confirm_authorize(t);
+        s_confirm_count++;
+        return;
+    }
+
+    /*
+     * REFUSÉ, ET SILENCIEUX VERS LE MAÎTRE : le compteur ne bouge pas. C'est
+     * tout le signal, et il est suffisant — le maître qui ne voit pas bouger le
+     * compteur relit le bloc et réessaie avec l'instance courante. Rien n'est
+     * renvoyé, rien n'est codé en erreur : il n'y a pas de canal pour ça dans
+     * la plage du coffre, et lui en inventer un aurait demandé un champ que la
+     * disposition n'a pas.
+     *
+     * Le silence est vers le MAÎTRE, pas vers le journal : les deux causes de
+     * refus veulent dire des choses différentes, et se taire sur les deux
+     * rendrait le lien indébogable.
+     */
+    if (m->confirm != LINK_USER_CONFIRM_MAGIC) {
         /*
          * LINK_USER_CONFIRM_MAGIC (0x5A) est choisi pour que du bruit sur le
          * bus ne le produise pas : ni 0x00 ni 0xFF, les deux valeurs d'une
          * ligne flottante, et pas davantage un 1 qu'un bit parasite ferait
-         * apparaître. Tout le reste se jette — et se journalise, parce qu'un
-         * octet inattendu ici veut dire soit un maître qui n'a pas le bon
-         * protocole, soit un bus qui se dégrade, et les deux méritent d'être
-         * vus.
+         * apparaître. Un octet inattendu ici veut dire soit un maître qui n'a
+         * pas le bon protocole, soit un bus qui se dégrade, et les deux
+         * méritent d'être vus.
          */
-        ESP_LOGW(TAG, "octet de confirmation inattendu 0x%02X — ignoré", confirm);
+        ESP_LOGW(TAG, "octet de confirmation inattendu 0x%02X — ignoré", m->confirm);
         return;
     }
 
-    /* Une écriture du maître prouve à elle seule qu'il est là. */
-    s_master_seen = true;
-
     /*
-     * sec_confirm décide, pas nous : hors d'une opération armée, cet appel n'a
-     * aucun effet — un appui hors contexte n'est pas une erreur. Le compteur,
-     * lui, compte ce qui a été RELAYÉ, pas ce qui a été accordé : c'est ce qui
-     * permet au maître de distinguer « mon écriture est arrivée » de « elle a
-     * servi ».
+     * Confirmation parfaitement formée, mais portant l'écho d'une AUTRE
+     * instance : c'est exactement le défaut de la v1, et il se journalise en
+     * INFO plutôt qu'en WARN parce que ce n'est PAS une anomalie. Une écriture
+     * perdue suivie d'une expiration suffit à le produire, et c'est le cas
+     * normal que ce refus existe pour traiter.
      */
-    sec_confirm_authorize(t);
-    s_confirm_count++;
+    ESP_LOGI(TAG, "confirmation pour l'instance %u alors que %u est armée — ignorée",
+             m->echo, armed);
+}
+
+/*
+ * Applique le mode USB demandé par le maître en 0x12.
+ *
+ * AU CHANGEMENT, pas à chaque lecture : le maître relit et réécrit l'octet à
+ * chaque cycle (c'est ce qui rend la sélection auto-réparante), donc rebasculer
+ * à chaque tour ré-énumérerait le périphérique vingt fois par seconde.
+ *
+ * AUCUNE CONFIRMATION PHYSIQUE ICI, et c'est une décision de la propriétaire,
+ * pas un oubli : appuyer sur une touche du clavier EST le geste. La
+ * conséquence — et sa limite — est écrite dans docs/LINK_CONTRACT.md, section
+ * « Sélection du mode ». Résumé : exposer un applet n'est pas autoriser une
+ * opération ; tout ce qui sort un secret continue d'exiger l'appui ET l'écho
+ * d'instance.
+ *
+ * usb_mode_apply_wire() peut bloquer jusqu'à une quinzaine de secondes (le
+ * temps qu'un worker CCID sorte). La tâche du lien cesse donc de republier
+ * pendant une bascule. C'est sans conséquence : le bloc déjà publié reste
+ * valide et cohérent, et la bascule purge de toute façon toute confirmation
+ * armée au passage — il n'y a rien à drainer pendant ce temps-là.
+ */
+static void service_mode_request(const link_master_t *m)
+{
+    switch (link_proto_mode_request(m->usb_mode, s_mode_applied)) {
+    case LINK_MODE_REQ_UNCHANGED:
+        return;
+
+    case LINK_MODE_REQ_REFUSE:
+        if (!s_mode_complained_valid || s_mode_complained != m->usb_mode) {
+            ESP_LOGW(TAG, "mode USB demandé 0x%02X : valeur hors contrat — refusée, le coffre reste où il est",
+                     m->usb_mode);
+            s_mode_complained = m->usb_mode;
+            s_mode_complained_valid = true;
+        }
+        return;
+
+    case LINK_MODE_REQ_APPLY:
+        break;
+    }
+
+    const esp_err_t err = usb_mode_apply_wire(m->usb_mode);
+    if (err == ESP_OK) {
+        s_mode_applied = m->usb_mode;
+        s_mode_complained_valid = false;
+        return;
+    }
+
+    /* Pas de mise à jour de s_mode_applied : la demande reste en vigueur et
+     * sera retentée au prochain tour. Une seule plainte par valeur, pour la
+     * même raison que ci-dessus. */
+    if (!s_mode_complained_valid || s_mode_complained != m->usb_mode) {
+        ESP_LOGW(TAG, "bascule vers le mode 0x%02X refusée (%s) — nouvelle tentative au prochain tour",
+                 m->usb_mode, esp_err_to_name(err));
+        s_mode_complained = m->usb_mode;
+        s_mode_complained_valid = true;
+    }
 }
 
 static void link_task(void *arg)
@@ -351,20 +465,50 @@ static void link_task(void *arg)
     for (;;) {
         const uint32_t t = now_ms();
 
-        drain_user_confirm(t);
-
         /*
-         * Un seul accesseur pour l'état ET l'opération — jamais peek() suivi
-         * d'une lecture séparée : sec_confirm.h l'exige, et la raison y est
-         * détaillée. L'étiquette ne nous concerne pas (elle est faite pour un
-         * écran, pas pour un bus), d'où le NULL.
+         * UN SEUL accesseur pour l'état, l'opération ET le numéro d'armement —
+         * jamais peek() suivi d'une lecture séparée : sec_confirm.h l'exige, et
+         * la v2 en fait une question de justesse et plus seulement d'affichage.
+         * Un couple déchiré (l'opération d'un armement, le numéro du suivant)
+         * ferait publier au coffre une instance qui ne va pas avec l'opération
+         * que le maître va montrer — donc renvoyer un écho valable pour une
+         * opération que la propriétaire n'a pas vue. C'est le défaut même que
+         * l'instance ferme, réintroduit par le transport. L'étiquette ne nous
+         * concerne pas (elle est faite pour un écran, pas pour un bus), d'où le
+         * NULL.
          */
         sec_op_t op = SEC_OP_UNKNOWN;
-        const sec_confirm_state_t st = sec_confirm_peek_labeled(t, &op, NULL);
+        uint32_t arm_seq = 0;
+        const sec_confirm_state_t st = sec_confirm_peek_armed(t, &op, NULL, &arm_seq);
         const bool pending = (st == SEC_CONFIRM_PENDING);
 
+        /*
+         * L'instance publiée est l'octet de poids faible du compteur
+         * d'armements. Publiée MÊME quand rien n'est armé : elle nomme alors le
+         * dernier armement, et c'est ce qui permet à une reprise tardive
+         * d'aboutir plutôt que de se faire refuser sans raison lisible.
+         */
+        const uint8_t instance = (uint8_t)arm_seq;
+
         uint8_t regs[LINK_REG_SIZE];
-        pack_current(regs, pending ? (uint16_t)op : 0);
+        memset(regs, 0, sizeof(regs));
+
+        /*
+         * La plage du maître, lue d'un bloc et pas octet par octet : la
+         * confirmation et son écho doivent venir de la MÊME lecture. Deux
+         * lectures séparées laisseraient le maître écrire entre les deux, et le
+         * coffre apparier un 0x5A avec l'écho du coup suivant.
+         */
+        spi_slave_hd_read_buffer(LINK_HOST, LINK_REG_MASTER_BASE,
+                                 &regs[LINK_REG_MASTER_BASE], LINK_REG_MASTER_LEN);
+
+        link_master_t master;
+        if (link_proto_parse_master(regs, LINK_REG_SIZE, &master)) {
+            drain_user_confirm(t, &master, instance);
+            service_mode_request(&master);
+        }
+
+        pack_current(regs, pending ? (uint16_t)op : 0, instance);
         publish(regs);
 
         /* L'invariant de board.h : rien sur la ligne tant que le S3 n'a pas
@@ -476,7 +620,7 @@ esp_err_t link_spi_init(void)
      * absent.
      */
     uint8_t regs[LINK_REG_SIZE];
-    pack_current(regs, 0);
+    pack_current(regs, 0, 0);
     publish(regs);
 
     if (xTaskCreate(link_task, "link", LINK_TASK_STACK, NULL, LINK_TASK_PRIO, NULL) != pdPASS) {
