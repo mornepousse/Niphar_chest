@@ -13,7 +13,10 @@ Ce qui est éprouvé ici est exactement ce qu'aucune carte ne rattraperait :
 Une erreur sur l'un des trois donne un client qui « marche » et ment.
 """
 
+import builtins
+import contextlib
 import importlib.util
+import io
 import os
 import sys
 import unittest
@@ -629,6 +632,330 @@ class TestApduDestructrices(unittest.TestCase):
             oath.apdu_rename("a", "x" * oath.SEC_LABEL_LEN)
         with self.assertRaises(ValueError):
             oath.apdu_rename("", "b")
+
+
+# ===========================================================================
+# LE CÂBLAGE — un faux transport, pour éprouver la couche cmd_* sans matériel
+# ===========================================================================
+# Ce qui manquait : `secret_depuis_entree()` et `parse_batch()` sont éprouvées
+# une par une, mais RIEN ne vérifiait que `cmd_add()` les appelle. Une re-revue
+# par mutation a trouvé neuf survivantes, toutes dans ce câblage — dont trois
+# qui remettent les douze graines TOTP en clair dans ~/.zsh_history.
+#
+# Le faux transport se substitue au SEUL point qui touche libusb (`Cle._xfr`) :
+# tout ce qui est au-dessus — `exchange()`, le chaînage 61xx, `expect_ok()`,
+# `parse_list()` et les `cmd_*` — reste le vrai code, et les APDU envoyées sont
+# enregistrées telles quelles. Une commande qui n'aurait pas dû partir se voit
+# donc, au lieu de se déduire d'un message affiché.
+
+
+class FauxTransport(oath.Cle):
+    """Transport CCID factice : enregistre les APDU, répond de façon réglable.
+
+    `comptes` : le magasin initial, en octets bruts (ce que rend un LIST).
+    `echecs`  : {nom -> mot d'état} pour faire échouer un PUT proprement.
+    `explosions` : les noms dont l'envoi lève, comme un câble arraché.
+    """
+
+    def __init__(self, comptes=(), echecs=None, explosions=()):
+        super().__init__(verbose=False)
+        self.comptes = [oath.check_name(c) for c in comptes]
+        self.envoyees = []
+        self.echecs = dict(echecs or {})
+        self.explosions = {oath.check_name(n) for n in explosions}
+
+    def _xfr(self, apdu_bytes, timeout_s):
+        apdu_bytes = bytes(apdu_bytes)
+        self.envoyees.append(apdu_bytes)
+        ins = apdu_bytes[1]
+        if ins == oath.INS_LIST:
+            corps = b"".join(
+                oath.tlv(oath.TAG_NAME_LIST,
+                         bytes([oath.ALGO_TOTP_SHA1]) + nom)
+                for nom in self.comptes)
+            return corps + b"\x90\x00"
+        if ins == oath.INS_PUT:
+            nom = oath.tlv_first(oath.tlv_parse(apdu_bytes[5:]), oath.TAG_NAME)
+            if nom in self.explosions:
+                raise oath.CcidError("transport factice : rien reçu de la clé")
+            sw = self.echecs.get(nom, 0x9000)
+            if sw == 0x9000 and nom not in self.comptes:
+                self.comptes.append(nom)
+            return bytes([sw >> 8, sw & 0xFF])
+        return b"\x90\x00"
+
+    # -- lectures pour les assertions --------------------------------------
+    def ins_envoyees(self):
+        return [trame[1] for trame in self.envoyees]
+
+    def puts(self):
+        """[(nom, secret, chiffres)] pour chaque PUT réellement parti."""
+        out = []
+        for trame in self.envoyees:
+            if trame[1] != oath.INS_PUT:
+                continue
+            tlvs = oath.tlv_parse(trame[5:])
+            nom = oath.tlv_first(tlvs, oath.TAG_NAME)
+            cle = oath.tlv_first(tlvs, oath.TAG_KEY)
+            out.append((nom, cle[2:], cle[1]))
+        return out
+
+
+@contextlib.contextmanager
+def _entree(flux):
+    """Substitue l'entrée standard du processus, et la rend ensuite.
+
+    `cmd_add`, `cmd_add_batch` et `cmd_reset` lisent `sys.stdin` directement —
+    c'est précisément ce câblage-là qu'on éprouve, donc on ne peut pas se
+    contenter des paramètres injectables de `secret_depuis_entree()`.
+    """
+    ancien = sys.stdin
+    sys.stdin = flux
+    try:
+        yield
+    finally:
+        sys.stdin = ancien
+
+
+@contextlib.contextmanager
+def _saisie(reponse):
+    """Substitue `input()`. `reponse` peut lever (EOFError) ou rendre du texte."""
+    ancien = builtins.input
+    builtins.input = (reponse if callable(reponse) else (lambda _="": reponse))
+    try:
+        yield
+    finally:
+        builtins.input = ancien
+
+
+@contextlib.contextmanager
+def _muet():
+    """Absorbe les deux sorties. Rend le tampon de la sortie standard."""
+    tampon = io.StringIO()
+    with contextlib.redirect_stdout(tampon), \
+            contextlib.redirect_stderr(io.StringIO()):
+        yield tampon
+
+
+def _args(*argv):
+    """Les arguments TELS QUE LA LIGNE DE COMMANDE les produit.
+
+    Passer par `build_parser()` plutôt que par un objet fabriqué à la main :
+    un défaut d'argparse qui change (le positionnel `secret` redevenu
+    obligatoire, par exemple) doit se voir ici aussi.
+    """
+    return oath.build_parser().parse_args(list(argv))
+
+
+# --------------------------------------------------------------------------
+# C1 — le secret ne passe PAS par argv, et c'est cmd_add qui doit le garantir
+# --------------------------------------------------------------------------
+class TestCablageAdd(unittest.TestCase):
+    def test_sans_argument_le_secret_vient_de_l_entree_standard(self):
+        """La survivante la plus grave : `decode_secret(args.secret)`.
+
+        `secret_depuis_entree()` est éprouvée à part, mais rien ne vérifiait
+        que `cmd_add()` l'appelle. La relire directement remet les douze
+        graines en clair dans ~/.zsh_history et dans /proc/<pid>/cmdline.
+        """
+        cle = FauxTransport()
+        with _entree(_Flux("JBSWY3DPEHPK3PXP\n", tty=False)), _muet():
+            rc = oath.cmd_add(cle, _args("add", "GitHub:mae"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            cle.puts(),
+            [(b"GitHub:mae", oath.decode_secret("JBSWY3DPEHPK3PXP"), 6)])
+
+    def test_un_terminal_passe_par_l_invite_sans_echo(self):
+        # L'autre branche du même appel : sur un vrai terminal, le secret se
+        # tape sans écho. Un `cmd_add` qui lirait argv ne consulterait ni
+        # l'une ni l'autre.
+        cle = FauxTransport()
+        invites = []
+
+        def faux_getpass(invite):
+            invites.append(invite)
+            return "JBSWY3DPEHPK3PXP"
+
+        ancien = oath.getpass.getpass
+        oath.getpass.getpass = faux_getpass
+        try:
+            with _entree(_Flux("NE-DOIT-PAS-ETRE-LU\n", tty=True)), _muet():
+                rc = oath.cmd_add(cle, _args("add", "GitHub:mae"))
+        finally:
+            oath.getpass.getpass = ancien
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(invites), 1)
+        self.assertEqual(cle.puts()[0][1],
+                         oath.decode_secret("JBSWY3DPEHPK3PXP"))
+
+    def test_le_tiret_ne_part_pas_en_secret(self):
+        # « - » est la forme documentée de « lis ailleurs ». Le décoder tel
+        # quel provisionnerait un compte avec un secret vide — ou lèverait,
+        # selon la mutation, mais jamais le bon secret.
+        cle = FauxTransport()
+        with _entree(_Flux("JBSWY3DPEHPK3PXP\n", tty=False)), _muet():
+            rc = oath.cmd_add(cle, _args("add", "A:x", "-"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(cle.puts()[0][1],
+                         oath.decode_secret("JBSWY3DPEHPK3PXP"))
+
+    def test_un_secret_explicite_reste_honore(self):
+        # Le témoin dans l'autre sens : « corriger » C1 en cassant l'usage
+        # scripté ne doit pas passer pour une amélioration.
+        cle = FauxTransport()
+        with _entree(_Flux("AUTRE\n", tty=False)), _muet():
+            oath.cmd_add(cle, _args("add", "A:x", "JBSWY3DPEHPK3PXP"))
+        self.assertEqual(cle.puts()[0][1],
+                         oath.decode_secret("JBSWY3DPEHPK3PXP"))
+
+    def test_le_secret_positionnel_reste_facultatif(self):
+        # Le rendre obligatoire (nargs= retiré) forcerait Mae à le taper dans
+        # le shell : la fuite revient par la porte de l'analyseur d'arguments.
+        args = _args("add", "GitHub:mae")
+        self.assertIsNone(args.secret)
+        self.assertEqual(args.digits, 6)
+
+
+# --------------------------------------------------------------------------
+# C1 — le lot ne lit QUE l'entrée standard, jamais un fichier
+# --------------------------------------------------------------------------
+class TestCablageAddBatch(unittest.TestCase):
+    def test_aucun_fichier_en_argument(self):
+        """La contrainte est que les secrets ne touchent jamais le disque.
+
+        Un positionnel ou une option de chemin suffirait à faire écrire les
+        douze graines dans un fichier — qui survit à l'opération, et que rien
+        n'efface.
+        """
+        for argv in (["add-batch", "/tmp/secrets.txt"],
+                     ["add-batch", "--fichier", "/tmp/secrets.txt"],
+                     ["add-batch", "--file", "/tmp/secrets.txt"],
+                     ["add-batch", "-f", "/tmp/secrets.txt"]):
+            with self.subTest(argv=argv), _muet():
+                with self.assertRaises(SystemExit):
+                    oath.build_parser().parse_args(argv)
+
+    def test_un_envoi_qui_leve_n_arrete_pas_les_suivants(self):
+        """Une migration à moitié faite dont on ignore la moitié est pire.
+
+        La ligne B explose au transport. A a déjà été provisionné, C doit
+        l'être aussi — et le compte rendu doit dire lequel des trois manque.
+        """
+        cle = FauxTransport(explosions=[b"B:y"])
+        texte = ("A:x JBSWY3DPEHPK3PXP\n"
+                 "B:y MZXW6YTBOI======\n"
+                 "C:z JBSWY3DPEHPK3PXP\n")
+        with _entree(_Flux(texte, tty=False)), _muet():
+            rc = oath.cmd_add_batch(cle, _args("add-batch"))
+        self.assertEqual(rc, 1, "un rejet doit se voir dans le code de sortie")
+        self.assertEqual([nom for nom, _, _ in cle.puts()],
+                         [b"A:x", b"B:y", b"C:z"])
+
+    def test_un_mot_d_etat_en_echec_n_arrete_pas_les_suivants(self):
+        # L'autre forme d'échec : la clé répond, mais refuse (magasin plein).
+        # Elle passe par une autre branche que l'exception ci-dessus.
+        cle = FauxTransport(echecs={b"B:y": 0x6A84})
+        texte = ("A:x JBSWY3DPEHPK3PXP\n"
+                 "B:y MZXW6YTBOI======\n"
+                 "C:z JBSWY3DPEHPK3PXP\n")
+        with _entree(_Flux(texte, tty=False)), _muet() as sortie:
+            rc = oath.cmd_add_batch(cle, _args("add-batch"))
+        self.assertEqual(rc, 1)
+        self.assertEqual([nom for nom, _, _ in cle.puts()],
+                         [b"A:x", b"B:y", b"C:z"])
+        self.assertIn("2 ajouté(s)", sortie.getvalue())
+
+    def test_un_compte_deja_present_n_est_pas_ecrase(self):
+        """Écraser exige un appui physique, que personne ne donne douze fois.
+
+        Sans ce filtre, une migration relancée par précaution demanderait un
+        appui au milieu du lot — ou, pire, passerait si l'appui tombe par
+        hasard, et remplacerait un secret vivant par celui de l'export.
+        """
+        cle = FauxTransport(comptes=[b"A:x"])
+        texte = "A:x JBSWY3DPEHPK3PXP\nB:y MZXW6YTBOI======\n"
+        with _entree(_Flux(texte, tty=False)), _muet() as sortie:
+            rc = oath.cmd_add_batch(cle, _args("add-batch"))
+        self.assertEqual(rc, 0, "un compte déjà là n'est pas un rejet")
+        self.assertEqual([nom for nom, _, _ in cle.puts()], [b"B:y"])
+        self.assertIn("déjà", sortie.getvalue())
+
+    def test_le_lot_provisionne_bien_ce_qu_on_lui_donne(self):
+        # Témoin positif : sans lui, les trois tests ci-dessus resteraient
+        # verts sur un `cmd_add_batch` qui n'envoie jamais rien.
+        cle = FauxTransport()
+        texte = "A:x JBSWY3DPEHPK3PXP\nB:y MZXW6YTBOI======\n"
+        with _entree(_Flux(texte, tty=False)), _muet():
+            rc = oath.cmd_add_batch(cle, _args("add-batch", "--digits", "8"))
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            cle.puts(),
+            [(b"A:x", oath.decode_secret("JBSWY3DPEHPK3PXP"), 8),
+             (b"B:y", oath.decode_secret("MZXW6YTBOI======"), 8)])
+
+
+# --------------------------------------------------------------------------
+# I5 — le RESET n'envoie rien avant que l'hôte ait obtenu le mot exact
+# --------------------------------------------------------------------------
+class TestCablageReset(unittest.TestCase):
+    def test_rien_ne_part_sans_le_mot_exact(self):
+        """L'appui sur la clé est le SECOND rempart, pas le premier.
+
+        Envoyer l'APDU d'abord ferait s'allumer l'écran de la clé alors que
+        la décision n'est pas prise : il ne resterait qu'un geste réflexe
+        entre Mae et seize secrets détruits.
+        """
+        for saisie in ("oui", "", "effacer", "EFFACER TOUT"):
+            with self.subTest(saisie=saisie):
+                cle = FauxTransport(comptes=[b"A:x", b"B:y"])
+                with _entree(_Flux("", tty=True)), _saisie(saisie), _muet():
+                    rc = oath.cmd_reset(cle, _args("reset"))
+                self.assertEqual(rc, 1)
+                self.assertNotIn(oath.INS_RESET, cle.ins_envoyees())
+
+    def test_un_tuyau_ne_confirme_pas_un_reset(self):
+        """« yes | niphar-oath reset » viderait la clé sans qu'on ait lu.
+
+        L'entrée standard est ici un tuyau qui porte le mot exact, et `input`
+        le rendrait : c'est bien le contrôle du terminal qui doit refuser.
+        """
+        cle = FauxTransport(comptes=[b"A:x", b"B:y"])
+        with _entree(_Flux("EFFACER\n", tty=False)), \
+                _saisie(oath.RESET_MOT), _muet():
+            rc = oath.cmd_reset(cle, _args("reset"))
+        self.assertEqual(rc, 1)
+        self.assertNotIn(oath.INS_RESET, cle.ins_envoyees())
+
+    def test_le_mot_exact_sur_un_terminal_envoie_le_reset(self):
+        # Témoin positif : sans lui, les deux tests ci-dessus seraient verts
+        # sur un client qui n'enverrait JAMAIS de RESET.
+        cle = FauxTransport(comptes=[b"A:x", b"B:y"])
+        with _entree(_Flux("", tty=True)), _saisie(oath.RESET_MOT), _muet():
+            rc = oath.cmd_reset(cle, _args("reset"))
+        self.assertEqual(rc, 0)
+        self.assertIn(oath.apdu_reset(), cle.envoyees)
+
+    def test_la_liste_de_ce_qui_va_mourir_est_affichee_avant_la_question(self):
+        # Le nombre seul ne permet pas de reconnaître qu'on s'est trompé de
+        # clé ; l'hôte a la place de nommer, l'écran de la clé ne l'a pas.
+        cle = FauxTransport(comptes=[b"OVH:perso", b"GitHub:mae"])
+        with _entree(_Flux("", tty=True)), _saisie("non"), _muet() as sortie:
+            oath.cmd_reset(cle, _args("reset"))
+        texte = sortie.getvalue()
+        self.assertIn("OVH:perso", texte)
+        self.assertIn("GitHub:mae", texte)
+
+    def test_un_magasin_vide_n_envoie_rien_et_ne_demande_rien(self):
+        cle = FauxTransport()
+
+        def jamais(_=""):
+            raise AssertionError("aucune question sur un magasin vide")
+
+        with _entree(_Flux("", tty=True)), _saisie(jamais), _muet():
+            rc = oath.cmd_reset(cle, _args("reset"))
+        self.assertEqual(rc, 0)
+        self.assertNotIn(oath.INS_RESET, cle.ins_envoyees())
 
 
 if __name__ == "__main__":
