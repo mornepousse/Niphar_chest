@@ -284,8 +284,37 @@ static void publish(uint8_t *regs)
  * chacun de reconnaître le sien et d'ignorer celui de l'autre. */
 #define LINK_BROWSE_SLOT   0xE0u
 
-static DMA_ATTR uint8_t s_dma_rx[LINK_REQ_SIZE];
-static DMA_ATTR uint8_t s_dma_tx[LINK_DMA_MAX];
+/*
+ * ALIGNÉS SUR 64 OCTETS, ADRESSE **ET** LONGUEUR. Trouvé au banc, au premier
+ * démarrage de la v3 : `DMA_ATTR` ne garantit qu'un alignement de mot, et le
+ * pilote a refusé la mise en file —
+ *
+ *   E slave_hd: data buffer addr&len not align to 64 byte, or not dma_capable
+ *
+ * Sur un P4 avec cache, un tampon DMA doit tomber sur une ligne de cache
+ * entière, sinon une invalidation détruirait des octets voisins. La contrainte
+ * porte sur la TAILLE autant que sur l'adresse, d'où la réception de 64 octets
+ * pour une requête qui n'en fait que 8.
+ *
+ * Ce que ça aurait donné sans le garde-fou : la réception jamais armée, et
+ * toutes les requêtes du clavier perdues SANS ERREUR — la panne muette que le
+ * contrat impose justement d'écarter. Le journal l'a dit parce qu'on avait
+ * écrit la ligne pour ça.
+ */
+#define LINK_DMA_ALIGN     64
+#define LINK_DMA_RX_SIZE   LINK_DMA_ALIGN   /* ≥ LINK_REQ_SIZE, arrondi à la ligne */
+
+static DRAM_ATTR __attribute__((aligned(LINK_DMA_ALIGN)))
+    uint8_t s_dma_rx[LINK_DMA_RX_SIZE];
+static DRAM_ATTR __attribute__((aligned(LINK_DMA_ALIGN)))
+    uint8_t s_dma_tx[LINK_DMA_MAX];
+
+_Static_assert(LINK_DMA_RX_SIZE % LINK_DMA_ALIGN == 0,
+               "la longueur du tampon de reception doit tomber sur une ligne de cache");
+_Static_assert(LINK_DMA_MAX % LINK_DMA_ALIGN == 0,
+               "la longueur du tampon d'emission doit tomber sur une ligne de cache");
+_Static_assert(LINK_DMA_RX_SIZE >= LINK_REQ_SIZE,
+               "la reception doit pouvoir contenir une requete entiere");
 static spi_slave_hd_data_t s_rx_desc;
 static spi_slave_hd_data_t s_tx_desc;
 
@@ -405,7 +434,7 @@ static void dma_arm_rx(void)
     }
     memset(&s_rx_desc, 0, sizeof(s_rx_desc));
     s_rx_desc.data = s_dma_rx;
-    s_rx_desc.len  = sizeof(s_dma_rx);
+    s_rx_desc.len  = sizeof(s_dma_rx);   /* 64, aligné — pas LINK_REQ_SIZE */
     if (spi_slave_hd_queue_trans(LINK_HOST, SPI_SLAVE_CHAN_RX, &s_rx_desc, 0) == ESP_OK) {
         s_rx_armed = true;
     } else {
@@ -420,9 +449,24 @@ static void dma_arm_rx(void)
  * surveille, donc il ne doit jamais changer avant que le segment soit en file. */
 static void dma_publish(uint8_t kind, uint16_t len)
 {
+    /*
+     * La LONGUEUR MISE EN FILE est arrondie à la ligne de cache ; la longueur
+     * PUBLIÉE en 0x12-0x13 reste la vraie. Le maître lit ce qu'on lui annonce
+     * et ignore le rembourrage — lui annoncer la taille arrondie lui ferait
+     * lire des octets qui ne veulent rien dire, et casserait le CRC de la
+     * réponse.
+     */
+    const uint16_t queue_len =
+        (uint16_t)((len + LINK_DMA_ALIGN - 1u) / LINK_DMA_ALIGN * LINK_DMA_ALIGN);
+    if (queue_len > sizeof(s_dma_tx)) {
+        ESP_LOGW(TAG, "segment DMA trop long une fois arrondi (%u)", (unsigned)len);
+        return;
+    }
+    memset(&s_dma_tx[len], 0x00, (size_t)(queue_len - len));
+
     memset(&s_tx_desc, 0, sizeof(s_tx_desc));
     s_tx_desc.data = s_dma_tx;
-    s_tx_desc.len  = len;
+    s_tx_desc.len  = queue_len;
     if (spi_slave_hd_queue_trans(LINK_HOST, SPI_SLAVE_CHAN_TX, &s_tx_desc, 0) != ESP_OK) {
         ESP_LOGW(TAG, "segment DMA non mis en file (%u octets)", (unsigned)len);
         return;
