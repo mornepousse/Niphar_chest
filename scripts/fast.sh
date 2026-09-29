@@ -425,11 +425,103 @@ if [ "$otp2_obj_vu" -eq 0 ]; then
     echo "       non exécuté (il le sera à la phase complète)."
 fi
 
-# Un seul point de sortie pour TOUS les garde-fous : en ajouter un après ce
-# test le rendrait bavard mais inoffensif — c'est exactement l'erreur commise
-# ici le 2026-08-07, et elle ne s'est vue qu'en vérifiant le code de sortie.
-if [ "$fail" -ne 0 ]; then
-    exit 1
+# --- Garde-fou 9 : l'appui qui detruit des secrets ne devient pas decoratif --
+# main/usb/mode_oath.c enonce DEUX regles et dit lui-meme que rien ne les
+# protege (« Rendre cette attente non bloquante casserait la garantie sans
+# qu'aucun test ne le dise »). oath_touch_commit() CROIT son booleen : elle
+# efface jusqu'a seize secrets sans rien reverifier. Un test ne peut pas
+# atteindre ca — l'appui est du materiel — donc c'est un grep ou rien.
+#
+#   A. `granted` ne vient que du retour de ccid_confirm_named(). Un `true`
+#      litteral vide le magasin sans que personne n'ait rien demande.
+#   B. dongle_confirm_named() reste une ATTENTE BLOQUANTE : c'est elle qui
+#      empeche l'hote d'intercaler une commande entre la demande et l'appui,
+#      et c'est ce qui rend suffisant le simple index memorise dans
+#      `touch_slot`. La transformer en machine a etats casserait la garantie
+#      en silence.
+#
+# Les commentaires sont DEPOUILLES avant la recherche : mode_oath.c cite
+# « oath_touch_commit(&s_ctx, true, …) » en exemple de ce qu'il ne faut pas
+# faire, et un grep naif crierait sur la documentation de la regle.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "» garde-fou 9 SAUTE (python3 absent) — appui OATH non verifie"
+else
+    python3 - <<'PYGUARD' || fail=1
+import re, sys
+
+def strip_comments(src):
+    # Remplace commentaires et chaines par du blanc, en preservant les retours
+    # a la ligne pour que les numeros restent justes.
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == '/' and i + 1 < n and src[i+1] == '*':
+            j = src.find('*/', i + 2)
+            j = n if j == -1 else j + 2
+            out.append(''.join(ch if ch == '\n' else ' ' for ch in src[i:j])); i = j
+        elif c == '/' and i + 1 < n and src[i+1] == '/':
+            j = src.find('\n', i)
+            j = n if j == -1 else j
+            out.append(' ' * (j - i)); i = j
+        elif c == '"':
+            j = i + 1
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == '\\' else 1
+            j = min(j + 1, n)
+            out.append(''.join(ch if ch == '\n' else ' ' for ch in src[i:j])); i = j
+        else:
+            out.append(c); i += 1
+    return ''.join(out)
+
+bad = 0
+
+# ---- A : aucun appelant ne force l'accord ----
+for path in ("main/usb/mode_oath.c",):
+    code = strip_comments(open(path, encoding="utf-8").read())
+    for m in re.finditer(r"oath_(?:touch_commit|finish_calculate)\s*\([^;]*?\)", code, re.S):
+        call = m.group(0)
+        args = call[call.index("(") + 1:]
+        if re.search(r"(?:\(|,)\s*(?:true|1)\s*(?:,|\))", args):
+            line = code[:m.start()].count("\n") + 1
+            print("\033[0;31m✗ OATH : %s:%d force l'accord (« true » litteral)\033[0m"
+                  % (path, line), file=sys.stderr)
+            print("         `granted` ne doit venir QUE du retour de ccid_confirm_named().", file=sys.stderr)
+            print("         Un accord force efface des comptes sans appui physique.", file=sys.stderr)
+            bad += 1
+
+# ---- B : l'attente reste bloquante ----
+code = strip_comments(open("main/security/ccid.c", encoding="utf-8").read())
+m = re.search(r"static int dongle_confirm_named\s*\([^)]*\)\s*\{", code)
+if not m:
+    print("\033[0;31m✗ OATH : dongle_confirm_named() introuvable dans ccid.c\033[0m", file=sys.stderr)
+    print("         Renommee ou supprimee ? Le garde-fou ne peut plus rien affirmer.", file=sys.stderr)
+    bad += 1
+else:
+    i, depth = m.end() - 1, 0
+    while i < len(code):
+        if code[i] == '{': depth += 1
+        elif code[i] == '}':
+            depth -= 1
+            if depth == 0: break
+        i += 1
+    body = code[m.end():i]
+    if "for (;;)" not in body:
+        print("\033[0;31m✗ OATH : dongle_confirm_named() n'est plus une boucle d'attente\033[0m", file=sys.stderr)
+        bad += 1
+    if "vTaskDelay" not in body:
+        print("\033[0;31m✗ OATH : dongle_confirm_named() ne scrute plus (vTaskDelay absent)\033[0m", file=sys.stderr)
+        bad += 1
+    for r in re.findall(r"return\s+([^;]+);", body):
+        if not re.fullmatch(r"[12]|\([^)]*\)\s*\?\s*1\s*:\s*2", r.strip()):
+            print("\033[0;31m✗ OATH : dongle_confirm_named() rend « %s » — ni 1 ni 2\033[0m"
+                  % r.strip(), file=sys.stderr)
+            print("         Un troisieme retour est la signature d'une attente NON bloquante :", file=sys.stderr)
+            print("         l'hote pourrait alors intercaler une commande entre la demande et", file=sys.stderr)
+            print("         l'appui, et `touch_slot` ne designerait plus le compte affiche.", file=sys.stderr)
+            bad += 1
+
+sys.exit(1 if bad else 0)
+PYGUARD
 fi
 
 # --- Garde-fou 8 : la prose du contrat ne vieillit pas sous le tableau ------
@@ -452,7 +544,7 @@ if [ -f "$CONTRACT" ]; then
     if ! command -v python3 >/dev/null 2>&1; then
         echo "» garde-fou 8 SAUTE (python3 absent) — coherence prose/vecteurs non verifiee"
     else
-        python3 - "$CONTRACT" <<'PYGUARD' || exit 1
+        python3 - "$CONTRACT" <<'PYGUARD' || fail=1
 import re, sys
 
 doc = open(sys.argv[1], encoding="utf-8").read()
@@ -487,6 +579,13 @@ if bad:
     sys.exit(1)
 PYGUARD
     fi
+fi
+
+# Un seul point de sortie pour TOUS les garde-fous : en ajouter un après ce
+# test le rendrait bavard mais inoffensif — c'est exactement l'erreur commise
+# ici le 2026-08-07, et elle ne s'est vue qu'en vérifiant le code de sortie.
+if [ "$fail" -ne 0 ]; then
+    exit 1
 fi
 
 # --- Tests hôte -----------------------------------------------------------
