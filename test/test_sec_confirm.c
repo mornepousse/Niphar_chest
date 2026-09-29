@@ -516,11 +516,11 @@ static void test_arm_sequence_separates_identical_operations(void)
 
     sec_confirm_reset();
     sec_confirm_arm_named(3, SEC_OP_OTP, "GITHUB", 1000);
-    sec_confirm_peek_armed(1000, NULL, NULL, &a);
+    sec_confirm_peek_armed(1000, NULL, NULL, &a, NULL);
 
     /* Exactement le meme armement, a la milliseconde pres. */
     sec_confirm_arm_named(3, SEC_OP_OTP, "GITHUB", 1000);
-    sec_confirm_peek_armed(1000, NULL, NULL, &b);
+    sec_confirm_peek_armed(1000, NULL, NULL, &b, NULL);
 
     TEST_ASSERT(a != b, "deux armements identiques portent des numeros differents");
 }
@@ -534,11 +534,11 @@ static void test_arm_sequence_is_monotonic(void)
     unsigned backwards = 0;
 
     sec_confirm_reset();
-    sec_confirm_peek_armed(0, NULL, NULL, &prev);
+    sec_confirm_peek_armed(0, NULL, NULL, &prev, NULL);
 
     for (unsigned i = 0; i < 300; i++) {
         sec_confirm_arm(0, SEC_OP_SIGN, 1000 + i);
-        sec_confirm_peek_armed(1000 + i, NULL, NULL, &cur);
+        sec_confirm_peek_armed(1000 + i, NULL, NULL, &cur, NULL);
         if (cur != prev + 1) {
             backwards++;
         }
@@ -563,25 +563,25 @@ static void test_only_arming_moves_the_sequence(void)
 
     sec_confirm_reset();
     sec_confirm_arm(1, SEC_OP_DECRYPT, 1000);
-    sec_confirm_peek_armed(1000, NULL, NULL, &after_arm);
+    sec_confirm_peek_armed(1000, NULL, NULL, &after_arm, NULL);
 
-    sec_confirm_peek_armed(1100, NULL, NULL, &after);
+    sec_confirm_peek_armed(1100, NULL, NULL, &after, NULL);
     TEST_ASSERT_EQ(after, after_arm, "une lecture n'incremente rien");
 
     sec_confirm_authorize(1100);
-    sec_confirm_peek_armed(1100, NULL, NULL, &after);
+    sec_confirm_peek_armed(1100, NULL, NULL, &after, NULL);
     TEST_ASSERT_EQ(after, after_arm, "un octroi n'incremente rien");
 
     (void)sec_confirm_poll(1100, &slot);
-    sec_confirm_peek_armed(1100, NULL, NULL, &after);
+    sec_confirm_peek_armed(1100, NULL, NULL, &after, NULL);
     TEST_ASSERT_EQ(after, after_arm, "la consommation n'incremente rien");
 
     sec_confirm_reset();
-    sec_confirm_peek_armed(1100, NULL, NULL, &after);
+    sec_confirm_peek_armed(1100, NULL, NULL, &after, NULL);
     TEST_ASSERT_EQ(after, after_arm, "reset() desarme, il n'arme pas");
 
     sec_confirm_arm(1, SEC_OP_DECRYPT, 2000);
-    sec_confirm_peek_armed(2000, NULL, NULL, &after);
+    sec_confirm_peek_armed(2000, NULL, NULL, &after, NULL);
     TEST_ASSERT_EQ(after, after_arm + 1, "seul un nouvel armement incremente");
 }
 
@@ -598,20 +598,83 @@ static void test_peek_armed_agrees_with_peek_labeled(void)
     sec_confirm_arm_named(2, SEC_OP_OATH_CODE, "PROTON", 1000);
 
     const sec_confirm_state_t a = sec_confirm_peek_labeled(1000, &op_a, lab_a);
-    const sec_confirm_state_t b = sec_confirm_peek_armed(1000, &op_b, lab_b, NULL);
+    const sec_confirm_state_t b = sec_confirm_peek_armed(1000, &op_b, lab_b, NULL, NULL);
 
     TEST_ASSERT_EQ(a, b, "meme etat");
     TEST_ASSERT_EQ(op_a, op_b, "meme operation");
     TEST_ASSERT_EQ(strcmp(lab_a, lab_b), 0, "meme etiquette");
 
     /* Et out_seq a NULL ne casse rien : c'est ce que fait peek_labeled. */
-    TEST_ASSERT_EQ(sec_confirm_peek_armed(1000, NULL, NULL, NULL), a,
+    TEST_ASSERT_EQ(sec_confirm_peek_armed(1000, NULL, NULL, NULL, NULL), a,
                    "out_seq NULL accepte");
+}
+
+/*
+ * LE NOMBRE DE COMPTES VISES VOYAGE AVEC L'OPERATION, SOUS LE MEME VERROU.
+ *
+ * Un RESET efface jusqu'a seize secrets sur un seul appui, et l'ecran du
+ * CLAVIER doit pouvoir l'annoncer — le sien n'a que le code d'operation. Le
+ * libellé le dit deja en toutes lettres (« 12 COMPTES »), mais le clavier
+ * afficherait alors « N CPT » en analysant du francais.
+ *
+ * Le derivér d'une seconde source lue a un autre instant rouvrirait exactement
+ * le couple dechire que le numero d'armement existe pour fermer : l'operation
+ * d'un armement avec le nombre du suivant. Il est donc lu par le MEME et unique
+ * accesseur, sous le MEME verrou.
+ */
+static void test_le_nombre_de_comptes_voyage_avec_l_operation(void)
+{
+    sec_confirm_reset();
+
+    sec_op_t op = SEC_OP_UNKNOWN;
+    uint32_t seq = 0;
+    uint8_t  n = 0xFF;
+    char     label[OATH_NAME_DISPLAY_MAX];
+
+    /* Rien d'arme : aucun compte vise. */
+    sec_confirm_peek_armed(1000u, &op, label, &seq, &n);
+    TEST_ASSERT_EQ(n, 0, "rien d'arme : zero compte vise");
+
+    /* Un armement ordinaire vise UN compte, sans que l'appelant ait a le dire. */
+    sec_confirm_arm_named(0, SEC_OP_OATH_CODE, "GITHUB", 1000u);
+    sec_confirm_peek_armed(1000u, &op, label, &seq, &n);
+    TEST_ASSERT_EQ(op, SEC_OP_OATH_CODE, "operation armee");
+    TEST_ASSERT_EQ(n, 1, "une operation ordinaire vise un compte");
+
+    /* Un RESET en vise douze, et c'est l'appelant qui le sait. */
+    sec_confirm_reset();
+    sec_confirm_arm_counted(0, SEC_OP_OATH_RESET, "12 COMPTES", 12, 2000u);
+    sec_confirm_peek_armed(2000u, &op, label, &seq, &n);
+    TEST_ASSERT_EQ(op, SEC_OP_OATH_RESET, "RESET arme");
+    TEST_ASSERT_EQ(n, 12, "douze comptes annonces");
+    TEST_ASSERT_EQ(memcmp(label, "12 COMPTES", 10), 0, "et le libelle le dit aussi");
+
+    /* Le reset efface le nombre comme il efface le reste : un compteur qui
+     * survivrait a l'operation ferait annoncer au clavier des comptes vises par
+     * une operation qui n'existe plus. */
+    sec_confirm_reset();
+    sec_confirm_peek_armed(3000u, &op, label, &seq, &n);
+    TEST_ASSERT_EQ(n, 0, "apres reset, plus aucun compte vise");
+}
+
+/* L'accesseur sans nombre reste disponible et ne casse pas : out_count a NULL
+ * est un cas legitime, pas un oubli. */
+static void test_peek_armed_tolere_un_nombre_absent(void)
+{
+    sec_confirm_reset();
+    sec_confirm_arm_counted(0, SEC_OP_OATH_RESET, "12 COMPTES", 12, 1000u);
+
+    sec_op_t op = SEC_OP_UNKNOWN;
+    uint32_t seq = 0;
+    sec_confirm_peek_armed(1000u, &op, NULL, &seq, NULL);
+    TEST_ASSERT_EQ(op, SEC_OP_OATH_RESET, "operation lue sans libelle ni nombre");
 }
 
 void test_sec_confirm(void)
 {
     TEST_SUITE("sec_confirm state machine");
+    TEST_RUN(test_le_nombre_de_comptes_voyage_avec_l_operation);
+    TEST_RUN(test_peek_armed_tolere_un_nombre_absent);
     TEST_RUN(test_a_press_meant_for_a_cannot_authorize_b);
     TEST_RUN(test_press_before_arming_is_refused);
     TEST_RUN(test_press_after_the_window_is_refused);

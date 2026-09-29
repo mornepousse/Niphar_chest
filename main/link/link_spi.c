@@ -17,6 +17,7 @@
 
 #include "link/link_proto.h"
 #include "sec_confirm.h"
+#include "sec_time.h"
 #include "storage/sd_card.h"
 #include "usb/usb_mode.h"
 #include "usb/usb_mode_wire.h"
@@ -276,7 +277,8 @@ static void publish(uint8_t *regs)
 
 /* Sérialise l'état réel du coffre. La composition des bits appartient à
  * link_proto ; ici on ne fait que constater. */
-static void pack_current(uint8_t *regs, uint16_t pending_op, uint8_t instance)
+static void pack_current(uint8_t *regs, uint16_t pending_op, uint8_t instance,
+                         const char *label, uint8_t op_count)
 {
     uint8_t state = 0;
 
@@ -308,19 +310,37 @@ static void pack_current(uint8_t *regs, uint16_t pending_op, uint8_t instance)
     if (s_ready) {
         state |= LINK_STATE_READY;
     }
+    /* L'heure murale, POSÉE et jamais devinée (sec_time.h). Sans ce bit, le
+     * clavier affiche « NO TIME » et ne demande aucun code : un code calculé
+     * sans heure serait faux tout en paraissant juste, ce qui est pire que pas
+     * de code du tout. */
+    if (sec_time_is_valid()) {
+        state |= LINK_STATE_TIME_VALID;
+    }
 
-    const link_status_t status = {
+    /* Le libellé, borné à ce que le fil porte. Il vient de sec_confirm, qui le
+     * tient déjà assaini et tronqué par oath_name_display() — donc de l'ASCII
+     * imprimable strict, jamais de l'UTF-8 : le clavier dessine en UNSCII, qui
+     * ne saurait pas quoi en faire. */
+    link_status_t status = {
         .version       = LINK_PROTO_VERSION,
         .state         = state,
         .pending_op    = pending_op,
         .confirm_count = s_confirm_count,
         .instance      = instance,
         .usb_mode_active = mode_wire,
+        .op_count      = op_count,
     };
 
     /* Tampon de travail, jamais le miroir du tampon partagé : publish() n'en
      * pousse que la zone du coffre, donc mettre à zéro celle du maître ici
      * n'écrit rien chez lui. */
+    if (label != NULL) {
+        size_t n = strnlen(label, LINK_LABEL_MAX);
+        status.label_len = (uint8_t)n;
+        memcpy(status.label, label, n);
+    }
+
     memset(regs, 0, LINK_REG_SIZE);
     link_proto_pack_status(regs, &status);
 }
@@ -489,13 +509,21 @@ static void link_task(void *arg)
          * ferait publier au coffre une instance qui ne va pas avec l'opération
          * que le maître va montrer — donc renvoyer un écho valable pour une
          * opération que la propriétaire n'a pas vue. C'est le défaut même que
-         * l'instance ferme, réintroduit par le transport. L'étiquette ne nous
-         * concerne pas (elle est faite pour un écran, pas pour un bus), d'où le
-         * NULL.
+         * l'instance ferme, réintroduit par le transport.
+         *
+         * L'ÉTIQUETTE NOUS CONCERNE DEPUIS LA v3, et c'est tout son objet : sur
+         * le coffre, l'écran qui montre l'opération est celui du CLAVIER, et
+         * sans ce nom la propriétaire approuve un TYPE d'opération, jamais un
+         * COMPTE. Elle est lue ICI, dans le MÊME appel que l'opération et le
+         * numéro d'armement : les trois forment un groupe indivisible, sans
+         * quoi le lien publierait le nom d'un armement avec l'instance d'un
+         * autre — exactement le couple déchiré que l'instance ferme.
          */
         sec_op_t op = SEC_OP_UNKNOWN;
         uint32_t arm_seq = 0;
-        const sec_confirm_state_t st = sec_confirm_peek_armed(t, &op, NULL, &arm_seq);
+        uint8_t  op_count = 0;
+        char     label[OATH_NAME_DISPLAY_MAX] = { 0 };
+        const sec_confirm_state_t st = sec_confirm_peek_armed(t, &op, label, &arm_seq, &op_count);
         const bool pending = (st == SEC_CONFIRM_PENDING);
 
         /*
@@ -505,6 +533,16 @@ static void link_task(void *arg)
          * d'aboutir plutôt que de se faire refuser sans raison lisible.
          */
         const uint8_t instance = (uint8_t)arm_seq;
+
+        /* Rien d'armé : ni nom ni nombre. Publier l'étiquette du dernier
+         * armement ferait afficher au clavier un compte que plus rien
+         * n'attend — le même défaut que sec_confirm_poll() a corrigé pour son
+         * propre écran. L'instance, elle, reste publiée : elle nomme le dernier
+         * armement expressément, pour qu'une reprise tardive aboutisse. */
+        if (!pending) {
+            label[0] = '\0';
+            op_count = 0;
+        }
 
         uint8_t regs[LINK_REG_SIZE];
         memset(regs, 0, sizeof(regs));
@@ -524,7 +562,7 @@ static void link_task(void *arg)
             service_mode_request(&master);
         }
 
-        pack_current(regs, pending ? (uint16_t)op : 0, instance);
+        pack_current(regs, pending ? (uint16_t)op : 0, instance, label, op_count);
         publish(regs);
 
         /* L'invariant de board.h : rien sur la ligne tant que le S3 n'a pas
@@ -636,7 +674,7 @@ esp_err_t link_spi_init(void)
      * absent.
      */
     uint8_t regs[LINK_REG_SIZE];
-    pack_current(regs, 0, 0);
+    pack_current(regs, 0, 0, NULL, 0);
     publish(regs);
 
     if (xTaskCreate(link_task, "link", LINK_TASK_STACK, NULL, LINK_TASK_PRIO, NULL) != pdPASS) {

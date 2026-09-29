@@ -67,6 +67,24 @@ void sec_confirm_arm(uint8_t slot, sec_op_t op, uint32_t now_ms);
  * en sortie de sec_confirm_peek_labeled() meme si `label` est NULL ici.
  */
 void sec_confirm_arm_named(uint8_t slot, sec_op_t op, const char *label, uint32_t now_ms);
+
+/*
+ * Comme sec_confirm_arm_named(), en annoncant COMBIEN de comptes l'operation
+ * touche. sec_confirm_arm_named() vaut sec_confirm_arm_counted(..., 1, ...).
+ *
+ * Un seul cas justifie ce parametre : le RESET de l'applet OATH, qui efface
+ * jusqu'a seize secrets sur un SEUL appui. L'ecran du coffre l'annonce par son
+ * etiquette (« 12 COMPTES »), mais l'ecran du CLAVIER ne recoit que le
+ * protocole du lien — et lui donner le nombre en un octet lui evite d'analyser
+ * du francais pour afficher « 12 CPT ».
+ *
+ * Le nombre est ecrit sous le MEME verrou que l'operation, l'etiquette et le
+ * numero d'armement, et relu par le MEME accesseur : le deriver d'une seconde
+ * source lue a un autre instant rouvrirait le couple dechire que le numero
+ * d'armement existe precisement pour fermer.
+ */
+void sec_confirm_arm_counted(uint8_t slot, sec_op_t op, const char *label,
+                             uint8_t count, uint32_t now_ms);
 /* Physical confirm key pressed: PENDING -> AUTHORIZED; no-op otherwise. */
 void sec_confirm_authorize(uint32_t pressed_at_ms);
 /* Poll at now_ms. PENDING past timeout -> returns TIMEDOUT once (then IDLE).
@@ -140,4 +158,5 @@ sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op, 
  * contrat de sec_confirm_peek_labeled().
  */
 sec_confirm_state_t sec_confirm_peek_armed(uint32_t now_ms, sec_op_t *out_op,
-                                           char *out_label, uint32_t *out_seq);
+                                           char *out_label, uint32_t *out_seq,
+                                           uint8_t *out_count);

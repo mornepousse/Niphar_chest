@@ -320,6 +320,9 @@ static sec_op_t            s_op       = SEC_OP_UNKNOWN;
  * survit a la consommation de l'operation qu'il nomme est une reponse que le
  * prochain lecteur devrait re-deriver. */
 static char s_label[OATH_NAME_DISPLAY_MAX] = { 0 };
+/* Combien de comptes l'operation armee touche. Ecrit et lu sous le MEME
+ * verrou que s_op, s_label et s_arm_seq — voir sec_confirm_arm_counted(). */
+static uint8_t s_arm_count;
 
 /*
  * Numero d'armement — monotone, JAMAIS remis a zero par reset().
@@ -352,6 +355,7 @@ void sec_confirm_reset(void)
     s_op       = SEC_OP_UNKNOWN;
     s_armed_ms = 0;
     s_label[0] = '\0';
+    s_arm_count = 0;
     SEC_CONFIRM_UNLOCK();
 }
 
@@ -361,6 +365,14 @@ void sec_confirm_arm(uint8_t slot, sec_op_t op, uint32_t now_ms)
 }
 
 void sec_confirm_arm_named(uint8_t slot, sec_op_t op, const char *label, uint32_t now_ms)
+{
+    /* Une operation ordinaire vise UN compte. Le seul appelant qui annonce
+     * autre chose est le RESET de l'applet OATH. */
+    sec_confirm_arm_counted(slot, op, label, 1u, now_ms);
+}
+
+void sec_confirm_arm_counted(uint8_t slot, sec_op_t op, const char *label,
+                             uint8_t count, uint32_t now_ms)
 {
     /* Assainissement HORS verrou : oath_name_display() est pure et n'a rien a
      * faire dans une section critique deja tres courte. Le resultat local
@@ -389,6 +401,7 @@ void sec_confirm_arm_named(uint8_t slot, sec_op_t op, const char *label, uint32_
      * section critique que l'operation qu'il numerote, sans quoi un lecteur
      * pourrait repartir avec l'operation d'un armement et le numero du
      * precedent — un couple que personne n'a jamais publie. */
+    s_arm_count = count;
     s_arm_seq++;
     memcpy(s_label, formatted, sizeof(s_label));
     SEC_CONFIRM_UNLOCK();
@@ -449,6 +462,9 @@ sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot)
          * arm(), jamais par poll() — alors que son commentaire de definition
          * affirmait le contraire. */
         s_label[0] = '\0';
+        /* Le nombre part avec l'etiquette qu'il chiffre : le laisser ferait
+         * annoncer « 12 CPT » au clavier pour une operation deja perimee. */
+        s_arm_count = 0;
         SEC_CONFIRM_UNLOCK();
         return SEC_CONFIRM_TIMEDOUT;
     }
@@ -456,7 +472,10 @@ sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot)
         if (out_slot) *out_slot = s_slot;
         s_state = SEC_CONFIRM_IDLE;
         s_op    = SEC_OP_UNKNOWN;
-        s_label[0] = '\0';   /* meme raison qu'au chemin d'expiration ci-dessus */
+        s_label[0] = '\0';
+        /* Le nombre part avec l'etiquette qu'il chiffre : le laisser ferait
+         * annoncer « 12 CPT » au clavier pour une operation deja perimee. */
+        s_arm_count = 0;   /* meme raison qu'au chemin d'expiration ci-dessus */
         SEC_CONFIRM_UNLOCK();
         return SEC_CONFIRM_AUTHORIZED;
     }
@@ -483,7 +502,8 @@ sec_confirm_state_t sec_confirm_peek(uint32_t now_ms)
 }
 
 sec_confirm_state_t sec_confirm_peek_armed(uint32_t now_ms, sec_op_t *out_op,
-                                           char *out_label, uint32_t *out_seq)
+                                           char *out_label, uint32_t *out_seq,
+                                           uint8_t *out_count)
 {
     /*
      * SOUS VERROU — corrige a la revue finale de branche OATH (I3).
@@ -522,6 +542,9 @@ sec_confirm_state_t sec_confirm_peek_armed(uint32_t now_ms, sec_op_t *out_op,
      * couple dechire (operation d'un armement, numero du suivant) que le lien
      * renverrait alors au maitre comme s'il l'avait montre. */
     if (out_seq) *out_seq = s_arm_seq;
+    /* Meme verrou, meme groupe indivisible : un nombre lu ailleurs pourrait
+     * appartenir a l'armement SUIVANT celui qu'on rapporte. */
+    if (out_count) *out_count = s_arm_count;
     const int expire = (s_state == SEC_CONFIRM_PENDING &&
                         (now_ms - s_armed_ms) >= SEC_CONFIRM_TIMEOUT_MS);
     const sec_confirm_state_t st = s_state;
@@ -536,6 +559,6 @@ sec_confirm_state_t sec_confirm_peek_armed(uint32_t now_ms, sec_op_t *out_op,
  */
 sec_confirm_state_t sec_confirm_peek_labeled(uint32_t now_ms, sec_op_t *out_op, char *out_label)
 {
-    return sec_confirm_peek_armed(now_ms, out_op, out_label, NULL);
+    return sec_confirm_peek_armed(now_ms, out_op, out_label, NULL, NULL);
 }
 

@@ -18,6 +18,7 @@ set(srcs
     "usb/msc_lba.c"
     "console/console.c"
     "security/sec_confirm.c"
+    "security/sec_time.c"
     "security/oath_name.c"
     "security/oath_proto.c"
     "security/sec_store.c"
