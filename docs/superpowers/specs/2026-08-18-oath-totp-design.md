@@ -20,6 +20,42 @@ that follows.
 | # | Decision | Direct consequence |
 |---|---|---|
 | 1 | **Strict YKOATH model** — the time counter comes from the host | The key has no clock and does not want one. It never knows what time it is. `ykman` is required day to day. |
+
+### Amendment 2026-09-29 — answering the objection that blocked TOTP twice
+
+Two earlier specs ruled TOTP out on the same ground, and **decision 1 adopted the
+rejected option without ever answering them**. The objection, verbatim from
+`2026-08-17-ecran-oled-carte-cle-design.md:249`:
+
+> a malicious host could then lie about the date and have codes produced for any
+> future instant, on a device whose whole point is not to trust the host.
+
+**The objection is real, and it is not answered by decision 2.** A press per code
+stops bulk harvesting, but a host that lies about the date gets one code valid at
+a chosen future instant for each press it obtains — and the screen shows the
+account, never the time, so there is nothing to notice.
+
+**It is however inherent to the whole class of device, not to this design.** A
+token without a battery-backed clock cannot distinguish a host that lies from a
+token that was simply unplugged for a week. YubiKey's OATH applet — the reference
+implementation this one follows — has exactly the same exposure, for exactly the
+same reason. The alternative was ruled out by hardware, not by preference: see
+`docs/HARDWARE.md`, “the chest does not exist on battery”.
+
+**What would bound it, and what would not.** Refusing a counter *older* than the
+last one seen is free, safe, and stops replay of past windows; it needs one
+persisted counter and no clock. Refusing a counter too far *forward* is not
+implementable: a legitimate week unplugged and a host lying by a week are the
+same input. Forward-only monotonicity is therefore a real improvement and a
+partial one — **not implemented today**, recorded here so the next reader does
+not have to rediscover the reasoning.
+
+**Why the decision stands.** The threat it leaves open — one future code per
+press physically given — is narrower than the one it closes: twelve TOTP secrets
+sitting in a phone application, harvestable in bulk by any process that reads its
+storage. The comparison that matters is against where the secrets live today, not
+against a token that does not exist.
+
 | 2 | **Mandatory press on every code** | `CALCULATE ALL` cannot return any code: it answers `TAG_TOUCH` for every account. `ykman oath accounts code` with no argument only shows `[Requires Touch]`. |
 | 3 | **No password** | No `SET CODE` / `VALIDATE`. The list of accounts and their modification are readable by any software on the host machine; the secrets, never. |
 | 4 | **The screen names the requested account** | The name comes from the host: it must be sanitised before being drawn. Without that, the press is a plain presence switch, not an agreement on an account. |
