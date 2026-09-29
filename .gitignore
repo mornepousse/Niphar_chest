@@ -13,3 +13,6 @@ compile_commands.json
 .superpowers/
 tools/__pycache__/
 test/build-asan/
+
+# tripwire : debrayage local des hooks (par depot)
+.tripwire-off

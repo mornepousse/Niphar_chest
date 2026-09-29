@@ -5,6 +5,10 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO" || exit 1
+# Débrayage : TRIPWIRE_OFF=1 (par session) ou un fichier .tripwire-off à la racine
+# (par dépôt, à ne pas committer) coupe ce hook net, sans rien désinstaller.
+[ "${TRIPWIRE_OFF:-0}" = "1" ] && exit 0
+[ -e .tripwire-off ] && exit 0
 # python3 requis pour la garde anti-boucle ; sans lui le hook est inactif (signalé).
 command -v python3 >/dev/null 2>&1 || { echo "tripwire: python3 absent, hook Stop inactif" >&2; exit 0; }
 # Anti-boucle : si on est déjà dans une continuation de Stop hook, ne pas re-bloquer.

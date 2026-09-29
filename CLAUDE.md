@@ -120,41 +120,22 @@ would recompile the whole project on every commit.
 ## Anti-regression workflow (MANDATORY)
 
 Single source of truth: `scripts/check.sh`.
-- `./scripts/check.sh --fast` — the chest's hardware guardrails + incremental ESP-IDF build (~seconds)
-- `./scripts/check.sh` — fast + the full rebuild from scratch
+- `./scripts/check.sh --fast` — the chest's hardware guardrails + incremental
+  ESP-IDF build (~seconds). `--force` reruns despite skip-if-already-green.
+- `./scripts/check.sh` — fast + the full rebuild of the three boards (pre-push, CI).
+- Red → read `.git/tripwire/last-fail.log`, fix. Never bypassed without a written reason.
 
-`check.sh` does not run these phases itself: it calls `scripts/fast.sh` and
-`scripts/full.sh`. That is where a guardrail or a test suite gets added —
-`check.sh` is a templated file that tripwire updates rewrite.
+`check.sh` is a templated file that tripwire updates rewrite: a guardrail or a
+test suite is added in `scripts/fast.sh` or `scripts/full.sh`, never here.
 
-**Enabling the git hooks (once per clone)**:
-```bash
-./scripts/install-hooks.sh   # or: git config core.hooksPath scripts/hooks
-```
-`pre-push` runs the full check and blocks the push if red. WIP: `git push --no-verify`.
-
-**Claude Code hooks** (`.claude/settings.json`, automatic):
-- `PostToolUse` on editing a watched file → `check.sh --fast`, as a
-  **non-blocking notice**. It reports red without interrupting: the TDD norm
-  requires writing the red assertion BEFORE the implementation, and blocking
-  there would sound the alarm at every correct step. A notice is not to be
-  ignored for all that. The watched paths include `test/`: editing a test
-  triggers the fast phase and the anti-weakening guard (net loss of
-  `TEST_ASSERT` vs HEAD).
-- `Stop` → `check.sh --fast`, and it **blocks**: a turn is not concluded on red.
-  The full rebuild is NOT re-run at the end of every turn: it stays guaranteed
-  at the git pre-push.
-- `pre-push` → full check, **blocking**.
-
-**Declared divergences**: `.tripwire-divergences` (committed) lists the accepted
-departures from the standard scaffold — in-house mode, environment degradation,
-dialect alias. One line `file<TAB>pattern<TAB>why`; `check.sh` turns red on the
-disappearance of a declared pattern. The host file of a divergence must be
-**tracked by git**: a gitignored file does not change the fingerprint of the
-skip-if-already-green, so its loss can slip past an “already green — skip” — it
-is not reliably protected. **Limit**: an undeclared departure is protected by
-nothing and the next re-scaffold will erase it — every deliberate divergence is
-declared at the moment it is introduced.
+Claude Code hooks: `PostToolUse` → `--fast` as a notice; `Stop` → `--fast`, blocks;
+`pre-push` → full, blocks. Off: `TRIPWIRE_OFF=1` (session) or `.tripwire-off`
+(repo, untracked); `git push --no-verify` for the pre-push.
+Enabling the git hooks, once per clone: `./scripts/install-hooks.sh`.
+New pure logic: red test first, green after.
+Read before touching a source, if present: `.tripwire-divergences` (accepted
+departures from the scaffold; red if a declared pattern disappears).
+The why of each mechanism: the tripwire plugin README, not here.
 
 ### When to invoke the project's agents
 
