@@ -14,14 +14,30 @@ approving rather than only *what kind* of operation is pending. It also opens a
 TOTP codes without the host ever seeing them, and carries a **wall-clock time**
 that the host sets once per plug-in (section 14).
 
-The chest side is implemented, builds, and **runs on hardware** — commit
-`440d79d`, verified from its boot log. What has *not* been exercised is the DMA
-channel of section 13: its receive is armed at init and segments are queued,
-but no frame has crossed it yet.
-So: the bytes below are what the chest's code actually produces and accepts —
-that part is verifiable today, and section 11 gives you the vectors to check it
-against. The *electrical* side has not been proven, and section 2 says exactly
-where the uncertainty is.
+The chest side is implemented, builds, and **runs on hardware**. The bytes below
+are what the chest's code actually produces and accepts, and section 11 gives you
+the vectors to check it against.
+
+**The electrical side is no longer the open question — 2026-09-29.** It was, in
+every earlier revision of this document. Two independent observations closed it:
+
+- the chest counts master accesses to its shared buffer, from the driver's ISR
+  (`SPI_EV_BUF_TX`/`SPI_EV_BUF_RX`, master activity only). Sampled inside one
+  boot: 8 → 40 → 72, a steady **4 Hz** — your 250 ms polling interval. Your
+  master issues **well-formed** shared-buffer commands, continuously. That
+  implicitly validates **CS active low** (the one that was to fail silently),
+  **mode 0**, bit order, the command/address/dummy shape, and the wiring on
+  GPIO7–10;
+- your left half displays `P4?`, a state your v1 parser reaches **only** when
+  the magic word is right and the version differs from 1. So `NIPH` and the
+  version byte cross the wire **intact**, and the refusal happens for the
+  correct reason.
+
+**What remains unproven**, and it is now a short list: the bytes *past* the
+version — your v1 parser stops before them, and the v3 CRC at `0x36`–`0x37` is
+outside its twenty-byte window entirely — and the **whole DMA channel** of
+section 13, which is a different command path. Its receive is armed at init and
+segments are queued, but no frame has crossed it.
 
 ## 0. How to read this
 
@@ -1060,6 +1076,12 @@ Reading notes, since these are the cases that catch a wrong implementation:
   you truncate instead of refusing, you read bytes that are not the label and
   display a name the chest never composed, which is the exact thing this field
   exists to prevent. **Treat `label_len > 34` as a corrupt block.**
+
+  **And the stronger reason, which came from the master side, not from here**:
+  the KeSp team removed their own guard by mutation and found that a byte is
+  then written **outside the buffer**. So this is not only about displaying the
+  right name — it is memory safety on your side. Their argument stands on its
+  own and can be verified; the display one asked you to take our word for it.
 - **V15 and V16** — the two states v2 could not express. V15 is mounted, ready,
   and has no time: show “NO TIME”, do not ask for a code. V16 is a RESET with
   `op_count` 12: show the count, because one press destroys twelve secrets.

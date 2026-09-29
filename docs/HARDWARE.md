@@ -827,8 +827,14 @@ interruption. That implicitly validates everything the command phase depends on:
 the physical wiring on GPIO7/8/9/10. Noise does not produce well-formed commands
 at a steady rate.
 
-**What it does not prove.** We see *that* the master transacts, not *what it
-reads*: the chest cannot tell whether the bytes arrived intact at the other end.
+**What it does not prove — and the KeSp team closed half of it the same day.**
+We see *that* the master transacts, not *what it reads*; the chest cannot tell
+whether the bytes arrived intact. But their left half displays `P4?`, a state
+their v1 parser reaches **only** when the magic word is right and the version
+differs from 1. So `NIPH` and the version byte cross the wire **intact**, and
+their refusal happens for the correct reason. What is still unseen is everything
+*past* the version byte: their v1 parser stops before it, and the v3 CRC at
+`0x36`–`0x37` falls outside its twenty-byte window entirely.
 Nor does it say anything about the DMA channel — `WRDMA`/`RDDMA` are a different
 command path and remain entirely untested.
 
