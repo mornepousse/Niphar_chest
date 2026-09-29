@@ -1208,6 +1208,26 @@ In one-line mode the wire byte equals the base command.
 Master-side references: `essl_spi_wrdma_done()` emits `WR_END`,
 `essl_spi_rddma_done()` emits `INT0`.
 
+### The segment number moves before the pending operation clears
+
+**Guaranteed, and you may rely on it.** Within the tick where the press is
+consumed, the chest calls `sec_confirm_authorize()`, computes the code, queues
+the segment and bumps `0x11` — *then* publishes the block. The pending operation
+only falls back to `0` on the **next** tick, because it is read from
+`sec_confirm` at the top of the loop.
+
+So `0x11` always moves **before** `0x06`–`0x07` empties, never after.
+
+**What you may therefore infer**: a pending operation that returns to `0`
+**without** the segment number having moved means the prompt was refused or
+expired — no code was computed, nothing was queued, and your request is dead.
+Cancel it rather than waiting.
+
+That inference also holds when the chest *fails* to serve: no valid time, a slot
+that is no longer an OATH account, an HMAC failure. In all of those the chest
+queues nothing and the operation clears — which is exactly the case your rule
+covers.
+
 ### The chest keeps a receive queued at all times
 
 **Obligation, not an implementation detail.** Without a queued receive, your

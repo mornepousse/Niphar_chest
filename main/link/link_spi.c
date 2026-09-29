@@ -144,6 +144,11 @@ static volatile bool s_master_seen;
  * C'est la difference entre « ca a marche un jour » et « ca marche ». */
 static volatile uint32_t s_master_touches;
 
+/* Un segment TX est mis en file et pas encore parti. Sans ce drapeau, on
+ * écraserait s_dma_tx pendant que le DMA le lit — le maître recevrait alors un
+ * segment fait de deux réponses différentes. */
+static volatile bool s_tx_en_vol;
+
 /* Dernier bloc réellement poussé dans le tampon partagé, pour ne réécrire que
  * ce qui change — voir publish(). Dimensionné à la SEULE zone du coffre : ce
  * qu'on ne publie pas n'a pas à peser dans la décision de republier. */
@@ -244,6 +249,32 @@ static void link_irq_set(bool asserted)
  * nvs_set, donc pendant précisément les opérations que le lien est censé
  * confirmer.
  */
+/*
+ * Appelée depuis l'ISR quand un segment TX a fini de partir.
+ *
+ * ELLE REND false, ET C'EST TOUTE SA RAISON D'ÊTRE. Sans rappel `cb_sent`, le
+ * pilote pousse CHAQUE transaction terminée dans `tx_ret_queue` — longue de
+ * `queue_size`, soit UN — avec un `assert(ret == pdTRUE)` derrière
+ * (esp_driver_spi/src/gpspi/spi_slave_hd.c:460-462). Comme rien n'appelait
+ * `spi_slave_hd_get_trans_res(SPI_SLAVE_CHAN_TX, …)`, la file se remplissait au
+ * premier segment et le SECOND faisait ABORTER le coffre.
+ *
+ * Relevé par l'équipe KeSp en lisant ce fichier contre le pilote, avant qu'une
+ * seule trame n'ait traversé. Rendre false dit au pilote de ne rien mettre en
+ * file : il n'y a alors aucune file à vider, donc plus rien à oublier de vider.
+ *
+ * IRAM_ATTR pour la même raison que on_master_touch : l'ISR tourne cache
+ * désactivé.
+ */
+static IRAM_ATTR bool on_tx_sent(void *arg, spi_slave_hd_event_t *event, BaseType_t *awoken)
+{
+    (void)arg;
+    (void)event;
+    (void)awoken;
+    s_tx_en_vol = false;
+    return false;   /* ne pas mettre en file de retour */
+}
+
 static IRAM_ATTR bool on_master_touch(void *arg, spi_slave_hd_event_t *event, BaseType_t *awoken)
 {
     (void)arg;
@@ -330,6 +361,10 @@ static uint16_t s_dma_len;       /* publié en 0x12-0x13 */
 static uint8_t  s_last_req_seq;  /* dernière sonnette servie */
 static bool     s_req_seq_seen;  /* la sonnette a-t-elle déjà une référence ? */
 static bool     s_rx_armed;
+/* La requête reçue, RECOPIÉE hors de s_dma_rx : la réception est ré-armée tout
+ * de suite après, donc le tampon appartient de nouveau au DMA. */
+static uint8_t  s_req_buf[LINK_REQ_SIZE];
+static bool     s_req_recue;
 
 /* Un code demandé, en attente de l'appui. Le slot est mémorisé, mais c'est le
  * LIBELLÉ publié à l'armement qui fait foi devant la propriétaire — l'index
@@ -462,6 +497,15 @@ static void dma_publish(uint8_t kind, uint16_t len)
      * lire des octets qui ne veulent rien dire, et casserait le CRC de la
      * réponse.
      */
+    /* Un segment encore en vol possède s_dma_tx : l'écraser ferait lire au
+     * maître une réponse faite de deux moitiés. On ne publie pas, et le numéro
+     * de segment ne bouge pas — le maître relira et réessaiera, exactement comme
+     * pour une confirmation refusée. */
+    if (s_tx_en_vol) {
+        ESP_LOGW(TAG, "segment précédent encore en vol — requête non servie");
+        return;
+    }
+
     const uint16_t queue_len =
         (uint16_t)((len + LINK_DMA_ALIGN - 1u) / LINK_DMA_ALIGN * LINK_DMA_ALIGN);
     if (queue_len > sizeof(s_dma_tx)) {
@@ -477,6 +521,7 @@ static void dma_publish(uint8_t kind, uint16_t len)
         ESP_LOGW(TAG, "segment DMA non mis en file (%u octets)", (unsigned)len);
         return;
     }
+    s_tx_en_vol = true;
     s_dma_kind = kind;
     s_dma_len  = len;
     s_dma_seq++;
@@ -616,30 +661,49 @@ static void serve_code(uint32_t t, uint8_t slot)
  */
 static void service_request(uint32_t t, const link_master_t *m)
 {
+    /*
+     * RÉCUPÉRER ET RÉ-ARMER D'ABORD, SANS CONDITION. Ce drainage ne dépend
+     * PLUS de la sonnette, et c'est une correction : il en dépendait, si bien
+     * qu'un WRDMA arrivé avant le premier tour laissait sa réception terminée
+     * dans la file de retour et aucune réception ré-armée. La requête suivante
+     * du maître était alors perdue, et la sonnette d'après servait les octets
+     * de l'ANCIENNE requête. Relevé par l'équipe KeSp en lisant ce fichier.
+     *
+     * La requête est RECOPIÉE : on ré-arme aussitôt, donc s_dma_rx retourne au
+     * DMA et son contenu n'est plus à nous.
+     */
+    spi_slave_hd_data_t *fini = NULL;
+    if (spi_slave_hd_get_trans_res(LINK_HOST, SPI_SLAVE_CHAN_RX, &fini, 0) == ESP_OK) {
+        s_rx_armed = false;
+        memcpy(s_req_buf, s_dma_rx, sizeof(s_req_buf));
+        s_req_recue = true;
+        dma_arm_rx();
+    }
+
     /* Première lecture : on prend la sonnette comme référence sans rien servir.
      * Sinon un redémarrage du coffre ferait servir une requête que le maître
-     * croit vieille. */
+     * croit vieille. Ce qui a pu arriver avant ce point est jeté avec elle. */
     if (!s_req_seq_seen) {
         s_last_req_seq = m->req_seq;
         s_req_seq_seen = true;
+        s_req_recue = false;
         return;
     }
     if (m->req_seq == s_last_req_seq) {
         return;
     }
-
-    /* Le segment est-il réellement arrivé ? Sans attendre : si la réception
-     * n'est pas terminée, on laisse la sonnette telle quelle et on repassera. */
-    spi_slave_hd_data_t *fini = NULL;
-    if (spi_slave_hd_get_trans_res(LINK_HOST, SPI_SLAVE_CHAN_RX, &fini, 0) != ESP_OK) {
+    /* Sonnette changée mais segment pas encore arrivé : on ne consomme PAS la
+     * sonnette, et on repassera au tour suivant. Servir ici lirait les octets
+     * de la requête précédente. */
+    if (!s_req_recue) {
         return;
     }
-    s_rx_armed = false;
+
     s_last_req_seq = m->req_seq;
+    s_req_recue = false;
 
     link_request_t req;
-    const bool valide = link_proto_parse_request(s_dma_rx, sizeof(s_dma_rx), &req);
-    dma_arm_rx();   /* réarmer AVANT de servir : la prochaine requête peut déjà venir */
+    const bool valide = link_proto_parse_request(s_req_buf, sizeof(s_req_buf), &req);
 
     if (!valide) {
         /* Requête corrompue ou commande inconnue : rien n'est servi, et rien
@@ -1009,6 +1073,7 @@ esp_err_t link_spi_init(void)
         .cb_config    = {
             .cb_buffer_tx = on_master_touch,
             .cb_buffer_rx = on_master_touch,
+            .cb_sent      = on_tx_sent,
             .arg          = NULL,
         },
     };
