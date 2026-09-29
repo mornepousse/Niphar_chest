@@ -1246,6 +1246,32 @@ cache line, but **the length published at `0x12`–`0x13` is the real one**. Rea
 exactly what is announced and ignore the padding — reading the rounded length
 would give you bytes that mean nothing and break the reply's CRC.
 
+### A segment you never read cannot desync the channel
+
+**Established, and it is a property of the layout rather than a promise.**
+
+The driver only loads a queued TX segment once the previous one has **completed**
+(`spi_slave_hd.c`, `if (!host->tx_curr_trans.trans)`). So a segment you never
+read — your keyboard reboots between the announcement and the `RDDMA`, or your
+first contact ignores an already-announced segment — stays loaded, and the next
+one waits behind it. Your next `RDDMA` would then receive the **older
+descriptor**.
+
+That would be a one-slot shift, and it is harmless here for a reason worth
+stating: **the chest has exactly one transmit buffer, and every descriptor is
+queued with that buffer's full length.** All descriptors are therefore
+interchangeable — whichever one is delivered carries the *current* contents, and
+you read only the `dma_len` bytes announced at `0x12`–`0x13`. The stale
+descriptor's own length never enters into it.
+
+The bytes past `dma_len` are zeroed, so a shifted read cannot hand you the tail
+of an earlier reply — a TOTP code, for instance.
+
+**On our side**, a segment in flight blocks a new publication for at most one
+second; past that it is taken as abandoned and we publish anyway. Without that
+escape, a segment nobody will ever read would leave the channel dead until the
+chest reboots — which is worse than the shift it was meant to prevent.
+
 ### The doorbell, and the order that makes it safe
 
 1. You write the request with **WRDMA**, close it with **WR_END**.

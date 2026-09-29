@@ -144,10 +144,17 @@ static volatile bool s_master_seen;
  * C'est la difference entre « ca a marche un jour » et « ca marche ». */
 static volatile uint32_t s_master_touches;
 
-/* Un segment TX est mis en file et pas encore parti. Sans ce drapeau, on
- * écraserait s_dma_tx pendant que le DMA le lit — le maître recevrait alors un
- * segment fait de deux réponses différentes. */
-static volatile bool s_tx_en_vol;
+/* Un segment TX est mis en file et pas encore parti, et depuis quand. Le
+ * drapeau évite d'écraser s_dma_tx pendant que le DMA le lit ; l'horodatage
+ * évite que ce même drapeau ne TUE le canal — voir dma_publish(). */
+static volatile bool     s_tx_en_vol;
+static volatile uint32_t s_tx_depuis_ms;
+
+/* Au-delà, un segment en vol est tenu pour abandonné. Le maître lit dans la
+ * milliseconde qui suit le changement de numéro ; une seconde entière est deux
+ * ordres de grandeur au-dessus, donc ce délai ne se déclenche que si personne
+ * ne lira jamais. */
+#define LINK_TX_ABANDON_MS  1000u
 
 /* Dernier bloc réellement poussé dans le tampon partagé, pour ne réécrire que
  * ce qui change — voir publish(). Dimensionné à la SEULE zone du coffre : ce
@@ -497,31 +504,63 @@ static void dma_publish(uint8_t kind, uint16_t len)
      * lire des octets qui ne veulent rien dire, et casserait le CRC de la
      * réponse.
      */
-    /* Un segment encore en vol possède s_dma_tx : l'écraser ferait lire au
-     * maître une réponse faite de deux moitiés. On ne publie pas, et le numéro
-     * de segment ne bouge pas — le maître relira et réessaiera, exactement comme
-     * pour une confirmation refusée. */
-    if (s_tx_en_vol) {
+    if (len > sizeof(s_dma_tx)) {
+        ESP_LOGW(TAG, "segment DMA trop long (%u)", (unsigned)len);
+        return;
+    }
+
+    /*
+     * UN SEGMENT EN VOL NE BLOQUE PLUS ÉTERNELLEMENT. Le drapeau évite
+     * d'écraser le tampon pendant que le DMA le lit — fenêtre de quelques
+     * microsecondes en pratique. Mais un segment que le maître ne lira JAMAIS
+     * (clavier redémarré entre la publication et le RDDMA, session USB reprise)
+     * ne déclenche jamais cb_sent : sans échappatoire, le drapeau resterait posé
+     * et le canal DMA serait mort en silence jusqu'au redémarrage du coffre.
+     * Relevé par l'équipe KeSp, qui a vu que ma correction précédente
+     * transformait leur désynchronisation en blocage — c'est-à-dire en pire.
+     */
+    const bool abandonne = s_tx_en_vol &&
+        (uint32_t)((uint32_t)(esp_timer_get_time() / 1000) - s_tx_depuis_ms)
+            >= LINK_TX_ABANDON_MS;
+    if (s_tx_en_vol && !abandonne) {
         ESP_LOGW(TAG, "segment précédent encore en vol — requête non servie");
         return;
     }
-
-    const uint16_t queue_len =
-        (uint16_t)((len + LINK_DMA_ALIGN - 1u) / LINK_DMA_ALIGN * LINK_DMA_ALIGN);
-    if (queue_len > sizeof(s_dma_tx)) {
-        ESP_LOGW(TAG, "segment DMA trop long une fois arrondi (%u)", (unsigned)len);
-        return;
+    if (abandonne) {
+        ESP_LOGW(TAG, "segment en vol abandonné (jamais lu) — on republie");
     }
-    memset(&s_dma_tx[len], 0x00, (size_t)(queue_len - len));
+
+    /*
+     * LE DESCRIPTEUR PORTE TOUJOURS LE TAMPON ENTIER, ET C'EST CE QUI REND UN
+     * DÉCALAGE INOFFENSIF.
+     *
+     * Le pilote ne charge un segment que lorsque le précédent est TERMINÉ
+     * (spi_slave_hd.c, `if (!host->tx_curr_trans.trans)`). Un segment jamais lu
+     * reste donc chargé et le suivant attend derrière : au prochain RDDMA, le
+     * maître recevrait l'ANCIEN descripteur. Sa longueur serait l'ancienne — mais
+     * son CONTENU est `s_dma_tx`, qui est UNIQUE et porte déjà la réponse neuve.
+     *
+     * En mettant toujours en file la taille du tampon entier, tous les
+     * descripteurs deviennent interchangeables : n'importe lequel délivre le
+     * contenu courant, et le maître ne lit que les `dma_len` octets annoncés en
+     * 0x12-0x13. Le décalage cesse d'être un défaut à éviter pour devenir un
+     * cas sans conséquence.
+     *
+     * Le reste du tampon est mis à zéro : rien n'oblige le maître à s'arrêter à
+     * `dma_len`, et lui laisser la queue d'une réponse précédente — un code TOTP,
+     * par exemple — serait gratuit.
+     */
+    memset(&s_dma_tx[len], 0x00, sizeof(s_dma_tx) - len);
 
     memset(&s_tx_desc, 0, sizeof(s_tx_desc));
     s_tx_desc.data = s_dma_tx;
-    s_tx_desc.len  = queue_len;
+    s_tx_desc.len  = sizeof(s_dma_tx);
     if (spi_slave_hd_queue_trans(LINK_HOST, SPI_SLAVE_CHAN_TX, &s_tx_desc, 0) != ESP_OK) {
         ESP_LOGW(TAG, "segment DMA non mis en file (%u octets)", (unsigned)len);
         return;
     }
-    s_tx_en_vol = true;
+    s_tx_en_vol    = true;
+    s_tx_depuis_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s_dma_kind = kind;
     s_dma_len  = len;
     s_dma_seq++;
