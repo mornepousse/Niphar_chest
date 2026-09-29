@@ -33,11 +33,23 @@ every earlier revision of this document. Two independent observations closed it:
   version byte cross the wire **intact**, and the refusal happens for the
   correct reason.
 
-**What remains unproven**, and it is now a short list: the bytes *past* the
-version — your v1 parser stops before them, and the v3 CRC at `0x36`–`0x37` is
-outside its twenty-byte window entirely — and the **whole DMA channel** of
-section 13, which is a different command path. Its receive is armed at init and
-segments are queued, but no frame has crossed it.
+**And the whole block now crosses intact.** A read-only v3 master on the KeSp
+bench reads the sixty-four bytes and accepts them only after checking the magic
+word, version 3, the **CRC over `0x00`–`0x35`**, `label_len ≤ 34` and the
+“mounted” invariant — then displays `P4` and `SD` from state byte `0x05` alone.
+Every field, the CRC included, arrives intact and is verified by an
+implementation that is not ours. Transfer length, the dummy phase on reads and
+the byte order of every multi-byte field are settled at the frame level, not by
+inference.
+
+**What remains unproven**, and it is now two things, both in the *master→chest*
+direction:
+
+- **`WRBUF`** — the confirmation `{5A, instance}` at `0x38`–`0x39`, the requested
+  mode at `0x3A`, the doorbell at `0x3C`. Nothing has been written to the chest
+  yet; it has only been read;
+- **the whole DMA channel** of section 13. Its receive is armed at init and
+  segments are queued, but no frame has crossed it.
 
 ## 0. How to read this
 

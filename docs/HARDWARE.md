@@ -800,6 +800,40 @@ who has the board in hand to produce the event, then watching whether the device
 sees it. Here, thirty seconds of listening and four presses were enough — and nothing
 of what was written in the meantime got any closer to the truth.
 
+### The whole v3 block crosses the wire, CRC included — 2026-09-29
+
+**Established, by the KeSp bench.** Their left half now runs a **read-only v3
+master** (`v4.2.0-beta.2-64-g43641f0a`) against the chest at `fa2abd0`. It reads
+the 64-byte block and accepts it only if **every** check passes:
+
+- the magic word;
+- version 3;
+- the **CRC16/MCRF4XX over `0x00`–`0x35`**;
+- `label_len` ≤ 34;
+- the “mounted” invariant.
+
+It then displays only what state byte `0x05` says: **`P4`, then `SD`**.
+
+**What this closes.** The chest→master direction is proven end to end. Every
+byte of the block, the CRC field included, arrives intact — and it is checked by
+an implementation that is not ours. That also settles the CRC-variant question
+the contract had flagged: two independent implementations agree on real wire
+data, which is worth more than the name in `cr_crc16.h` (still wrongly reading
+“CRC-16/X-25”; the check value `0x6F91` is what the contract publishes, and it is
+what both sides compute).
+
+It equally validates, at the frame level rather than by inference, everything the
+earlier 4 Hz access counter could only suggest: the transfer length, the dummy
+phase on reads, and the byte order of every multi-byte field.
+
+**What remains.** Two things, both in the master→chest direction:
+
+- **`WRBUF`**: the confirmation `{5A, instance}` at `0x38`–`0x39`, the requested
+  mode at `0x3A`, the doorbell at `0x3C`. Nothing has been written to the chest
+  yet — only read from it.
+- **The whole DMA channel**: `WRDMA`/`RDDMA` are a different command path, and no
+  frame has crossed it.
+
 ### The wire works — the S3 is polling the chest at 4 Hz — 2026-09-29
 
 **Established, and it settles the biggest open question of section 2 of the
