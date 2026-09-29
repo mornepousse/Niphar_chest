@@ -993,6 +993,16 @@ turns red here if the chest's behaviour ever stops matching this table.
 bytes, the version byte to `0x03`, the CRC to `0x36`–`0x37`, and the master's
 range to `0x38`. Nothing from the v2 table survives.
 
+**The operation codes are derived from `sec_op_t`, not transcribed** — and that
+is a correction, not a precaution. An earlier revision of this table carried
+`pending_op` `9` for V1 (which is `SEC_OP_OATH_REPLACE`, not a code request) and
+`0x0C` for V16 (**which is not a value of the enum at all**). Both were numbers
+picked by hand instead of derived, and the KeSp team found them by comparing the
+table against the enum. The generator now includes `sec_confirm.h`, and the
+pinned tests assert the *names*, so the two cannot drift again. Section 1 still
+holds: **the enum is not frozen by this contract** — treat an unknown code as
+“the chest is asking for a confirmation”.
+
 The nominal block **V1** is an OATH code pending for **`GITHUB`**: SD present,
 USB mounted, ready, **time valid**, 42 confirmations, **instance 3**, active mode
 `oath`, one account targeted.
@@ -1001,29 +1011,29 @@ USB mounted, ready, **time valid**, 42 confirmations, **instance 3**, active mod
 
 | # | bytes |
 |---|---|
-| V1 | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
-| V4 | `4E 49 50 58 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
-| V5 | `4E 49 50 48 04 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 94 08 00 00 00 00 00 00 00 00` |
-| V6 | `4E 49 50 48 03 0F 09 00 2B 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
-| V6B | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0D FD 00 00 00 00 00 00 00 00` |
-| V6C | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FC 00 00 00 00 00 00 00 00` |
-| V6D | `4E 49 50 48 03 0F 09 00 2A 00 00 00 02 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
-| V6E | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 01 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
-| V6F | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 67 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 00 00 00 00 00 00` |
-| V6G | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 23 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 8F 04 00 00 00 00 00 00 00 00` |
-| V8 | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 5A 03 00 00 00 00 00 00` |
+| V1 | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 00 00 00 00 00 00 00 00` |
+| V4 | `4E 49 50 58 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 00 00 00 00 00 00 00 00` |
+| V5 | `4E 49 50 48 04 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 6B D4 00 00 00 00 00 00 00 00` |
+| V6 | `4E 49 50 48 03 0F 07 00 2B 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 00 00 00 00 00 00 00 00` |
+| V6B | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F2 21 00 00 00 00 00 00 00 00` |
+| V6C | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 20 00 00 00 00 00 00 00 00` |
+| V6D | `4E 49 50 48 03 0F 07 00 2A 00 00 00 02 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 00 00 00 00 00 00 00 00` |
+| V6E | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 01 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 00 00 00 00 00 00 00 00` |
+| V6F | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 67 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 00 00 00 00 00 00 00 00` |
+| V6G | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 23 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 70 D8 00 00 00 00 00 00 00 00` |
+| V8 | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 5A 03 00 00 00 00 00 00` |
 | V9 | `4E 49 50 48 03 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 95 15 00 00 00 00 00 00 00 00` |
 | V10 | `FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF 00` |
-| V11 | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 5A 02 00 00 00 00 00 00` |
-| V12 | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 09 00 00 00 00 00` |
-| V13 | `4E 49 50 48 03 0F 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 0C FD 00 00 02 00 00 00 00 00` |
-| V14 | `4E 49 50 48 03 0D 09 00 2A 00 00 00 03 FF 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 CF C9 00 00 00 00 00 00 00 00` |
-| V15 | `4E 49 50 48 03 07 09 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 EA 29 00 00 00 00 00 00 00 00` |
-| V16 | `4E 49 50 48 03 0F 0C 00 2A 00 00 00 03 05 0A 0C 00 00 00 00 31 32 20 43 4F 4D 50 54 45 53 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 77 08 00 00 00 00 00 00 00 00` |
+| V11 | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 5A 02 00 00 00 00 00 00` |
+| V12 | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 00 00 09 00 00 00 00 00` |
+| V13 | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 00 00 02 00 00 00 00 00` |
+| V14 | `4E 49 50 48 03 0D 07 00 2A 00 00 00 03 FF 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 30 15 00 00 00 00 00 00 00 00` |
+| V15 | `4E 49 50 48 03 07 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 15 F5 00 00 00 00 00 00 00 00` |
+| V16 | `4E 49 50 48 03 0F 0A 00 2A 00 00 00 03 05 0A 0C 00 00 00 00 31 32 20 43 4F 4D 50 54 45 53 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7A AF 00 00 00 00 00 00 00 00` |
 
 | # | what it is | `is_absent` | `parse` | decoded |
 |---|---|---|---|---|
-| V1 | nominal: SD + mounted + ready + **time valid**, code pending for `GITHUB`, 42 confirmations, instance 3 | `false` | **`true`** | version 3, state `0x0F`, pending_op 9, count 42, instance 3, active `0x05`, label `GITHUB`, op_count 1 |
+| V1 | nominal: SD + mounted + ready + **time valid**, code pending for `GITHUB`, 42 confirmations, instance 3 | `false` | **`true`** | version 3, state `0x0F`, **pending_op 7 (`SEC_OP_OATH_CODE`)**, count 42, instance 3, active `0x05`, label `GITHUB`, op_count 1 |
 | V2 | chest absent, line reads `0x00` (64 bytes) | **`true`** | `false` | — |
 | V3 | chest absent, line reads `0xFF` (64 bytes) | **`true`** | `false` | — |
 | V4 | bad magic word, `NIPH` → `NIPX`; everything else is V1 | `false` | `false` | — |
@@ -1044,7 +1054,7 @@ USB mounted, ready, **time valid**, 42 confirmations, **instance 3**, active mod
 | V13 | V1 plus a valid mode request (`0x02`, pgp) at `0x3A` | `false` | **`true`** | block valid; mode request **applied** |
 | V14 | switch in flight: active mode `0xFF`, `USB_MOUNTED` cleared | `false` | **`true`** | state `0x0D`, active **indeterminate** |
 | V15 | mounted and ready but **no time set** (bit 3 clear) | `false` | **`true`** | state `0x07` — your **“NO TIME”** |
-| V16 | a **RESET** pending: `pending_op` `0x0C`, `op_count` **12**, label `12 COMPTES` | `false` | **`true`** | twelve accounts on one press |
+| V16 | a **RESET** pending: **`pending_op` `0x0A` (`SEC_OP_OATH_RESET`)**, `op_count` **12**, label `12 COMPTES` | `false` | **`true`** | twelve accounts on one press |
 
 ### DMA channel (section 13)
 
@@ -1059,7 +1069,7 @@ USB mounted, ready, **time valid**, 42 confirmations, **instance 3**, active mod
 Reading notes, since these are the cases that catch a wrong implementation:
 
 - **V1 vs V8, V11, V12, V13** — all four differ from V1 only inside the master's
-  range, and the CRC bytes are identical (`0C FD`) in all of them. That is the
+  range, and the CRC bytes are identical (`F3 21`) in all of them. That is the
   CRC span made visible: a parser that recomputes over 64 bytes instead of 54
   will accept V1 and reject the other four, and will therefore reject the block
   exactly whenever something is in flight.
