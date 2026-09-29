@@ -67,6 +67,11 @@ the discrepancy would show at first boot.
 
 ## S3↔chest link — SPI, the chest as slave
 
+> The protocol contract published to the `KeSp_firmware` team — register map,
+> line parameters, presence detection, shared test vectors — lives in
+> [`docs/LINK_CONTRACT.md`](LINK_CONTRACT.md). This section is the hardware
+> record; that one is what the master side implements against.
+
 Decided on 2026-08-06. The PCB was still editable; the pinout below is
 the one retained on the chest side.
 

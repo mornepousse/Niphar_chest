@@ -7,6 +7,7 @@
  */
 #include "test_framework.h"
 
+#include "cr_crc16.h"
 #include "link/link_proto.h"
 
 /* ------------------------------------------------------------------------ */
@@ -329,6 +330,163 @@ static void test_almost_uniform_is_present(void)
                 "un seul octet différent suffit à écarter l'absence");
 }
 
+
+/* ------------------------------------------------------------------------ */
+/* Vecteurs partagés — la table de docs/LINK_CONTRACT.md, section 10          */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Ces octets SONT le contrat publié à l'équipe KeSp. Ils ont été produits en
+ * exécutant link_proto.c, puis recopiés ici et dans le document : c'est cette
+ * recopie que ces tests surveillent.
+ *
+ * Ce qu'ils attrapent n'est pas une régression de link_proto — les tests
+ * au-dessus s'en chargent, et mieux, puisqu'ils portent sur des propriétés.
+ * Ils attrapent la DIVERGENCE entre le code et le document : le jour où la
+ * carte des registres bouge, le contrat publié devient faux en silence, et
+ * KeSp implémente contre une table périmée. Ici, le rouge tombe du bon côté.
+ *
+ * Si l'un de ces tests casse, ce n'est donc pas la table qu'on ajuste : c'est
+ * la section 10 de docs/LINK_CONTRACT.md qu'on régénère en exécutant le code,
+ * la version du protocole qu'on incrémente, et KeSp qu'on prévient.
+ */
+
+/* V1 — nominal : SD + USB + prêt, PSO:CDS en attente, 42 confirmations. */
+static const uint8_t k_vec_v1[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x01, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0xAF, 0xEA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+/* V4 — mot magique faux d'un octet, tout le reste identique à V1. */
+static const uint8_t k_vec_v4[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x58, 0x01, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0xAF, 0xEA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+/* V5 — version 2 annoncée, CRC RECALCULÉ et juste : refusé sur la version
+ * seule, pas sur une corruption. */
+static const uint8_t k_vec_v5[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x02, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x7F, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+/* V6 — un bit de la charge utile retourné (42 → 43), CRC laissé tel quel. */
+static const uint8_t k_vec_v6[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x01, 0x07, 0x01, 0x00, 0x2B, 0x00,
+    0x00, 0x00, 0xAF, 0xEA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+/* V6b — l'inverse : charge utile intacte, un bit retourné DANS le champ CRC. */
+static const uint8_t k_vec_v6b[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x01, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0xAE, 0xEA, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+/* V8 — V1 au seul octet du maître près : une confirmation posée et pas encore
+ * lue. Le CRC est le MÊME qu'en V1 (0xEAAF), et c'est tout l'argument. */
+static const uint8_t k_vec_v8[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x01, 0x07, 0x01, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0xAF, 0xEA, 0x00, 0x00, 0x5A, 0x00, 0x00, 0x00,
+};
+/* V9 — coffre présent et PAS prêt : aucun bit d'état, rien en attente. Son CRC
+ * non nul est ce qui le distingue d'un bloc absent. */
+static const uint8_t k_vec_v9[LINK_REG_SIZE] = {
+    0x4E, 0x49, 0x50, 0x48, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x61, 0x7A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+static void test_shared_vectors_accepted(void)
+{
+    link_status_t out;
+
+    memset(&out, 0, sizeof(out));
+    TEST_ASSERT(link_proto_parse_status(k_vec_v1, LINK_REG_SIZE, &out), "V1 accepté");
+    TEST_ASSERT_EQ(out.version, 1, "V1 version");
+    TEST_ASSERT_EQ(out.state, 0x07, "V1 état");
+    TEST_ASSERT_EQ(out.pending_op, 1, "V1 opération en attente");
+    TEST_ASSERT_EQ(out.confirm_count, 42, "V1 compteur");
+    TEST_ASSERT(!link_proto_is_absent(k_vec_v1, LINK_REG_SIZE), "V1 pas absent");
+
+    /* V8 ne diffère de V1 que par l'octet du maître — donc même verdict ET
+     * mêmes champs décodés. C'est l'étendue du CRC rendue visible. */
+    memset(&out, 0, sizeof(out));
+    TEST_ASSERT(link_proto_parse_status(k_vec_v8, LINK_REG_SIZE, &out), "V8 accepté");
+    TEST_ASSERT_EQ(out.state, 0x07, "V8 état identique à V1");
+    TEST_ASSERT_EQ(out.pending_op, 1, "V8 opération identique à V1");
+    TEST_ASSERT_EQ(out.confirm_count, 42, "V8 compteur identique à V1");
+    TEST_ASSERT_EQ(memcmp(k_vec_v1, k_vec_v8, LINK_REG_CRC + 2), 0,
+                   "V1 et V8 partagent octets couverts par le CRC, CRC compris");
+
+    memset(&out, 0, sizeof(out));
+    TEST_ASSERT(link_proto_parse_status(k_vec_v9, LINK_REG_SIZE, &out), "V9 accepté");
+    TEST_ASSERT_EQ(out.state, 0x00, "V9 aucun bit d'état");
+    TEST_ASSERT_EQ(out.pending_op, 0, "V9 rien en attente");
+    TEST_ASSERT_EQ(out.confirm_count, 0, "V9 compteur nul");
+    TEST_ASSERT(!link_proto_is_absent(k_vec_v9, LINK_REG_SIZE),
+                "V9 présent et non prêt, pas absent");
+}
+
+static void test_shared_vectors_rejected(void)
+{
+    link_status_t out;
+    uint8_t absent[LINK_REG_SIZE];
+
+    /* V2 et V3 — absents, et rejetés POUR CETTE RAISON-LÀ. */
+    memset(absent, 0x00, sizeof(absent));
+    TEST_ASSERT(link_proto_is_absent(absent, LINK_REG_SIZE), "V2 absent");
+    TEST_ASSERT(!link_proto_parse_status(absent, LINK_REG_SIZE, &out), "V2 non interprété");
+    memset(absent, 0xFF, sizeof(absent));
+    TEST_ASSERT(link_proto_is_absent(absent, LINK_REG_SIZE), "V3 absent");
+    TEST_ASSERT(!link_proto_parse_status(absent, LINK_REG_SIZE, &out), "V3 non interprété");
+
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v4, LINK_REG_SIZE, &out), "V4 magique faux rejeté");
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v5, LINK_REG_SIZE, &out), "V5 version inconnue rejetée");
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v6, LINK_REG_SIZE, &out), "V6 charge utile corrompue rejetée");
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v6b, LINK_REG_SIZE, &out), "V6b champ CRC corrompu rejeté");
+
+    /* V7 — les 19 premiers octets de V1, annoncés pour ce qu'ils sont. */
+    TEST_ASSERT(!link_proto_parse_status(k_vec_v1, LINK_REG_SIZE - 1, &out), "V7 tronqué rejeté");
+
+    /* V4, V5, V6, V6b ne sont pas des blocs absents : leur rejet vient bien du
+     * contrôle annoncé et pas d'une ligne flottante. */
+    TEST_ASSERT(!link_proto_is_absent(k_vec_v4, LINK_REG_SIZE), "V4 pas un bloc absent");
+    TEST_ASSERT(!link_proto_is_absent(k_vec_v5, LINK_REG_SIZE), "V5 pas un bloc absent");
+    TEST_ASSERT(!link_proto_is_absent(k_vec_v6, LINK_REG_SIZE), "V6 pas un bloc absent");
+    TEST_ASSERT(!link_proto_is_absent(k_vec_v6b, LINK_REG_SIZE), "V6b pas un bloc absent");
+}
+
+/* V1 et V9 doivent rester ce que pack_status PRODUIT, pas seulement ce qu'il
+ * accepte : un contrat qui ne décrirait que les blocs tolérés laisserait le
+ * coffre publier autre chose. */
+static void test_shared_vectors_are_what_the_chest_publishes(void)
+{
+    uint8_t regs[LINK_REG_SIZE];
+
+    const link_status_t nominal = {
+        .state = LINK_STATE_SD_PRESENT | LINK_STATE_USB_MOUNTED | LINK_STATE_READY,
+        .pending_op = 1,
+        .confirm_count = 42,
+    };
+    memset(regs, 0, sizeof(regs));
+    link_proto_pack_status(regs, &nominal);
+    TEST_ASSERT_EQ(memcmp(regs, k_vec_v1, LINK_REG_SIZE), 0,
+                   "le coffre publie exactement V1");
+
+    const link_status_t booting = { .state = 0, .pending_op = 0, .confirm_count = 0 };
+    memset(regs, 0, sizeof(regs));
+    link_proto_pack_status(regs, &booting);
+    TEST_ASSERT_EQ(memcmp(regs, k_vec_v9, LINK_REG_SIZE), 0,
+                   "le coffre publie exactement V9 avant d'être prêt");
+}
+
+/*
+ * La variante de CRC, par sa valeur de contrôle plutôt que par son nom : le
+ * document donne 0x6F91 à KeSp pour qu'ils comparent la leur. cr_crc16.h
+ * annonce « CRC-16/X-25 », qui vaudrait 0x906E — c'est le nom qui est faux, pas
+ * la fonction, et c'est précisément pourquoi le contrat publie le nombre.
+ */
+static void test_crc_variant_check_value(void)
+{
+    static const uint8_t digits[9] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+    TEST_ASSERT_EQ(cr_crc16(digits, sizeof(digits)), 0x6F91,
+                   "valeur de contrôle du CRC publiée dans LINK_CONTRACT.md");
+}
+
 /* ------------------------------------------------------------------------ */
 
 void test_link_proto(void)
@@ -350,4 +508,8 @@ void test_link_proto(void)
     TEST_RUN(test_present_not_absent);
     TEST_RUN(test_almost_uniform_is_present);
     TEST_RUN(test_reject_short_buffer);
+    TEST_RUN(test_shared_vectors_accepted);
+    TEST_RUN(test_shared_vectors_rejected);
+    TEST_RUN(test_shared_vectors_are_what_the_chest_publishes);
+    TEST_RUN(test_crc_variant_check_value);
 }
