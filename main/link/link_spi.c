@@ -18,6 +18,9 @@
 #include "link/link_proto.h"
 #include "sec_confirm.h"
 #include "sec_time.h"
+#include "sec_store.h"
+#include "cr_hmac.h"
+#include "oath_proto.h"
 #include "storage/sd_card.h"
 #include "usb/usb_mode.h"
 #include "usb/usb_mode_wire.h"
@@ -275,6 +278,30 @@ static void publish(uint8_t *regs)
     s_published_valid = true;
 }
 
+/* Slot de confirmation propre au lien, DISTINCT de celui du worker CCID
+ * (0xF0). sec_confirm est unique : deux consommateurs qui scrutent le même
+ * armement se voleraient l'autorisation. Le numéro de slot est ce qui permet à
+ * chacun de reconnaître le sien et d'ignorer celui de l'autre. */
+#define LINK_BROWSE_SLOT   0xE0u
+
+static DMA_ATTR uint8_t s_dma_rx[LINK_REQ_SIZE];
+static DMA_ATTR uint8_t s_dma_tx[LINK_DMA_MAX];
+static spi_slave_hd_data_t s_rx_desc;
+static spi_slave_hd_data_t s_tx_desc;
+
+static uint8_t  s_dma_kind;      /* publié en 0x10 */
+static uint8_t  s_dma_seq;       /* publié en 0x11 */
+static uint16_t s_dma_len;       /* publié en 0x12-0x13 */
+static uint8_t  s_last_req_seq;  /* dernière sonnette servie */
+static bool     s_req_seq_seen;  /* la sonnette a-t-elle déjà une référence ? */
+static bool     s_rx_armed;
+
+/* Un code demandé, en attente de l'appui. Le slot est mémorisé, mais c'est le
+ * LIBELLÉ publié à l'armement qui fait foi devant la propriétaire — l'index
+ * peut avoir glissé entre le LIST du clavier et sa demande. */
+static bool    s_code_wait;
+static uint8_t s_code_slot;
+
 /* Sérialise l'état réel du coffre. La composition des bits appartient à
  * link_proto ; ici on ne fait que constater. */
 static void pack_current(uint8_t *regs, uint16_t pending_op, uint8_t instance,
@@ -330,6 +357,9 @@ static void pack_current(uint8_t *regs, uint16_t pending_op, uint8_t instance,
         .instance      = instance,
         .usb_mode_active = mode_wire,
         .op_count      = op_count,
+        .dma_kind      = s_dma_kind,
+        .dma_seq       = s_dma_seq,
+        .dma_len       = s_dma_len,
     };
 
     /* Tampon de travail, jamais le miroir du tampon partagé : publish() n'en
@@ -343,6 +373,267 @@ static void pack_current(uint8_t *regs, uint16_t pending_op, uint8_t instance,
 
     memset(regs, 0, LINK_REG_SIZE);
     link_proto_pack_status(regs, &status);
+}
+
+/* ------------------------------------------------------------------------- */
+/* Canal DMA — navigation dans les comptes et codes TOTP                      */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * POURQUOI UN SECOND CANAL. Les registres partagés font 64 octets
+ * (SOC_SPI_MAXIMUM_BUFFER_SIZE) et la carte v3 les occupe TOUS. La navigation
+ * et les codes vivent donc sur les canaux DMA du pilote esclave-HD, de taille
+ * libre. Les registres gardent ce qui doit être lisible à tout instant et à
+ * coût constant ; le DMA porte ce qui se demande.
+ *
+ * L'ORDRE EST UNE SONNETTE, PAS UN DRAPEAU. Le maître écrit sa requête en
+ * WRDMA, la clôt par WR_END, PUIS incrémente 0x3C. Le coffre ne lit jamais un
+ * segment que le maître n'a pas annoncé, et le maître ne lit jamais un segment
+ * que le coffre n'a pas mis en file (il attend un changement de 0x11, pas un
+ * 0x10 non nul).
+ *
+ * UNE RÉCEPTION RESTE EN PERMANENCE EN FILE. Sans réception armée, un WRDMA du
+ * maître est perdu SANS ERREUR des deux côtés — ni lui ni nous ne saurions
+ * qu'une requête a disparu. C'est la seule obligation du contrat que rien dans
+ * le code ne rappellerait autrement.
+ */
+
+static void dma_arm_rx(void)
+{
+    if (s_rx_armed) {
+        return;
+    }
+    memset(&s_rx_desc, 0, sizeof(s_rx_desc));
+    s_rx_desc.data = s_dma_rx;
+    s_rx_desc.len  = sizeof(s_dma_rx);
+    if (spi_slave_hd_queue_trans(LINK_HOST, SPI_SLAVE_CHAN_RX, &s_rx_desc, 0) == ESP_OK) {
+        s_rx_armed = true;
+    } else {
+        /* Journalisé une fois par tick au pire : une réception qu'on n'arrive
+         * pas à armer signifie que les requêtes du maître tombent dans le vide,
+         * et c'est exactement le genre de panne qui se tait. */
+        ESP_LOGW(TAG, "réception DMA non armée : les requêtes du clavier seront perdues");
+    }
+}
+
+/* Publie un segment. Le numéro change EN DERNIER : c'est lui que le maître
+ * surveille, donc il ne doit jamais changer avant que le segment soit en file. */
+static void dma_publish(uint8_t kind, uint16_t len)
+{
+    memset(&s_tx_desc, 0, sizeof(s_tx_desc));
+    s_tx_desc.data = s_dma_tx;
+    s_tx_desc.len  = len;
+    if (spi_slave_hd_queue_trans(LINK_HOST, SPI_SLAVE_CHAN_TX, &s_tx_desc, 0) != ESP_OK) {
+        ESP_LOGW(TAG, "segment DMA non mis en file (%u octets)", (unsigned)len);
+        return;
+    }
+    s_dma_kind = kind;
+    s_dma_len  = len;
+    s_dma_seq++;
+}
+
+/* Sert un LIST : une page de noms, aucun code, aucun appui. Ce que ça rend est
+ * ce qu'un LIST YKOATH rend déjà à l'hôte — donc rien de nouveau n'est exposé,
+ * et la propriétaire peut faire défiler la liste librement. */
+static void serve_list(uint8_t first)
+{
+    uint8_t     idx[SEC_N_SLOTS];
+    const char *noms[SEC_N_SLOTS];
+    uint8_t     total = 0;
+    uint8_t     n = 0;
+
+    for (uint8_t i = 0; i < SEC_N_SLOTS; i++) {
+        if (!oath_slot_is_oath(i)) {
+            continue;
+        }
+        total++;
+        if (total - 1u < first) {
+            continue;   /* page précédente */
+        }
+        const char *nom = sec_store_label(i);
+        if (nom == NULL) {
+            continue;
+        }
+        idx[n]  = i;
+        noms[n] = nom;
+        n++;
+    }
+
+    /* `more` se calcule sur ce qu'on a RÉELLEMENT pu écrire : on tente la page
+     * entière, et on la réduit tant qu'elle ne tient pas. Annoncer « pas de
+     * suite » sur une page tronquée ferait perdre des comptes en silence. */
+    while (n > 0u) {
+        const bool more = (uint16_t)(first + n) < total;
+        const uint16_t len = link_proto_pack_list(s_dma_tx, sizeof(s_dma_tx),
+                                                  total, first, idx, noms, n, more);
+        if (len > 0u) {
+            dma_publish(LINK_DMA_KIND_LIST, len);
+            return;
+        }
+        n--;
+    }
+
+    /* Aucun compte, ou page hors bornes : une page VIDE, pas un silence. Le
+     * clavier doit pouvoir distinguer « rien à afficher » de « la requête s'est
+     * perdue ». */
+    const uint16_t len = link_proto_pack_list(s_dma_tx, sizeof(s_dma_tx),
+                                              total, first, idx, noms, 0, false);
+    if (len > 0u) {
+        dma_publish(LINK_DMA_KIND_LIST, len);
+    }
+}
+
+/*
+ * Calcule le code du slot armé et le met en file. Appelée UNIQUEMENT après une
+ * confirmation accordée — c'est l'étape qui n'arrive jamais sans appui.
+ */
+static void serve_code(uint32_t t, uint8_t slot)
+{
+    uint64_t unix_s = 0;
+    if (!sec_time_now(t, &unix_s)) {
+        /* Sans heure, pas de code — et surtout pas un code calculé sur une
+         * heure devinée, qui serait faux tout en paraissant juste. Le bit
+         * LINK_STATE_TIME_VALID le dit déjà au clavier, qui n'aurait pas dû
+         * demander. */
+        return;
+    }
+    if (!oath_slot_is_oath(slot)) {
+        return;
+    }
+
+    uint8_t secret[SEC_SECRET_MAX];
+    uint8_t secret_len = 0;
+    if (!sec_store_get_secret(slot, secret, &secret_len)) {
+        return;
+    }
+
+    /* Le défi TOTP : le numéro de fenêtre, en GROS-BOUTISTE sur huit octets
+     * (RFC 6238). */
+    const uint64_t compteur = sec_time_totp_counter(unix_s);
+    uint8_t defi[8];
+    for (unsigned i = 0; i < 8u; i++) {
+        defi[i] = (uint8_t)(compteur >> (8u * (7u - i)));
+    }
+
+    uint8_t hmac[20];
+    const bool ok = cr_hmac_sha1(secret, secret_len, defi, sizeof(defi), hmac);
+    /* Le secret ne survit pas à cette pile. */
+    memset(secret, 0, sizeof(secret));
+    if (!ok) {
+        memset(hmac, 0, sizeof(hmac));
+        return;
+    }
+
+    const uint8_t digits = sec_store_digits(slot);
+    char code[9];
+    const uint8_t n = link_proto_format_code(oath_dynamic_binary(hmac, sizeof(hmac)),
+                                             digits, code);
+    memset(hmac, 0, sizeof(hmac));
+    if (n == 0u) {
+        return;   /* un slot sans nombre de chiffres est un état incohérent */
+    }
+
+    const uint16_t len = link_proto_pack_code(s_dma_tx, sizeof(s_dma_tx), slot, digits,
+                                              code, sec_time_window_remaining(unix_s));
+    memset(code, 0, sizeof(code));
+    if (len > 0u) {
+        dma_publish(LINK_DMA_KIND_CODE, len);
+    }
+}
+
+/*
+ * Sert la requête que la sonnette annonce, s'il y en a une.
+ *
+ * Un CODE n'est PAS servi ici : il arme une confirmation et rend la main. Le
+ * segment ne part qu'après l'appui, dans le tour où sec_confirm l'accorde.
+ */
+static void service_request(uint32_t t, const link_master_t *m)
+{
+    /* Première lecture : on prend la sonnette comme référence sans rien servir.
+     * Sinon un redémarrage du coffre ferait servir une requête que le maître
+     * croit vieille. */
+    if (!s_req_seq_seen) {
+        s_last_req_seq = m->req_seq;
+        s_req_seq_seen = true;
+        return;
+    }
+    if (m->req_seq == s_last_req_seq) {
+        return;
+    }
+
+    /* Le segment est-il réellement arrivé ? Sans attendre : si la réception
+     * n'est pas terminée, on laisse la sonnette telle quelle et on repassera. */
+    spi_slave_hd_data_t *fini = NULL;
+    if (spi_slave_hd_get_trans_res(LINK_HOST, SPI_SLAVE_CHAN_RX, &fini, 0) != ESP_OK) {
+        return;
+    }
+    s_rx_armed = false;
+    s_last_req_seq = m->req_seq;
+
+    link_request_t req;
+    const bool valide = link_proto_parse_request(s_dma_rx, sizeof(s_dma_rx), &req);
+    dma_arm_rx();   /* réarmer AVANT de servir : la prochaine requête peut déjà venir */
+
+    if (!valide) {
+        /* Requête corrompue ou commande inconnue : rien n'est servi, et rien
+         * n'est armé. Le maître voit le numéro de segment ne pas bouger et
+         * réessaie — même signal que pour une confirmation refusée. */
+        ESP_LOGW(TAG, "requête DMA refusée (CRC ou commande)");
+        return;
+    }
+
+    switch (req.cmd) {
+    case LINK_REQ_CMD_LIST:
+        serve_list(req.arg);
+        break;
+
+    case LINK_REQ_CMD_CODE:
+        /* Une seule opération armée à la fois. Si le worker CCID en a une en
+         * cours, on ne la vole pas : le clavier verra son numéro de segment
+         * immobile et réessaiera. */
+        if (sec_confirm_peek(t) == SEC_CONFIRM_PENDING) {
+            return;
+        }
+        if (!oath_slot_is_oath(req.arg)) {
+            return;
+        }
+        {
+            /* Le NOM du compte, publié à l'armement : c'est lui que la
+             * propriétaire lit avant d'appuyer, jamais l'index, et c'est ce qui
+             * rend un glissement d'index inoffensif. */
+            const char *nom = sec_store_label(req.arg);
+            sec_confirm_arm_named(LINK_BROWSE_SLOT, SEC_OP_OATH_CODE,
+                                  nom != NULL ? nom : "", t);
+            s_code_wait = true;
+            s_code_slot = req.arg;
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+/* Le code attendu a-t-il reçu son appui ? Appelée après drain_user_confirm(),
+ * donc dans le même tour que l'autorisation. */
+static void service_pending_code(uint32_t t)
+{
+    if (!s_code_wait) {
+        return;
+    }
+    uint8_t slot = 0;
+    const sec_confirm_state_t st = sec_confirm_poll(t, &slot);
+    if (st == SEC_CONFIRM_PENDING) {
+        return;   /* toujours en attente de l'appui */
+    }
+    /* Accordé pour NOTRE slot, et pour lui seul : une autorisation destinée au
+     * worker CCID ne doit pas faire sortir un code sur le lien. */
+    const bool pour_nous = (st == SEC_CONFIRM_AUTHORIZED && slot == LINK_BROWSE_SLOT);
+    s_code_wait = false;
+    if (pour_nous) {
+        serve_code(t, s_code_slot);
+    }
+    s_code_slot = 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -560,7 +851,9 @@ static void link_task(void *arg)
         if (link_proto_parse_master(regs, LINK_REG_SIZE, &master)) {
             drain_user_confirm(t, &master, instance);
             service_mode_request(&master);
+            service_request(t, &master);
         }
+        service_pending_code(t);
 
         pack_current(regs, pending ? (uint16_t)op : 0, instance, label, op_count);
         publish(regs);
@@ -676,6 +969,15 @@ esp_err_t link_spi_init(void)
     uint8_t regs[LINK_REG_SIZE];
     pack_current(regs, 0, 0, NULL, 0);
     publish(regs);
+
+    /*
+     * ARMER LA RÉCEPTION AVANT DE DÉMARRER LA TÂCHE, et pas à la première
+     * requête : sans réception en file, un WRDMA du maître est perdu SANS
+     * ERREUR des deux côtés. La toute première requête du clavier — celle qui
+     * arrive juste après le branchement, quand il découvre le coffre —
+     * disparaîtrait, et rien nulle part ne dirait pourquoi.
+     */
+    dma_arm_rx();
 
     if (xTaskCreate(link_task, "link", LINK_TASK_STACK, NULL, LINK_TASK_PRIO, NULL) != pdPASS) {
         ESP_LOGE(TAG, "création de la tâche du lien impossible — pas de lien");

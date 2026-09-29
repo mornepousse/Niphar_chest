@@ -529,3 +529,27 @@ uint16_t link_proto_pack_list(uint8_t *buf, uint16_t cap,
 
 uint16_t link_proto_pack_code(uint8_t *buf, uint16_t cap, uint8_t idx,
                               uint8_t digits, const char *code, uint8_t seconds);
+
+/*
+ * Met un code dynamique en chiffres decimaux, complete A GAUCHE par des zeros,
+ * termine par un zero. `out` doit accepter neuf octets.
+ *
+ * Rend le nombre de chiffres ecrits, ou ZERO si `digits` n'est ni 6 ni 8, ou si
+ * `out` est NULL. Jamais une longueur devinee : l'hote comme le clavier s'en
+ * servent tel quel.
+ *
+ * LE MODULO SE FAIT ICI, ET PAS SUR L'AUTRE CHEMIN — asymetrie voulue, et le
+ * genre de detail qui produit des codes faux sans rien casser :
+ *
+ *   - chemin YKOATH (CALCULATE vers l'hote) : le coffre rend le code DYNAMIQUE
+ *     sur 31 bits et NE FAIT PAS le modulo, parce que ykman s'en charge
+ *     (_format_code, yubikit/oath.py). Le faire la-bas rendrait des codes faux.
+ *   - chemin du LIEN (vers l'ecran du clavier) : personne d'autre ne peut le
+ *     faire. Si le clavier devait calculer le modulo, la regle vivrait dans
+ *     deux depots au lieu d'un, et rien ne les tiendrait d'accord.
+ *
+ * COMPLETE A GAUCHE, et ce n'est pas cosmetique : un code TOTP est une chaine
+ * de longueur FIXE. « 0418 » n'est pas « 418 », et un service qui attend six
+ * chiffres refuse les cinq. La panne se voit une fois sur dix mille.
+ */
+uint8_t link_proto_format_code(uint32_t dbc, uint8_t digits, char *out);

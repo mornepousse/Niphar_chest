@@ -1633,6 +1633,69 @@ static void test_v3_reponse_code_huit_chiffres(void)
     TEST_ASSERT_EQ(memcmp(&buf[2], "12345678", 8), 0, "aucun chiffre perdu");
 }
 
+/*
+ * LE MODULO SE FAIT ICI, ET PAS SUR L'AUTRE CHEMIN. Asymetrie voulue, et c'est
+ * le genre de detail qui produit des codes faux sans rien casser :
+ *
+ *   - chemin YKOATH (CALCULATE vers l'hote) : le coffre rend le code DYNAMIQUE
+ *     sur 31 bits et NE FAIT PAS le modulo. ykman s'en charge (_format_code,
+ *     oath.py). Le faire ici rendrait des codes faux — voir le commentaire de
+ *     oath_dynamic_binary().
+ *   - chemin du LIEN (vers l'ecran du clavier) : personne d'autre ne peut le
+ *     faire. Le clavier affiche ce qu'on lui donne ; s'il devait calculer un
+ *     modulo, la regle vivrait dans deux depots au lieu d'un.
+ */
+static void test_v3_format_code(void)
+{
+    char out[9];
+
+    /* Vecteur RFC 4226, compteur 0 : code dynamique 1284755224 -> 755224. */
+    TEST_ASSERT_EQ(link_proto_format_code(1284755224u, 6, out), 6, "six chiffres");
+    TEST_ASSERT_EQ(memcmp(out, "755224", 7), 0, "vecteur RFC 4226 compteur 0");
+
+    /* Compteur 1 : 1094287082 -> 287082. */
+    TEST_ASSERT_EQ(link_proto_format_code(1094287082u, 6, out), 6, "six chiffres");
+    TEST_ASSERT_EQ(memcmp(out, "287082", 7), 0, "vecteur RFC 4226 compteur 1");
+
+    /* Huit chiffres sur le MEME code dynamique : ce ne sont pas les six memes
+     * avec deux devant, c'est un modulo different. */
+    TEST_ASSERT_EQ(link_proto_format_code(1284755224u, 8, out), 8, "huit chiffres");
+    TEST_ASSERT_EQ(memcmp(out, "84755224", 9), 0, "modulo 10^8");
+
+    /* COMPLETE A GAUCHE PAR DES ZEROS. Un code TOTP est une chaine de longueur
+     * fixe : « 0418 » n'est pas « 418 », et un service qui attend six chiffres
+     * refuse les cinq. C'est la panne qui se voit une fois sur dix mille. */
+    TEST_ASSERT_EQ(link_proto_format_code(1000000u, 6, out), 6, "six chiffres");
+    TEST_ASSERT_EQ(memcmp(out, "000000", 7), 0, "modulo nul : six zeros, pas « 0 »");
+    TEST_ASSERT_EQ(link_proto_format_code(1000042u, 6, out), 6, "six chiffres");
+    TEST_ASSERT_EQ(memcmp(out, "000042", 7), 0, "quatre zeros a gauche");
+
+    /* Le bit de poids fort est deja masque en amont (oath_dynamic_binary), mais
+     * un appelant distrait pourrait passer autre chose : le formateur ne doit
+     * pas produire un septieme chiffre pour autant. */
+    TEST_ASSERT_EQ(link_proto_format_code(0xFFFFFFFFu, 6, out), 6, "toujours six");
+
+    /* Ni six ni huit : refus, jamais une longueur devinee. */
+    TEST_ASSERT_EQ(link_proto_format_code(1284755224u, 7, out), 0, "sept refuse");
+    TEST_ASSERT_EQ(link_proto_format_code(1284755224u, 0, out), 0, "zero refuse");
+    TEST_ASSERT_EQ(link_proto_format_code(1284755224u, 6, NULL), 0, "NULL refuse");
+}
+
+/* Le formateur et l'emballeur s'accordent : ce qui sort de l'un entre dans
+ * l'autre sans retouche. */
+static void test_v3_format_puis_emballe(void)
+{
+    char code[9];
+    uint8_t buf[LINK_CODE_SIZE];
+
+    TEST_ASSERT_EQ(link_proto_format_code(1094287082u, 6, code), 6, "formate");
+    TEST_ASSERT_EQ(link_proto_pack_code(buf, sizeof(buf), 2, 6, code, 7),
+                   LINK_CODE_SIZE, "emballe");
+    TEST_ASSERT_EQ(memcmp(&buf[2], "00287082", 8), 0,
+                   "six chiffres completes a huit caracteres dans la trame");
+    TEST_ASSERT_EQ(buf[1], 6, "et le nombre de chiffres dit six");
+}
+
 /* ------------------------------------------------------------------------ */
 
 void test_link_proto(void)
@@ -1695,4 +1758,6 @@ void test_link_proto(void)
     TEST_RUN(test_v3_liste_bornee);
     TEST_RUN(test_v3_reponse_code);
     TEST_RUN(test_v3_reponse_code_huit_chiffres);
+    TEST_RUN(test_v3_format_code);
+    TEST_RUN(test_v3_format_puis_emballe);
 }

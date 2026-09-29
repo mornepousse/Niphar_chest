@@ -335,3 +335,38 @@ uint16_t link_proto_pack_code(uint8_t *buf, uint16_t cap, uint8_t idx,
     put_u16(&buf[LINK_CODE_SIZE - 2], cr_crc16(buf, LINK_CODE_SIZE - 2));
     return LINK_CODE_SIZE;
 }
+
+uint8_t link_proto_format_code(uint32_t dbc, uint8_t digits, char *out)
+{
+    if (out == NULL || (digits != 6u && digits != 8u)) {
+        return 0;
+    }
+
+    /*
+     * LE MODULO EST REDONDANT, ET C'EST DIT PLUTOT QUE TU : l'ecriture de
+     * droite a gauche ci-dessous ne pose que `digits` chiffres, donc elle
+     * tronque deja au meme resultat. Le retirer ne change rien, et AUCUN test
+     * ne peut les distinguer — verifie par mutation, qui est passee verte.
+     *
+     * Il reste parce qu'il nomme l'intention (« un code TOTP est un modulo
+     * 10^n », RFC 4226) la ou la boucle ne montre qu'un effet de bord. Le
+     * lecteur qui voudra l'enlever saura ainsi que ce n'est pas un oubli, et
+     * qu'il ne casse rien — ce qui vaut mieux que de le decouvrir en lisant
+     * une boucle.
+     */
+    uint32_t mod = 1u;
+    for (uint8_t i = 0; i < digits; i++) {
+        mod *= 10u;
+    }
+    uint32_t v = dbc % mod;
+
+    /* Ecrit de droite a gauche : c'est ce qui donne le remplissage par des
+     * zeros sans cas particulier, et sans tirer <stdio.h> dans le firmware pour
+     * six chiffres. */
+    out[digits] = '\0';
+    for (uint8_t i = digits; i > 0u; i--) {
+        out[i - 1u] = (char)('0' + (v % 10u));
+        v /= 10u;
+    }
+    return digits;
+}
