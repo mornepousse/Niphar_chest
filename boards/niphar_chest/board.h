@@ -41,17 +41,23 @@
  * pull-up injecterait du courant dans un rail éteint à travers les diodes de
  * protection du P4.
  *
- * Côté clavier ce signal arrive sur GPIO46, qui est bien un pin de strapping de
- * l'ESP32-S3 — mais le seul rôle de celui-ci est de contrôler l'impression des
- * messages ROM sur UART0, et avec l'eFuse EFUSE_UART_PRINT_CONTROL à sa valeur
- * par défaut son niveau au reset est explicitement « Ignored » (ESP32-S3 TRM
- * v1.8, table 8.3-1, p. 536). Rien à voir avec GPIO45, qui lui choisit la
- * tension du rail flash.
+ * Côté clavier, ce signal arrive sur IO11 (net « IRQ_P4 », projet KiCad de
+ * Niphargus).
  *
- * link_spi tiendra quand même l'invariant « ne jamais asserter avant que le S3
- * ait parlé au moins une fois » : ça ne coûte rien, ça garde la ligne calme
- * pendant le boot du clavier, et si cet eFuse était un jour changé, GPIO46
- * reprendrait un rôle au reset.
+ * ~~Analyse du strapping, rédigée quand on croyait ce signal câblé sur
+ * GPIO46.~~ **PÉRIMÉE, 2026-09-29.** Elle démontrait l'innocuité de GPIO46 —
+ * pin de strapping du S3 dont le seul rôle est l'impression des messages ROM
+ * sur UART0, « Ignored » au reset avec l'eFuse par défaut (ESP32-S3 TRM v1.8,
+ * table 8.3-1, p. 536). Le routage réel n'utilise pas GPIO46 : les broches de
+ * strapping du S3 sont 0, 3, 45 et 46, et **IO11 n'en fait pas partie**. Le
+ * raisonnement était juste et ne s'applique plus ; il est conservé barré parce
+ * que la spec du lien (§3) le reproduit encore et qu'un lecteur doit pouvoir
+ * relier les deux.
+ *
+ * link_spi tient quand même l'invariant « ne jamais asserter avant que le S3
+ * ait parlé au moins une fois » : ça ne coûte rien et ça garde la ligne calme
+ * pendant le boot du clavier — raison qui, elle, ne dépendait d'aucun
+ * strapping.
  */
 #define BOARD_LINK_IRQ      GPIO_NUM_11
 #define BOARD_LINK_IRQ_ACTIVE_HIGH 1
