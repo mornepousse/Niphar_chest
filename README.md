@@ -60,9 +60,11 @@ Three boards, a single firmware (see [`docs/HARDWARE.md`](docs/HARDWARE.md)):
       with the same function the master uses; it exists because the block was
       otherwise **unobservable**, and that is where a defect once hid.
 
-- [x] **Wall-clock time** (`niphar-oath set-time`) — the chest has no RTC, so
+- [x] **Wall-clock time** (`./tools/oath set-time`, **once per plug-in**) — the chest has no RTC, so
       the host sets the time once per plug-in over the CCID channel the client
-      already speaks (`INS 0x10`, outside the YKOATH set). The chest carries it
+      already speaks. `tools/oath` is the wrapper to use: it borrows a throwaway
+      Python with `pyusb` through Nix when the system one lacks it, so the
+      command needs no incantation and nothing is installed (`INS 0x10`, outside the YKOATH set). The chest carries it
       forward on its monotonic clock, and **it erases itself on unplug** —
       the chest only exists while wired, so there is no stale time to
       invalidate. The *time-valid* bit never rises on a guessed time: without

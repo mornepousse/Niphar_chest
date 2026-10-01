@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# Enrobage de niphar-oath : la commande utilisable SANS incantation.
+#
+# POURQUOI IL EXISTE. `niphar-oath` a besoin de pyusb — il parle CCID
+# directement par libusb, parce que pcscd saisirait l'interface. Et pyusb n'est
+# pas dans le python de cette machine. Chaque appel demandait donc une ligne de
+# nix illisible, ce qui faisait que la proprietaire devait DEMANDER qu'on pose
+# l'heure a sa place. Un outil qu'on ne peut pas lancer soi-meme n'est pas un
+# outil.
+#
+# L'heure doit etre posee UNE FOIS PAR BRANCHEMENT : le coffre n'existe que
+# branche et redemarre au debranchement, donc son heure s'efface toute seule.
+# Sans elle, l'ecran du clavier affiche « NO TIME » plutot qu'un code faux.
+#
+#   ./tools/oath set-time       <- a faire apres chaque branchement
+#   ./tools/oath list
+#   ./tools/oath code <nom>
+#
+# Le coffre doit etre en mode OATH : c'est le CCID qui porte ces commandes, et
+# c'est le clavier qui choisit le mode (octet 0x3A du lien).
+set -uo pipefail
+ICI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if python3 -c 'import usb.core' 2>/dev/null; then
+    exec python3 "$ICI/niphar-oath" "$@"
+fi
+
+if ! command -v nix >/dev/null 2>&1; then
+    echo "pyusb absent et nix introuvable." >&2
+    echo "Installer python3-pyusb, ou lancer :" >&2
+    echo "  python3 $ICI/niphar-oath $*" >&2
+    exit 1
+fi
+
+# Repli : un python jetable avec pyusb. Rien n'est installe durablement.
+exec nix shell --impure \
+     --expr 'with import <nixpkgs> {}; python3.withPackages (p: [ p.pyusb ])' \
+     --command python3 "$ICI/niphar-oath" "$@"
