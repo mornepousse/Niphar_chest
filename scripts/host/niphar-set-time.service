@@ -1,0 +1,29 @@
+# Unite systemd UTILISATEUR : aucun root, aucune modification de la
+# configuration NixOS. Elle pose l'heure du coffre a chaque apparition USB.
+#
+# Installation (une fois par machine) :
+#   mkdir -p ~/.config/systemd/user
+#   ln -sf "$PWD/scripts/host/niphar-set-time.service" ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now niphar-set-time
+#
+# Suivre ce qu'elle fait :
+#   journalctl --user -u niphar-set-time -f
+#
+# La desinstaller :
+#   systemctl --user disable --now niphar-set-time
+[Unit]
+Description=Pose l'heure du coffre Niphar a chaque apparition USB
+Documentation=https://github.com/mornepousse/Niphar_chest
+
+[Service]
+Type=simple
+# %h = le repertoire de l'utilisateur. Adapter si le depot est ailleurs.
+ExecStart=%h/Documents/GitHub/Niphar_chest/tools/oath-watch
+Restart=always
+RestartSec=5
+# Rien de privilegie : le guetteur ne lit que /sys et parle libusb.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

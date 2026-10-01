@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#
+# Pose l'heure du coffre a chaque fois qu'il apparait, sans rien demander.
+#
+# POURQUOI UN GUETTEUR ET PAS UNE REGLE UDEV. Sur NixOS, /etc/udev/rules.d est
+# genere par le systeme : y deposer un fichier ne survit pas a un rebuild, et la
+# voie propre passe par services.udev.extraRules — donc par la configuration
+# systeme, qui n'appartient pas a ce depot. Ce guetteur tourne en revanche en
+# utilisateur, sans root, et sur n'importe quelle machine.
+#
+# CE QU'IL NE PEUT PAS DEVINER : le coffre expose le MEME VID/PID dans tous ses
+# modes (303a:4021), pas seulement en OATH. Il tente donc la pose a chaque
+# apparition et tolere l'echec — sans CCID, il n'y a rien a qui parler, et ce
+# n'est pas une anomalie.
+#
+# L'heure se perd au debranchement et seulement la : le coffre redemarre, donc
+# son horloge s'efface toute seule. Une apparition USB est exactement le moment
+# ou il faut la reposer.
+#
+#   ./tools/oath-watch              # au premier plan, pour voir ce qu'il fait
+#   systemctl --user enable --now niphar-set-time   # apres l'installation
+set -uo pipefail
+ICI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+VID=303a
+PID=4021
+PERIODE="${NIPHAR_WATCH_PERIOD:-2}"
+ESSAIS="${NIPHAR_WATCH_TRIES:-5}"
+
+present() {
+    local d
+    for d in /sys/bus/usb/devices/*/idVendor; do
+        [ -r "$d" ] || continue
+        [ "$(cat "$d" 2>/dev/null)" = "$VID" ] || continue
+        [ "$(cat "${d%idVendor}idProduct" 2>/dev/null)" = "$PID" ] && return 0
+    done
+    return 1
+}
+
+dire() { printf '%s niphar-set-time: %s\n' "$(date -u '+%H:%M:%S')" "$*" >&2; }
+
+etait=1
+dire "guetteur demarre (attend $VID:$PID)"
+while :; do
+    if present; then
+        if [ "$etait" != 0 ]; then
+            etait=0
+            dire "coffre apparu — pose de l'heure"
+            n=0
+            while [ "$n" -lt "$ESSAIS" ]; do
+                n=$((n + 1))
+                if out="$("$ICI/oath" set-time 2>&1)"; then
+                    dire "$(printf '%s' "$out" | grep -i 'heure posée' || echo 'heure posée')"
+                    break
+                fi
+                # Mode sans CCID, ou pile USB encore en train de s'installer :
+                # on retente, puis on renonce jusqu'a la prochaine apparition.
+                sleep 1
+            done
+            [ "$n" -ge "$ESSAIS" ] && dire "pas de CCID joignable — mode sans carte, rien a faire"
+        fi
+    else
+        if [ "$etait" != 1 ]; then
+            etait=1
+            dire "coffre parti — son heure s'efface avec lui"
+        fi
+    fi
+    sleep "$PERIODE"
+done

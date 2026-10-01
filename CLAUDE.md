@@ -129,6 +129,35 @@ Source of truth: the git tag `vX.Y.Z`, read at build time by
 the `main` component only: passing it as a global `add_compile_definitions()`
 would recompile the whole project on every commit.
 
+## Setting the chest's time
+
+A TOTP needs a wall clock and the chest has none, so the host sets it **once per
+plug-in** — the chest only exists while wired and reboots when unplugged, so its
+clock erases itself. Without it the keyboard shows `NO TIME` rather than a code
+that would be wrong while looking right.
+
+```bash
+./tools/oath set-time       # the chest must be in OATH mode (the keyboard picks it)
+```
+
+`tools/oath` is the wrapper to use rather than `tools/niphar-oath` directly: the
+client speaks CCID over libusb (pcscd would grab the interface) and therefore
+needs `pyusb`, which this machine's Python lacks. The wrapper borrows a throwaway
+Python through Nix when needed. **A tool you cannot run yourself is not a tool** —
+that gap meant the owner had to ask for the time to be set on her behalf.
+
+**To stop doing it by hand**, `tools/oath-watch` sets the time at every USB
+appearance, and `scripts/host/niphar-set-time.service` runs it as a *user*
+systemd unit — no root, and nothing added to the NixOS configuration (where
+`/etc/udev/rules.d` is generated and a dropped file would not survive a rebuild).
+Install instructions are in the unit file. It is **optional**: without it the
+manual command still works, and the keyboard's `NO TIME` is the prompt.
+
+Known and harmless: the chest exposes the same VID/PID (`303a:4021`) in **every**
+mode, not just OATH, so the watcher attempts the write on each appearance and
+tolerates failure — with no CCID there is nothing to talk to, and that is not a
+fault.
+
 ## Release
 
 Source of truth: the git tag `vX.Y.Z`, read at build time by `git describe
