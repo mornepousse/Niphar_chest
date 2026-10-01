@@ -129,6 +129,43 @@ Source of truth: the git tag `vX.Y.Z`, read at build time by
 the `main` component only: passing it as a global `add_compile_definitions()`
 would recompile the whole project on every commit.
 
+## Release
+
+Source of truth: the git tag `vX.Y.Z`, read at build time by `git describe
+--tags`. No VERSION file, and **no manifest duplicates the version** — nothing
+to keep in sync.
+
+Build the artefacts (all three boards, as `scripts/full.sh` does):
+
+```bash
+idf.py -B build_$v -DBOARD=$v -DSDKCONFIG=build_$v/sdkconfig build
+```
+
+Attach, renamed per board: `build_*/niphar_chest.bin` →
+`niphar_chest-vX.Y.Z-<board>.bin`.
+
+### Smoke test
+
+`./scripts/check.sh` compiles and runs the host tests. **It has never seen the
+hardware work** — the DMA alignment was found at the bench, `op_count` by
+re-reading, and the wire by watching a counter. These five items are what the
+check cannot reach. Each one caught something real at least once.
+
+1. **The chest boots.** `link` installed, microSD detected, **no `E (`/`W (`** in
+   the boot log. (The DMA alignment fault showed up here, as one warning line.)
+2. **The keyboard selects a mode and the chest exposes it** — `lsusb` shows
+   `303a:4021`, and the `link` state byte gains the *mounted* bit.
+3. **Console `link`** — the block decodes with `link_proto_parse_status()`, the
+   master's access counter **grows between two readings in one boot** (opening
+   the port resets the chip, so separate invocations cannot show growth).
+4. **A TOTP code matches `oathtool`** at the same instant, with the neighbouring
+   windows differing. This is the only item that reaches `cr_hmac_sha1`, which
+   goes through mbedtls and is therefore unreachable from the host tests.
+5. **A cancel clears the prompt** without waiting out the fifteen seconds.
+
+Items 4 and 5 need the owner: a physical press, and a keyboard that implements
+the cancel.
+
 ## Anti-regression workflow (MANDATORY)
 
 Single source of truth: `scripts/check.sh`.
