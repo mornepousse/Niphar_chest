@@ -166,6 +166,18 @@ check cannot reach. Each one caught something real at least once.
 Items 4 and 5 need the owner: a physical press, and a keyboard that implements
 the cancel.
 
+**Only re-run what changed.** `./scripts/smoke.sh` derives which items are
+mandatory from `git diff <last tag>..HEAD -- main/ boards/`: each item declares
+the files it covers, and an item whose files have not moved is **already proven**
+by the previous run — the proof is about the code, not about the date.
+
+That script exists because this checklist was first written as a ceremony: five
+gestures to redo before every tag, needing the owner available. The real problem
+was not her time, it was asking again for a proof nothing had invalidated.
+
+An item whose files *did* move is mandatory, and no amount of past confidence
+replaces it — that is the half that matters.
+
 ## Anti-regression workflow (MANDATORY)
 
 Single source of truth: `scripts/check.sh`.
