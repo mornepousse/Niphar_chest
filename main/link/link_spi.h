@@ -102,6 +102,7 @@ typedef struct {
     bool    rx_armee;       /* une reception DMA est en file */
     bool    maitre_vu;      /* le maitre a touche le tampon au moins une fois */
     uint32_t touches;       /* combien de fois — grimpe si le fil est vivant */
+    uint32_t annulations;   /* annulations relayees (console seulement) */
     bool    sonnette_vue;   /* une reference de sonnette a ete prise */
     uint8_t sonnette;       /* derniere valeur de sonnette servie */
     uint8_t segment_type;   /* dernier segment publie : type... */

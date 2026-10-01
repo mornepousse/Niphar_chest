@@ -448,6 +448,26 @@ void sec_confirm_authorize(uint32_t pressed_at_ms)
     SEC_CONFIRM_UNLOCK();
 }
 
+void sec_confirm_cancel(uint32_t now_ms)
+{
+    SEC_CONFIRM_LOCK();
+    if (s_state == SEC_CONFIRM_PENDING) {
+        /*
+         * On ne vide RIEN ici, et c'est tout le propos : on recule l'horloge
+         * d'armement juste assez pour que la garde d'expiration de poll() soit
+         * deja franchie. Le nettoyage, le mot d'etat rendu et l'effacement de
+         * l'etiquette sortent alors du chemin d'expiration lui-meme — un seul
+         * corps a auditer, et rien a tenir en phase.
+         *
+         * Soustraction non signee sur 32 bits : le rebouclage du compteur de
+         * millisecondes se traverse correctement, et la difference vaut
+         * exactement SEC_CONFIRM_TIMEOUT_MS.
+         */
+        s_armed_ms = now_ms - SEC_CONFIRM_TIMEOUT_MS;
+    }
+    SEC_CONFIRM_UNLOCK();
+}
+
 sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot)
 {
     SEC_CONFIRM_LOCK();

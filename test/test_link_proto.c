@@ -595,6 +595,45 @@ static const uint8_t k_vec_c1[14] = {
     0x0C, 0x00, 0x8F, 0x9B,
 };
 
+/* V17 — V1 plus une ANNULATION bien formée : 0xC5 et l'écho de l'instance
+ * ARMÉE (3). Le bloc du coffre est INCHANGÉ, CRC compris — c'est la plage du
+ * maître qui demande le refus, et elle n'entre pas dans l'étendue. */
+static const uint8_t k_vec_v17[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x07, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xF3, 0x21, 0xC5, 0x03, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
+/* V18 — la même, écho sur l'instance PRÉCÉDENTE (2) : IGNORÉE. Une annulation
+ * en retard ne doit pas tuer une invite plus récente — c'est le pendant exact
+ * de V11 pour l'accord. */
+static const uint8_t k_vec_v18[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x07, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x47, 0x49, 0x54, 0x48, 0x55, 0x42, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xF3, 0x21, 0xC5, 0x02, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
+/* V19 — ce que le coffre publie APRÈS avoir servi V17 : opération à zéro,
+ * libellé vide, aucun compte visé. L'instance (3) et le numéro de segment (0)
+ * NE BOUGENT PAS : annuler n'arme rien et ne met rien en file. C'est ce qui
+ * rend la règle du maître lisible — « op à zéro sans segment = demande
+ * morte ». */
+static const uint8_t k_vec_v19[64] = {
+    0x4E, 0x49, 0x50, 0x48, 0x03, 0x0F, 0x00, 0x00, 0x2A, 0x00,
+    0x00, 0x00, 0x03, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x85, 0xF4, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
+
 static void test_shared_vectors_accepted(void)
 {
     link_status_t out;
@@ -1729,6 +1768,130 @@ static void test_v3_liste_garde_les_places(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* v3 — l'annulation : un refus explicite, qui ne peut jamais accorder       */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * POURQUOI ELLE EXISTE. Demandée par l'équipe KeSp le 2026-09-30, après un
+ * banc : une fois l'invite affichée, la propriétaire n'avait aucun moyen d'en
+ * sortir avant les quinze secondes de SEC_CONFIRM_TIMEOUT_MS. Et le clavier ne
+ * peut PAS masquer l'invite de son propre chef — l'opération resterait armée
+ * dans le coffre, et un appui plus tard confirmerait quelque chose qui n'est
+ * plus à l'écran. La seule sortie honnête est un refus décidé par le coffre.
+ *
+ * LE SENS UNIQUE EST LA PROPRIÉTÉ QUI COMPTE : cette écriture ne peut que
+ * REFUSER. Il n'existe aucune valeur de 0x38 qui accorde autre chose que
+ * LINK_USER_CONFIRM_MAGIC, donc une annulation ne peut pas, même par erreur de
+ * transmission, devenir un accord.
+ */
+
+static void test_v3_annulation_exige_la_valeur_et_l_instance(void)
+{
+    link_master_t m = { .confirm = LINK_USER_CANCEL_MAGIC, .echo = 7,
+                        .usb_mode = 0, .req_seq = 0 };
+    TEST_ASSERT(link_proto_cancel_requested(&m, 7), "valeur et instance : annulé");
+
+    m.echo = 6;
+    TEST_ASSERT(!link_proto_cancel_requested(&m, 7),
+                "écho périmé : ignoré — une annulation en retard ne doit pas tuer "
+                "une invite plus récente");
+
+    m.echo = 7;
+    m.confirm = LINK_USER_CONFIRM_MAGIC;
+    TEST_ASSERT(!link_proto_cancel_requested(&m, 7), "un accord n'est pas une annulation");
+
+    for (unsigned v = 0; v < 256u; v++) {
+        m.confirm = (uint8_t)v;
+        const bool annule = link_proto_cancel_requested(&m, 7);
+        TEST_ASSERT_EQ(annule, v == LINK_USER_CANCEL_MAGIC,
+                       "une seule valeur annule");
+    }
+    TEST_ASSERT(!link_proto_cancel_requested(NULL, 7), "NULL refusé");
+}
+
+/*
+ * LES DEUX VALEURS NE PEUVENT PAS SE CONFONDRE SOUS UNE ERREUR DE BIT, et c'est
+ * pour ça que 0xC5 a été choisi plutôt que 0xA5.
+ *
+ * 0xA5 est le COMPLÉMENT de 0x5A : une ligne de données inversée transformerait
+ * chaque accord en annulation — et chaque annulation en accord. 0xC5 en est à
+ * six bits, ce qui met la confusion hors de portée d'une poignée d'erreurs.
+ */
+static void test_v3_accord_et_annulation_sont_loin_l_un_de_l_autre(void)
+{
+    TEST_ASSERT_EQ(LINK_USER_CONFIRM_MAGIC, 0x5A, "l'accord, inchangé");
+    TEST_ASSERT_EQ(LINK_USER_CANCEL_MAGIC, 0xC5, "l'annulation, figée par le contrat");
+    TEST_ASSERT(LINK_USER_CANCEL_MAGIC != LINK_USER_CONFIRM_MAGIC, "distinctes");
+
+    unsigned bits = 0;
+    for (unsigned x = (unsigned)(LINK_USER_CONFIRM_MAGIC ^ LINK_USER_CANCEL_MAGIC);
+         x != 0u; x >>= 1) {
+        bits += (x & 1u);
+    }
+    TEST_ASSERT(bits >= 4u, "au moins quatre bits d'écart");
+    TEST_ASSERT_EQ(LINK_USER_CANCEL_MAGIC,
+                   (uint8_t)~LINK_USER_CONFIRM_MAGIC ^ 0x60u,
+                   "et surtout PAS le complément de l'accord");
+    TEST_ASSERT(LINK_USER_CANCEL_MAGIC != (uint8_t)~LINK_USER_CONFIRM_MAGIC,
+                "une ligne inversée ne change pas un accord en annulation");
+}
+
+/* Aucun bloc ne peut être à la fois un accord et une annulation : le coffre
+ * n'a donc jamais à choisir lequel l'emporte. */
+static void test_v3_jamais_les_deux_a_la_fois(void)
+{
+    for (unsigned v = 0; v < 256u; v++) {
+        link_master_t m = { .confirm = (uint8_t)v, .echo = 3 };
+        const bool accord = link_proto_confirm_accepted(&m, 3);
+        const bool annule = link_proto_cancel_requested(&m, 3);
+        TEST_ASSERT(!(accord && annule), "jamais accord ET annulation");
+    }
+}
+
+/*
+ * L'ANNULATION EN OCTETS. V17 et V18 ne diffèrent que par l'écho, comme V8 et
+ * V11 pour l'accord — et le verdict s'inverse de la même façon.
+ */
+static void test_shared_vectors_annulation(void)
+{
+    link_status_t st;
+    link_master_t m;
+
+    /* V17 — bien formée, écho sur l'instance armée : annulation demandée. */
+    TEST_ASSERT(link_proto_parse_status(k_vec_v17, LINK_REG_SIZE, &st), "V17 bloc valide");
+    TEST_ASSERT(link_proto_parse_master(k_vec_v17, LINK_REG_SIZE, &m), "V17 plage maître");
+    TEST_ASSERT_EQ(m.confirm, LINK_USER_CANCEL_MAGIC, "V17 octet d'annulation");
+    TEST_ASSERT_EQ(m.echo, 3, "V17 écho sur l'instance armée");
+    TEST_ASSERT(link_proto_cancel_requested(&m, st.instance), "V17 annulation demandée");
+    TEST_ASSERT(!link_proto_confirm_accepted(&m, st.instance),
+                "V17 n'accorde RIEN — c'est toute la propriété");
+
+    /* V18 — écho périmé : ignorée, et sans rien accorder non plus. */
+    TEST_ASSERT(link_proto_parse_master(k_vec_v18, LINK_REG_SIZE, &m), "V18 plage maître");
+    TEST_ASSERT_EQ(m.echo, 2, "V18 écho périmé");
+    TEST_ASSERT(!link_proto_cancel_requested(&m, st.instance),
+                "V18 annulation périmée ignorée");
+    TEST_ASSERT(!link_proto_confirm_accepted(&m, st.instance), "V18 n'accorde rien");
+
+    /* V17 porte le MÊME CRC que V1 : la plage du maître est hors de l'étendue,
+     * et une annulation n'invalide donc jamais le bloc du coffre. */
+    TEST_ASSERT_EQ(memcmp(k_vec_v1, k_vec_v17, LINK_REG_CRC + 2), 0,
+                   "V1 et V17 partagent tout ce que le CRC couvre, CRC compris");
+
+    /* V19 — l'après. L'instance survit, le segment ne bouge pas. */
+    link_status_t ap;
+    TEST_ASSERT(link_proto_parse_status(k_vec_v19, LINK_REG_SIZE, &ap), "V19 bloc valide");
+    TEST_ASSERT_EQ(ap.pending_op, 0, "V19 plus rien d'armé");
+    TEST_ASSERT_EQ(ap.label_len, 0, "V19 plus de libellé");
+    TEST_ASSERT_EQ(ap.op_count, 0, "V19 plus de compte visé");
+    TEST_ASSERT_EQ(ap.instance, st.instance,
+                   "V19 l'instance NE bouge PAS — annuler n'arme rien");
+    TEST_ASSERT_EQ(ap.dma_seq, st.dma_seq,
+                   "V19 le numéro de segment NE bouge PAS — annuler ne met rien en file");
+    TEST_ASSERT_EQ(ap.state, st.state, "V19 l'état est inchangé");
+}
+
+/* ------------------------------------------------------------------------ */
 
 void test_link_proto(void)
 {
@@ -1793,4 +1956,8 @@ void test_link_proto(void)
     TEST_RUN(test_v3_reponse_code_huit_chiffres);
     TEST_RUN(test_v3_format_code);
     TEST_RUN(test_v3_format_puis_emballe);
+    TEST_RUN(test_v3_annulation_exige_la_valeur_et_l_instance);
+    TEST_RUN(test_v3_accord_et_annulation_sont_loin_l_un_de_l_autre);
+    TEST_RUN(test_v3_jamais_les_deux_a_la_fois);
+    TEST_RUN(test_shared_vectors_annulation);
 }

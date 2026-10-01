@@ -254,6 +254,7 @@ static int cmd_link(int argc, char **argv)
                (unsigned long)d.touches);
         printf("sonnette      : %s, dernière servie %u\n",
                d.sonnette_vue ? "référence prise" : "pas encore lue", d.sonnette);
+        printf("annulations   : %lu relayée(s)\n", (unsigned long)d.annulations);
     }
     return 0;
 }

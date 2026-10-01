@@ -670,9 +670,102 @@ static void test_peek_armed_tolere_un_nombre_absent(void)
     TEST_ASSERT_EQ(op, SEC_OP_OATH_RESET, "operation lue sans libelle ni nombre");
 }
 
+/*
+ * UNE ANNULATION EST UNE EXPIRATION IMMEDIATE, et ce n'est pas un raccourci
+ * d'implementation : c'est ce qui garantit qu'elle fasse EXACTEMENT ce que fait
+ * une expiration.
+ *
+ * Le chemin d'expiration de poll() a deja recu trois corrections — l'etiquette
+ * qui restait, le nombre de comptes qui restait. Un chemin d'annulation
+ * parallele devrait etre tenu en phase avec lui a chaque fois, et une
+ * divergence y serait invisible : les deux sorties se ressemblent. En avancant
+ * l'horloge d'armement, l'annulation emprunte le MEME code, donc elle ne peut
+ * pas en differer.
+ *
+ * Consequence utile pour l'hote : poll() rend TIMEDOUT, donc le worker CCID
+ * rend 2, donc le mot d'etat est le meme que sur expiration (6985). L'hote n'a
+ * aucun cas de plus a traiter.
+ */
+static void test_une_annulation_vaut_une_expiration(void)
+{
+    sec_confirm_reset();
+    sec_confirm_arm_named(4, SEC_OP_OATH_CODE, "GITHUB", 1000u);
+
+    sec_op_t op = SEC_OP_UNKNOWN;
+    uint32_t seq = 0;
+    uint8_t  n = 0;
+    char     label[OATH_NAME_DISPLAY_MAX];
+
+    /* Armee : l'invite est bien la. */
+    TEST_ASSERT_EQ(sec_confirm_peek_armed(1000u, &op, label, &seq, &n),
+                   SEC_CONFIRM_PENDING, "armee avant l'annulation");
+    const uint32_t seq_avant = seq;
+
+    sec_confirm_cancel(1000u);
+
+    /* Le MEME tour de poll rend TIMEDOUT, sans attendre les quinze secondes. */
+    uint8_t slot = 0xFF;
+    TEST_ASSERT_EQ(sec_confirm_poll(1000u, &slot), SEC_CONFIRM_TIMEDOUT,
+                   "annulee : expiree tout de suite, pas dans quinze secondes");
+
+    /* Et tout ce que l'expiration efface est efface. */
+    sec_confirm_peek_armed(1000u, &op, label, &seq, &n);
+    TEST_ASSERT_EQ(op, SEC_OP_UNKNOWN, "plus d'operation");
+    TEST_ASSERT_EQ(label[0], '\0', "plus d'etiquette");
+    TEST_ASSERT_EQ(n, 0, "plus de compte vise");
+    TEST_ASSERT_EQ(seq, seq_avant,
+                   "l'instance NE bouge PAS : elle nomme le dernier armement, et "
+                   "une annulation n'arme rien");
+}
+
+/* Une annulation sans rien d'arme ne fait rien, et surtout ne cree pas un etat
+ * terminal que personne n'attend. */
+static void test_une_annulation_a_vide_ne_fait_rien(void)
+{
+    sec_confirm_reset();
+    uint8_t slot = 0xFF;
+    sec_confirm_cancel(5000u);
+    TEST_ASSERT_EQ(sec_confirm_poll(5000u, &slot), SEC_CONFIRM_IDLE,
+                   "rien d'arme : rien a annuler, et aucun faux terminal");
+}
+
+/* Une annulation n'autorise jamais rien — propriete a figer, parce que c'est la
+ * seule raison pour laquelle on accepte cette ecriture des DEUX moities. */
+static void test_une_annulation_n_autorise_jamais(void)
+{
+    sec_confirm_reset();
+    sec_confirm_arm_named(4, SEC_OP_OATH_CODE, "GITHUB", 1000u);
+    sec_confirm_cancel(1000u);
+
+    uint8_t slot = 0xFF;
+    const sec_confirm_state_t st = sec_confirm_poll(1000u, &slot);
+    TEST_ASSERT(st != SEC_CONFIRM_AUTHORIZED, "jamais autorise");
+    TEST_ASSERT_EQ(slot, 0xFF, "aucun slot rendu");
+}
+
+/* Un accord qui arrive APRES une annulation ne ressuscite pas l'operation :
+ * c'est le scenario que KeSp decrit — l'invite a quitte l'ecran, et un appui
+ * tardif ne doit pas confirmer ce qu'on n'y voit plus. */
+static void test_un_appui_apres_annulation_ne_ressuscite_rien(void)
+{
+    sec_confirm_reset();
+    sec_confirm_arm_named(4, SEC_OP_OATH_CODE, "GITHUB", 1000u);
+    sec_confirm_cancel(1000u);
+
+    uint8_t slot = 0xFF;
+    (void)sec_confirm_poll(1000u, &slot);     /* consomme l'expiration */
+    sec_confirm_authorize(1100u);             /* l'appui tardif */
+    TEST_ASSERT_EQ(sec_confirm_poll(1100u, &slot), SEC_CONFIRM_IDLE,
+                   "un appui hors contexte n'autorise rien");
+}
+
 void test_sec_confirm(void)
 {
     TEST_SUITE("sec_confirm state machine");
+    TEST_RUN(test_une_annulation_vaut_une_expiration);
+    TEST_RUN(test_une_annulation_a_vide_ne_fait_rien);
+    TEST_RUN(test_une_annulation_n_autorise_jamais);
+    TEST_RUN(test_un_appui_apres_annulation_ne_ressuscite_rien);
     TEST_RUN(test_le_nombre_de_comptes_voyage_avec_l_operation);
     TEST_RUN(test_peek_armed_tolere_un_nombre_absent);
     TEST_RUN(test_a_press_meant_for_a_cannot_authorize_b);

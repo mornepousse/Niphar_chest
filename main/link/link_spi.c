@@ -143,6 +143,11 @@ static volatile bool s_master_seen;
  * entre deux releves prouve que le fil est vivant a l'instant ou on regarde.
  * C'est la difference entre « ca a marche un jour » et « ca marche ». */
 static volatile uint32_t s_master_touches;
+/* Annulations relayees, pour la console SEULEMENT. Elle ne traverse pas le fil :
+ * il n'y a plus d'octet libre cote coffre, et le maitre n'en a pas besoin — il
+ * voit l'operation retomber a zero sans que le numero de segment bouge, qui est
+ * la regle qu'il applique deja (« op a zero sans segment = demande morte »). */
+static uint32_t s_cancel_count;
 
 /* Un segment TX est mis en file et pas encore parti, et depuis quand. Le
  * drapeau évite d'écraser s_dma_tx pendant que le DMA le lit ; l'horodatage
@@ -849,6 +854,19 @@ static void drain_user_confirm(uint32_t t, const link_master_t *m, uint8_t armed
      * valable ou non. */
     s_master_seen = true;
 
+    /*
+     * L'ANNULATION D'ABORD, parce qu'elle ne peut que refuser. Aucun bloc ne
+     * peut etre a la fois un accord et une annulation (les deux predicats
+     * exigent une valeur differente du meme octet), donc l'ordre ne change
+     * aucun verdict — le tester en premier dit simplement que ce chemin-la ne
+     * depend d'aucun invariant tenu ailleurs.
+     */
+    if (link_proto_cancel_requested(m, armed)) {
+        sec_confirm_cancel(t);
+        s_cancel_count++;
+        return;
+    }
+
     if (link_proto_confirm_accepted(m, armed)) {
         /*
          * sec_confirm décide, pas nous : hors d'une opération armée, cet appel
@@ -1200,6 +1218,7 @@ bool link_spi_diag(link_spi_diag_t *out)
     out->rx_armee     = s_rx_armed;
     out->maitre_vu    = s_master_seen;
     out->touches      = s_master_touches;
+    out->annulations  = s_cancel_count;
     out->sonnette_vue = s_req_seq_seen;
     out->sonnette     = s_last_req_seq;
     out->segment_type = s_dma_kind;

@@ -623,6 +623,66 @@ nothing pending, does nothing with it. That keeps the counter's meaning intact
 the next operation: `sec_confirm` only ever grants what is armed at the instant
 the press is relayed.
 
+### Cancelling a prompt — `0xC5`, added 2026-10-01
+
+**Established.** Requested by your team on 2026-09-30, and the reasoning in that
+request is why it exists at all: once a prompt is up, the owner had no way out
+before `SEC_CONFIRM_TIMEOUT_MS` (15 s) — and **the keyboard must not hide the
+prompt on its own**, because the operation would stay armed and a later press
+would confirm something no longer on screen.
+
+**The frozen value is `0xC5`**, written to `0x38` with the armed instance echoed
+at `0x39` — the same word you already use for `0x5A`.
+
+```
+0x38 = 0xC5   and   0x39 = armed instance   ->  the chest drops the operation
+0x38 = 0xC5   and   0x39 != armed instance  ->  ignored, in silence
+```
+
+**Why `0xC5` and not `0xA5`**, since you left the choice to us: `0xA5` is the
+**complement** of `0x5A`, so an inverted data line would turn every grant into a
+cancel *and every cancel into a grant*. `0xC5` is six bits away, which puts the
+confusion out of reach of a handful of errors. (`0x5A` is also its own bit
+mirror, so a bit-order fault does not move it either.)
+
+**It can only ever refuse.** No value of `0x38` grants anything except
+`LINK_USER_CONFIRM_MAGIC`, so a cancel cannot become a grant — not by a coding
+error, not by a transmission error. That is what makes it safe to accept **from
+either half**, where the press stays confined to the left one. The predicate is
+`link_proto_cancel_requested()`, written in the same shape as
+`link_proto_confirm_accepted()` so that neither can be seen to have lost a
+condition.
+
+**The echo is required for the same reason as on a grant**, and it matters just
+as much: **a late cancel must not kill a newer prompt**. Without it, a key press
+relayed one second too late would clear the *next* prompt under the owner's eyes.
+
+**What the chest does.** A cancel is implemented as an **immediate expiry**: the
+arming clock is moved back so the existing timeout path runs. The operation is
+dropped, the label and the targeted-account count are cleared, `pending_op`
+returns to `0`, **no segment is queued and `0x11` does not move**, and the host
+receives the same status word as on a timeout (`6985`). That is deliberate — the
+timeout path has already taken three corrections, and a parallel cancel path
+would have to be kept in step with it, with any divergence invisible because the
+two outcomes look alike.
+
+**The confirmation counter at `0x08`–`0x0B` does not move on a cancel.** It
+counts relayed *confirmations*. You do not need a separate counter: the effect is
+already observable through the rule you implement — `pending_op` back to `0`
+without `0x11` moving means the request is dead. The chest keeps its own cancel
+tally on its console (`link`), for the bench only; it does not cross the wire,
+and there is no spare byte on our side for one.
+
+**This stays version 3, and here is why.** Before this change the chest
+*discarded* any non-`0x5A` value at `0x38`. So a master that never sends `0xC5`
+sees no difference, and a chest without this support simply ignores it — the
+cancel does not work and the prompt waits out its fifteen seconds, which is
+exactly today's behaviour. **The degradation is the status quo**, so refusing
+each other over a version byte would cost more than it protects. Contrast
+section 6.1: a new *USB mode* value does require a bump, because
+`LINK_USB_MODE_COUNT` makes unknown values refusable and the two sides must
+agree on the boundary. Nothing downstream depends on the cancel value that way.
+
 ### Why `0x5A` and not `1`
 
 Because noise on a bus produces `1`, and does not produce `0x5A`.
@@ -1042,6 +1102,9 @@ USB mounted, ready, **time valid**, 42 confirmations, **instance 3**, active mod
 | V14 | `4E 49 50 48 03 0D 07 00 2A 00 00 00 03 FF 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 30 15 00 00 00 00 00 00 00 00` |
 | V15 | `4E 49 50 48 03 07 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 15 F5 00 00 00 00 00 00 00 00` |
 | V16 | `4E 49 50 48 03 0F 0A 00 2A 00 00 00 03 05 0A 0C 00 00 00 00 31 32 20 43 4F 4D 50 54 45 53 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7A AF 00 00 00 00 00 00 00 00` |
+| V17 | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 C5 03 00 00 00 00 00 00` |
+| V18 | `4E 49 50 48 03 0F 07 00 2A 00 00 00 03 05 06 01 00 00 00 00 47 49 54 48 55 42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 F3 21 C5 02 00 00 00 00 00 00` |
+| V19 | `4E 49 50 48 03 0F 00 00 2A 00 00 00 03 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 85 F4 00 00 00 00 00 00 00 00` |
 
 | # | what it is | `is_absent` | `parse` | decoded |
 |---|---|---|---|---|
@@ -1066,6 +1129,9 @@ USB mounted, ready, **time valid**, 42 confirmations, **instance 3**, active mod
 | V13 | V1 plus a valid mode request (`0x02`, pgp) at `0x3A` | `false` | **`true`** | block valid; mode request **applied** |
 | V14 | switch in flight: active mode `0xFF`, `USB_MOUNTED` cleared | `false` | **`true`** | state `0x0D`, active **indeterminate** |
 | V15 | mounted and ready but **no time set** (bit 3 clear) | `false` | **`true`** | state `0x07` — your **“NO TIME”** |
+| V17 | V1 plus a well-formed **cancel**: `0xC5` echoing the **armed** instance (3) | `false` | **`true`** | block identical to V1, CRC included; cancel **requested** |
+| V18 | the same, echoing the **previous** instance (2) | `false` | **`true`** | cancel **ignored**; grants nothing either |
+| V19 | what the chest publishes **after** serving V17 | `false` | **`true`** | `pending_op` `0`, no label, `op_count` `0` — instance and `0x11` **unchanged** |
 | V16 | a **RESET** pending: **`pending_op` `0x0A` (`SEC_OP_OATH_RESET`)**, `op_count` **12**, label `12 COMPTES` | `false` | **`true`** | twelve accounts on one press |
 
 ### DMA channel (section 13)
@@ -1104,6 +1170,14 @@ Reading notes, since these are the cases that catch a wrong implementation:
   then written **outside the buffer**. So this is not only about displaying the
   right name — it is memory safety on your side. Their argument stands on its
   own and can be verified; the display one asked you to take our word for it.
+- **V17 vs V18** — the cancel's exact counterpart to V8 vs V11: the two blocks
+  differ in **one byte**, `0x39`, and the verdict inverts. And neither grants
+  anything: `link_proto_confirm_accepted()` is false for both, which is the
+  property that lets a cancel come from either half.
+- **V17 carries the same CRC as V1** (`F3 21`). A cancel never invalidates the
+  chest's block, because the master's range is outside the covered span. **V19**
+  is the block afterwards: `pending_op` `0`, label gone, and the instance and
+  segment number untouched — annuler arms nothing and queues nothing.
 - **V15 and V16** — the two states v2 could not express. V15 is mounted, ready,
   and has no time: show “NO TIME”, do not ask for a code. V16 is a RESET with
   `op_count` 12: show the count, because one press destroys twelve secrets.

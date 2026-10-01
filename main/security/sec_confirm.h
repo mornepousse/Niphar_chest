@@ -95,6 +95,30 @@ sec_confirm_state_t sec_confirm_poll(uint32_t now_ms, uint8_t *out_slot);
  * `now_ms` sert a signaler une echeance deja depassee sans la consommer — la
  * LED doit pouvoir montrer le refus. */
 sec_confirm_state_t sec_confirm_peek(uint32_t now_ms);
+
+/*
+ * Annule l'operation armee, s'il y en a une. Sans effet sinon.
+ *
+ * UNE ANNULATION EST UNE EXPIRATION IMMEDIATE, et ce n'est pas un raccourci :
+ * c'est ce qui garantit qu'elle fasse EXACTEMENT ce qu'une expiration fait. Le
+ * chemin d'expiration de sec_confirm_poll() a deja recu trois corrections —
+ * l'etiquette qui survivait, le nombre de comptes qui survivait. Un chemin
+ * d'annulation parallele devrait etre tenu en phase a chaque fois, et une
+ * divergence y serait invisible puisque les deux sorties se ressemblent. En
+ * avancant l'horloge d'armement, l'annulation emprunte le MEME code.
+ *
+ * L'appelant voit donc SEC_CONFIRM_TIMEDOUT au prochain poll(), le worker CCID
+ * rend 2, et l'hote recoit le meme mot d'etat que sur expiration (6985) : aucun
+ * cas de plus a traiter nulle part.
+ *
+ * ELLE N'AUTORISE JAMAIS RIEN. C'est la seule raison pour laquelle l'ecriture
+ * qui la declenche peut etre acceptee des DEUX moities du clavier, la ou l'appui
+ * reste reserve a la gauche — voir LINK_USER_CANCEL_MAGIC.
+ *
+ * L'instance ne bouge pas : elle nomme le dernier armement, et annuler n'arme
+ * rien.
+ */
+void sec_confirm_cancel(uint32_t now_ms);
 /*
  * Lit l'etat, l'operation ET l'etiquette armes en UN SEUL APPEL, sans rien
  * consommer.

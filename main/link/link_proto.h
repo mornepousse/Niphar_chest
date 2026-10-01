@@ -209,6 +209,30 @@
 #define LINK_USER_CONFIRM_MAGIC 0x5A
 
 /*
+ * Valeur que le S3 écrit pour ANNULER une invite, dans le même octet 0x38.
+ *
+ * Demandée par l'équipe KeSp le 2026-09-30, après un banc : une fois l'invite
+ * affichée, la propriétaire n'avait aucune sortie avant les quinze secondes de
+ * SEC_CONFIRM_TIMEOUT_MS. Et le clavier ne peut PAS masquer l'invite de son
+ * propre chef — l'opération resterait armée dans le coffre, et un appui plus
+ * tard confirmerait quelque chose qui n'est plus à l'écran. La seule sortie
+ * honnête est un refus décidé par le coffre.
+ *
+ * LE SENS UNIQUE EST LA PROPRIÉTÉ : cette écriture ne peut que REFUSER. Aucune
+ * valeur de 0x38 n'accorde quoi que ce soit hormis LINK_USER_CONFIRM_MAGIC,
+ * donc une annulation ne peut pas devenir un accord — ni par erreur de code, ni
+ * par erreur de transmission. C'est ce qui permet de l'accepter des DEUX
+ * moitiés du clavier, là où l'appui reste réservé à la gauche.
+ *
+ * POURQUOI 0xC5 ET PAS 0xA5. 0xA5 est le COMPLÉMENT de 0x5A : une ligne de
+ * données inversée transformerait chaque accord en annulation, et chaque
+ * annulation en accord. 0xC5 en est à SIX bits, ce qui met la confusion hors de
+ * portée d'une poignée d'erreurs. (0x5A est par ailleurs son propre miroir
+ * binaire, donc une inversion de l'ordre des bits ne le déplace pas.)
+ */
+#define LINK_USER_CANCEL_MAGIC  0xC5
+
+/*
  * Valeurs DE FIL du mode USB demandé (0x12), figées par ce contrat et
  * INDÉPENDANTES de l'énumération interne usb_mode_t.
  *
@@ -419,6 +443,19 @@ bool link_proto_parse_master(const uint8_t *regs, size_t len, link_master_t *out
  * de relire le bloc et de réessayer avec l'instance courante.
  */
 bool link_proto_confirm_accepted(const link_master_t *m, uint8_t armed);
+
+/*
+ * L'écriture du maître demande-t-elle l'ANNULATION de l'instance `armed` ?
+ *
+ * Vrai SI ET SEULEMENT SI 0x38 vaut LINK_USER_CANCEL_MAGIC ET 0x39 vaut
+ * `armed`. L'écho est exigé pour la même raison que pour l'accord, et elle
+ * compte autant : une annulation en retard ne doit pas tuer une invite plus
+ * RÉCENTE. Sans lui, un appui sur une touche de sortie, relayé une seconde trop
+ * tard, effacerait l'invite suivante sous les yeux de la propriétaire.
+ *
+ * Faux se lit « ignorer en silence », comme pour un accord refusé.
+ */
+bool link_proto_cancel_requested(const link_master_t *m, uint8_t armed);
 
 /* Vrai si `wire` est l'une des valeurs de mode que ce contrat attribue. */
 bool link_proto_usb_mode_is_known(uint8_t wire);

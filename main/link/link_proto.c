@@ -192,6 +192,17 @@ bool link_proto_confirm_accepted(const link_master_t *m, uint8_t armed)
     return m->confirm == LINK_USER_CONFIRM_MAGIC && m->echo == armed;
 }
 
+bool link_proto_cancel_requested(const link_master_t *m, uint8_t armed)
+{
+    if (m == NULL) {
+        return false;
+    }
+    /* Même forme que link_proto_confirm_accepted(), et volontairement : les
+     * deux prédicats doivent exiger LES DEUX conditions, et se ressembler assez
+     * pour qu'on voie d'un coup d'œil qu'aucun n'en a perdu une. */
+    return m->confirm == LINK_USER_CANCEL_MAGIC && m->echo == armed;
+}
+
 bool link_proto_usb_mode_is_known(uint8_t wire)
 {
     /* Les valeurs de fil sont contiguës depuis zéro — c'est une clause du
